@@ -1,0 +1,23 @@
+{
+  "block.cbc_terminal_ballistics.copycat_armor_layer": "Copycat Armor Layer",
+  "block.cbc_terminal_ballistics.framed_collapsible_copycat_armor_block": "Framed Collapsible Copycat Armor Block",
+  "item.cbc_terminal_ballistics.armor_upgrader": "Armor Upgrader",
+  "tooltip.cbc_terminal_ballistics.copycat_armor_layer.level": "Armor Level: %s",
+  "tooltip.cbc_terminal_ballistics.copycat_armor_layer.toughness": "CBC Toughness: %s",
+  "tooltip.cbc_terminal_ballistics.armor_upgrader": "Craft with a copycat armor block to add +1 armor level (+10 toughness).",
+  "tooltip.cbc_terminal_ballistics.framed_collapsible_copycat_armor_block.deform": "Left-click with a Create wrench to collapse faces; shift-left-click expands them. Right-click with a Create wrench removes the copied material.",
+  "item.cbc_terminal_ballistics.advanced_block_armor_inspection_tool": "Advanced Block Armor Inspection Tool",
+  "item.cbc_terminal_ballistics.ballistic_test_launcher": "Ballistic Test Launcher",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.syncing": "CBCTB: syncing armor/material data...",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.material": "CBCTB Material: %s",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.cbc": "CBC Toughness/Hardness: %s / %s",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.material_stats": "Ductility/Brittleness/Spall: %s / %s / %sx",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.integrity": "Integrity Damage: %s / %s",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.last_impact": "Last Impact: %s %s, %s m/s, %s dmg, %s spall",
+  "tooltip.cbc_terminal_ballistics.ballistic_test_launcher.velocity": "Muzzle Velocity: %s m/s",
+  "tooltip.cbc_terminal_ballistics.ballistic_test_launcher.controls": "Shift-scroll to adjust; right-click fires offhand ammo without consuming it.",
+  "message.cbc_terminal_ballistics.ballistic_test_launcher.velocity": "Muzzle velocity: %s m/s",
+  "message.cbc_terminal_ballistics.ballistic_test_launcher.no_ammo": "Hold a CBC shell or round in your offhand.",
+  "message.cbc_terminal_ballistics.ballistic_test_launcher.unsupported": "Unsupported test-launcher ammo.",
+  "message.cbc_terminal_ballistics.ballistic_test_launcher.fired": "Fired test round at %s m/s"
+}

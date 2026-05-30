@@ -1,0 +1,18 @@
+* text=auto
+
+# Keep source/config files stable across Windows and Unix checkouts.
+*.java text eol=lf
+*.json text eol=lf
+*.gradle text eol=lf
+*.properties text eol=lf
+*.toml text eol=lf
+*.mcmeta text eol=lf
+*.txt text eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+
+# Disable autocrlf on generated files, they always generate with LF.
+# Add any extra files or paths here to make git stop saying they
+# are changed when only line endings change.
+src/generated/**/.cache/cache text eol=lf
+src/generated/**/*.json text eol=lf
