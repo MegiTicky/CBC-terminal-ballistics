@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics.client;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundInspectionSnapshotPacket;
+import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
 import com.cbc_terminal_ballistics.network.ClientboundProjectileSlowdownPacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
 import net.minecraft.client.Minecraft;
@@ -22,6 +23,13 @@ public final class ClientPacketHandlers {
 
     public static void handleInspectionSnapshot(ClientboundInspectionSnapshotPacket packet) {
         if (Minecraft.getInstance().level != null) ClientInspectionSnapshots.accept(packet.snapshot());
+    }
+
+    public static void handleIntegrityProgress(ClientboundIntegrityProgressPacket packet) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level != null) {
+            mc.levelRenderer.destroyBlockProgress(packet.pos().hashCode(), packet.pos(), packet.stage());
+        }
     }
 
     private ClientPacketHandlers() {}

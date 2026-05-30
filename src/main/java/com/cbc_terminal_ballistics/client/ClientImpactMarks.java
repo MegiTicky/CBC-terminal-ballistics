@@ -4,6 +4,7 @@ import com.cbc_terminal_ballistics.armor.CopycatArmorLayerBlock;
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlock;
 import com.cbc_terminal_ballistics.ballistics.ImpactMarkKind;
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
+import com.cbc_terminal_ballistics.ballistics.ImpactSurfaceType;
 import com.cbc_terminal_ballistics.ballistics.TBCaliber;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.state.ImpactMark;
@@ -54,6 +55,18 @@ public final class ClientImpactMarks {
     private static final ResourceLocation RICOCHET_SMALL_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/ricochet_small.png");
     private static final ResourceLocation RICOCHET_MEDIUM_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/ricochet_medium.png");
     private static final ResourceLocation RICOCHET_BIG_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/ricochet_big.png");
+    private static final ResourceLocation GENERAL_PENETRATED_AUTOCANNON_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/penetrated_autocannon.png");
+    private static final ResourceLocation GENERAL_PENETRATED_SMALL_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/penetrated_small.png");
+    private static final ResourceLocation GENERAL_PENETRATED_MEDIUM_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/penetrated_medium.png");
+    private static final ResourceLocation GENERAL_PENETRATED_BIG_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/penetrated_big.png");
+    private static final ResourceLocation GENERAL_STOPPED_AUTOCANNON_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/stopped_autocannon.png");
+    private static final ResourceLocation GENERAL_STOPPED_SMALL_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/stopped_small.png");
+    private static final ResourceLocation GENERAL_STOPPED_MEDIUM_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/stopped_medium.png");
+    private static final ResourceLocation GENERAL_STOPPED_BIG_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/stopped_big.png");
+    private static final ResourceLocation GENERAL_RICOCHET_AUTOCANNON_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/ricochet_autocannon.png");
+    private static final ResourceLocation GENERAL_RICOCHET_SMALL_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/ricochet_small.png");
+    private static final ResourceLocation GENERAL_RICOCHET_MEDIUM_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/ricochet_medium.png");
+    private static final ResourceLocation GENERAL_RICOCHET_BIG_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/ricochet_big.png");
 
     private static final Map<BlockPos, List<ImpactMark>> MARKS = new HashMap<>();
 
@@ -444,6 +457,13 @@ public final class ClientImpactMarks {
     }
 
     private static ResourceLocation texture(ImpactMark mark) {
+        if (mark.surface() == ImpactSurfaceType.GENERAL) {
+            return switch (mark.kind()) {
+                case HOLE, EXIT_HOLE -> generalPenetratedTexture(mark.caliber());
+                case PALE -> generalStoppedTexture(mark.caliber());
+                case STREAK -> generalRicochetTexture(mark.caliber());
+            };
+        }
         return switch (mark.kind()) {
             case HOLE, EXIT_HOLE -> penetratedTexture(mark.caliber());
             case PALE -> stoppedTexture(mark.caliber());
@@ -475,6 +495,33 @@ public final class ClientImpactMarks {
             case SMALL, SMALL_MEDIUM -> RICOCHET_SMALL_TEXTURE;
             case MEDIUM -> RICOCHET_MEDIUM_TEXTURE;
             case BIG -> RICOCHET_BIG_TEXTURE;
+        };
+    }
+
+    private static ResourceLocation generalPenetratedTexture(TBCaliber caliber) {
+        return switch (caliber) {
+            case AUTOCANNON -> GENERAL_PENETRATED_AUTOCANNON_TEXTURE;
+            case SMALL, SMALL_MEDIUM -> GENERAL_PENETRATED_SMALL_TEXTURE;
+            case MEDIUM -> GENERAL_PENETRATED_MEDIUM_TEXTURE;
+            case BIG -> GENERAL_PENETRATED_BIG_TEXTURE;
+        };
+    }
+
+    private static ResourceLocation generalStoppedTexture(TBCaliber caliber) {
+        return switch (caliber) {
+            case AUTOCANNON -> GENERAL_STOPPED_AUTOCANNON_TEXTURE;
+            case SMALL, SMALL_MEDIUM -> GENERAL_STOPPED_SMALL_TEXTURE;
+            case MEDIUM -> GENERAL_STOPPED_MEDIUM_TEXTURE;
+            case BIG -> GENERAL_STOPPED_BIG_TEXTURE;
+        };
+    }
+
+    private static ResourceLocation generalRicochetTexture(TBCaliber caliber) {
+        return switch (caliber) {
+            case AUTOCANNON -> GENERAL_RICOCHET_AUTOCANNON_TEXTURE;
+            case SMALL, SMALL_MEDIUM -> GENERAL_RICOCHET_SMALL_TEXTURE;
+            case MEDIUM -> GENERAL_RICOCHET_MEDIUM_TEXTURE;
+            case BIG -> GENERAL_RICOCHET_BIG_TEXTURE;
         };
     }
 

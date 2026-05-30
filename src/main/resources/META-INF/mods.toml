@@ -27,37 +27,37 @@ config="cbc_terminal_ballistics.mixins.json"
 [[dependencies.${mod_id}]]
     modId="create"
     mandatory=true
-    versionRange="[0.5.1.j,0.6.0)"
+    versionRange="[6.0.8,)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
     modId="copycats"
     mandatory=true
-    versionRange="[2.2.2,3.0.0)"
+    versionRange="[3.0.4,)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
     modId="createbigcannons"
     mandatory=true
-    versionRange="[5.8.2,5.9.0)"
+    versionRange="[5.10.2,)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
     modId="cbcmoreshells"
     mandatory=false
-    versionRange="[0.2.2,0.3.0)"
+    versionRange="[0.2.2,)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
     modId="cbcmodernwarfare"
     mandatory=false
-    versionRange="[0.0.6c,0.0.7)"
+    versionRange="[0.0.7,)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
     modId="rha"
     mandatory=false
-    versionRange="[1.1.4,)"
+    versionRange="[1.1.5,)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
@@ -70,6 +70,6 @@ config="cbc_terminal_ballistics.mixins.json"
 [[dependencies.${mod_id}]]
     modId="valkyrienskies"
     mandatory=false
-    versionRange="[2.3.0-beta.5,2.4.0)"
+    versionRange="[2.4.7,)"
     ordering="AFTER"
     side="BOTH"

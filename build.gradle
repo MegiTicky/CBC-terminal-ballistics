@@ -12,36 +12,20 @@ base {
     archivesName = mod_id
 }
 
-// VS2.3 legacy runtime stack. These local jars are used only for development
+// VS2.4 / current runtime stack. Local jars are used only for development
 // run configurations; they are not bundled into the CBCTB jar.
-def vs23ReferenceModsDir = file(findProperty('vs23_reference_mods_dir') ?: '../Reference mod VS2.3')
-def vs23ReferenceAliasDir = file('gradle/vs23-reference-aliases')
-def vs23OriginalValkyrienSkiesJar = new File(vs23ReferenceModsDir, 'valkyrienskies-120-2.3.0-beta.5tt16+f75b0eafe1 2.jar')
-def vs23AliasedValkyrienSkiesJar = new File(vs23ReferenceAliasDir, 'valkyrienskies-120-2.3.0-beta.5tt16+f75b0eafe1-2.jar')
-if (vs23OriginalValkyrienSkiesJar.exists() && !vs23AliasedValkyrienSkiesJar.exists()) {
-    vs23ReferenceAliasDir.mkdirs()
-    try {
-        java.nio.file.Files.createLink(vs23AliasedValkyrienSkiesJar.toPath(), vs23OriginalValkyrienSkiesJar.toPath())
-    } catch (Throwable ignored) {
-        java.nio.file.Files.copy(vs23OriginalValkyrienSkiesJar.toPath(), vs23AliasedValkyrienSkiesJar.toPath())
-    }
-}
-def vs23ReferenceMods = files({
-    vs23ReferenceModsDir.exists()
-            ? vs23ReferenceModsDir.listFiles({ File f -> f.name.endsWith('.jar') } as FileFilter)?.sort { it.name }
+def vs24ReferenceModsDir = file(findProperty('vs24_reference_mods_dir') ?: '../Reference mod')
+def vs24ReferenceMods = files({
+    vs24ReferenceModsDir.exists()
+            ? vs24ReferenceModsDir.listFiles({ File f -> f.name.endsWith('.jar') } as FileFilter)?.sort { it.name }
             : []
 })
-def vs23RuntimeModCoordinates = [
-        'vs23.local:cbcmodernwarfare:0.0.6c+mc.1.20.1-forge',
-        'vs23.local:cbcmoreshells:0.2.2',
-        'vs23.local:copycats:2.2.2+mc.1.20.1-forge',
-        'vs23.local:create-1.20.1:0.5.1.j',
-        'vs23.local:createbigcannons:5.8.2tt3-dev+mc.1.20.1-forge',
-        'vs23.local:rha:1.1.4-1.20.1',
-        'vs23.local:s_a_b:1.4.3',
-        // The uploaded VS jar has a " 2" suffix in its file name. Split that
-        // suffix into the flatDir version so ForgeGradle can deobfuscate it.
-        'vs23.local:valkyrienskies-120-2.3.0-beta.5tt16+f75b0eafe1:2'
+def vs24RuntimeModCoordinates = [
+        // Local jars from ../Reference mod
+        'vs24.local:cbcmodernwarfare:0.0.7a+mc.1.20.1-forge',
+        'vs24.local:cbcmoreshells:1.0.0',
+        'vs24.local:rha:1.1.5-1.20.1',
+        'vs24.local:s_a_b:1.4.3'
 ]
 
 // Mojang ships Java 17 to end users in 1.18+, so your mod should target Java 17.
@@ -110,7 +94,7 @@ minecraft {
             property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
             // Exploded ForgeGradle run configs do not carry the jar manifest's
             // MixinConfigs attribute, so add this mod's mixin config explicitly
-            // for local VS2.3 runtime testing.
+            // for local VS2.4 runtime testing.
             args '--mixin.config', 'cbc_terminal_ballistics.mixins.json'
 
             mods {
@@ -160,14 +144,42 @@ repositories {
     //     dir 'libs'
     // }
     flatDir {
-        dirs vs23ReferenceModsDir, vs23ReferenceAliasDir
+        dirs vs24ReferenceModsDir
     }
     maven {
         url = 'https://maven.tterrag.com/'
     }
+    maven {
+        url = 'https://maven.createmod.net/'
+    }
+    maven {
+        url = 'https://maven.valkyrienskies.org/'
+        content {
+            includeGroup 'org.valkyrienskies'
+            includeGroupByRegex 'org\\.valkyrienskies\\..*'
+        }
+    }
+    maven {
+        url = 'https://maven.realrobotix.me/createbigcannons/'
+    }
+    maven {
+        url = 'https://maven.ithundxr.dev/mirror'
+    }
+    maven {
+        url = 'https://api.modrinth.com/maven'
+    }
+    maven {
+        url = 'https://cursemaven.com'
+    }
 }
 
 dependencies {
+    def deobfNoTransitive = { notation ->
+        def dep = dependencies.create(notation)
+        dep.transitive = false
+        fg.deobf(dep)
+    }
+
     // Specify the version of Minecraft to use.
     // Any artifact can be supplied so long as it has a "userdev" classifier artifact and is a compatible patcher artifact.
     // The "userdev" classifier will be requested and setup by ForgeGradle.
@@ -175,19 +187,30 @@ dependencies {
     // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
     annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
-    compileOnly fg.deobf('vs23.local:copycats:2.2.2+mc.1.20.1-forge')
-    compileOnly fg.deobf('vs23.local:create-1.20.1:0.5.1.j')
+    compileOnly deobfNoTransitive('maven.modrinth:copycats:3.0.4+mc.1.20.1-forge')
+    compileOnly deobfNoTransitive('com.simibubi.create:create-1.20.1:6.0.8-289:slim')
+    compileOnly deobfNoTransitive('net.createmod.ponder:Ponder-Forge-1.20.1:1.0.91')
     compileOnly 'com.tterrag.registrate:Registrate:MC1.20-1.3.3'
 
-    // Local VS2.3 / older CBC-stack runtime test mods. Kept as runtime
+    // Local VS2.4 / current CBC-stack runtime test mods. Kept as runtime
     // dependencies so the final jar remains only this mod.
-    vs23RuntimeModCoordinates.each { runtimeOnly fg.deobf(it) }
-    // VS2.3's jarjar metadata does not expose Kotlin stdlib to the ForgeGradle
+    vs24RuntimeModCoordinates.each { runtimeOnly fg.deobf(it) }
+
+    // VS2.4-era stack matching the reference source folders.
+    runtimeOnly deobfNoTransitive('maven.modrinth:copycats:3.0.4+mc.1.20.1-forge')
+    runtimeOnly deobfNoTransitive('com.simibubi.create:create-1.20.1:6.0.8-289:slim')
+    runtimeOnly deobfNoTransitive('net.createmod.ponder:Ponder-Forge-1.20.1:1.0.91')
+    runtimeOnly deobfNoTransitive('dev.engine-room.flywheel:flywheel-forge-1.20.1:1.0.5')
+    runtimeOnly deobfNoTransitive('curse.maven:ritchies-projectile-library-1279407:7292523')
+    runtimeOnly deobfNoTransitive('com.rbasamoyai:createbigcannons:5.10.2+mc.1.20.1-forge')
+    runtimeOnly deobfNoTransitive('org.valkyrienskies:valkyrienskies-120-forge:2.4.7')
+
+    // VS2.4's jarjar metadata does not expose Kotlin stdlib to the ForgeGradle
     // dev runtime, but its mixins/classes reference kotlin.Unit during startup.
-    minecraftLibrary('org.jetbrains.kotlin:kotlin-stdlib:1.8.22') {
+    minecraftLibrary('org.jetbrains.kotlin:kotlin-stdlib:1.9.22') {
         exclude group: 'org.jetbrains', module: 'annotations'
     }
-    minecraftLibrary('org.jetbrains.kotlin:kotlin-reflect:1.8.22') {
+    minecraftLibrary('org.jetbrains.kotlin:kotlin-reflect:1.9.22') {
         exclude group: 'org.jetbrains', module: 'annotations'
     }
 
@@ -207,16 +230,16 @@ dependencies {
     // http://www.gradle.org/docs/current/userguide/dependency_management.html
 }
 
-tasks.register('printVs23ReferenceMods') {
+tasks.register('printVs24ReferenceMods') {
     group = 'help'
-    description = 'Prints the local VS2.3 reference jars used by runClient/runServer.'
+    description = 'Prints the local VS2.4 reference jars used by runClient/runServer.'
     doLast {
-        println "VS2.3 reference mod directory: ${vs23ReferenceModsDir}"
-        if (!vs23ReferenceModsDir.exists()) {
-            println '  (directory missing; set -Pvs23_reference_mods_dir=<path> to override)'
+        println "VS2.4 reference mod directory: ${vs24ReferenceModsDir}"
+        if (!vs24ReferenceModsDir.exists()) {
+            println '  (directory missing; set -Pvs24_reference_mods_dir=<path> to override)'
             return
         }
-        vs23ReferenceMods.files.each { println "  - ${it.name}" }
+        vs24ReferenceMods.files.each { println "  - ${it.name}" }
     }
 }
 

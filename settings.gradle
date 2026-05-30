@@ -5,4 +5,4 @@ pluginManagement {
         mavenCentral()
     }
 }
-rootProject.name = 'cbc_terminal_ballistics_vs23'
+rootProject.name = 'cbc_terminal_ballistics'

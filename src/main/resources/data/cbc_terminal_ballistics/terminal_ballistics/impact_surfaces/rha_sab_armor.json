@@ -1,0 +1,5 @@
+{
+  "type": "metallic",
+  "namespaces": ["rha", "s_a_b"],
+  "path_contains_any": ["armor", "armour", "rha"]
+}

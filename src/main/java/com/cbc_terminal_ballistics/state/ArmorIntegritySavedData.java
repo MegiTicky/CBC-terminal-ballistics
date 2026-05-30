@@ -64,11 +64,29 @@ public class ArmorIntegritySavedData extends SavedData {
 
     public void addMark(ServerLevel level, BlockPos pos, BlockState state, ImpactMark mark) {
         Entry e = entryFor(level, pos, state);
+        for (int i = 0; i < e.marks.size(); i++) {
+            ImpactMark existing = e.marks.get(i);
+            if (isNearDuplicate(existing, mark)) {
+                e.marks.set(i, mark);
+                e.lastTouched = level.getGameTime();
+                setDirty();
+                return;
+            }
+        }
         e.marks.add(mark);
         int max = TBConfig.OVERLAY_MARKS_PER_BLOCK.get();
         while (e.marks.size() > max) e.marks.remove(0);
         e.lastTouched = level.getGameTime();
         setDirty();
+    }
+
+    private static boolean isNearDuplicate(ImpactMark a, ImpactMark b) {
+        if (a.kind() != b.kind() || a.caliber() != b.caliber() || a.surface() != b.surface() || a.face() != b.face()) return false;
+        if (Math.abs(a.gameTime() - b.gameTime()) > 2L) return false;
+        double dx = a.x() - b.x();
+        double dy = a.y() - b.y();
+        double dz = a.z() - b.z();
+        return dx * dx + dy * dy + dz * dz <= 0.05D * 0.05D;
     }
 
     public void clear(BlockPos pos) {
@@ -88,10 +106,11 @@ public class ArmorIntegritySavedData extends SavedData {
         return java.util.Collections.unmodifiableMap(entries);
     }
 
-    public void cleanup(ServerLevel level) {
+    public List<BlockPos> cleanup(ServerLevel level) {
         long now = level.getGameTime();
         int ttl = TBConfig.OVERLAY_LIFETIME_TICKS.get();
         boolean dirty = false;
+        List<BlockPos> removed = new ArrayList<>();
         Iterator<Map.Entry<Long, Entry>> it = entries.entrySet().iterator();
         while (it.hasNext()) {
             Map.Entry<Long, Entry> mapEntry = it.next();
@@ -99,13 +118,15 @@ public class ArmorIntegritySavedData extends SavedData {
             Entry e = mapEntry.getValue();
             if (level.isEmptyBlock(pos) || !e.fingerprint.equals(fingerprint(level.getBlockState(pos))) || now - e.lastTouched > ttl * 4L) {
                 it.remove();
+                removed.add(pos);
                 dirty = true;
                 continue;
             }
             if (e.marks.removeIf(m -> now - m.gameTime() > ttl)) dirty = true;
-            if (e.damage <= 0.01 && e.marks.isEmpty()) { it.remove(); dirty = true; }
+            if (e.damage <= 0.01 && e.marks.isEmpty()) { it.remove(); removed.add(pos); dirty = true; }
         }
         if (dirty) setDirty();
+        return removed;
     }
 
     @Override
