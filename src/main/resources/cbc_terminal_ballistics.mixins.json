@@ -1,0 +1,29 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.cbc_terminal_ballistics.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "mixins": [
+    "AbstractCannonProjectileTickMixin",
+    "AbstractAutocannonProjectileTickMixin",
+    "BigCannonProjectileMixin",
+    "AutocannonProjectileMixin",
+    "BlockArmorInspectionToolItemMixin",
+    "CBCMWMediumCannonProjectileMixin",
+    "CBCMWSmokeDischargerProjectileMixin",
+    "CBCMSDualCannonProjectileMixin",
+    "CBCMSFuzedDualCannonProjectileMixin",
+    "CBCMSNormalAPShellProjectileMixin",
+    "CBCMSNormalSAPShellProjectileMixin",
+    "CBCMSRackedProjectileMixin",
+    "CBCMSFuzedDualRackedProjectileMixin",
+    "CBCMSFuzedRackedProjectileMixin",
+    "CBCMSCannonTorpedoProjectileMixin",
+    "CBCMSShellessInertBigCannonProjectileMixin",
+    "CBCMSIncendiaryHEShellProjectileMixin",
+    "CBCMSAntiairMachineGunProjectileMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

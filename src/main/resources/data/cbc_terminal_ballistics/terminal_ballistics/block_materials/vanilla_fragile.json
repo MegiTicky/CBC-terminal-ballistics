@@ -1,0 +1,8 @@
+{
+  "tags": ["#minecraft:logs", "#minecraft:planks", "#minecraft:wool", "#forge:glass"],
+  "toughness_multiplier": 0.08,
+  "brittleness": 0.65,
+  "ductility": 0.35,
+  "spall_multiplier": 0.05,
+  "caliber_damage_scale": {"autocannon": 1.8, "small": 1.3, "small_medium": 1.2, "medium": 1.1, "big": 1.0}
+}

@@ -1,0 +1,7 @@
+{
+  "replace": false,
+  "values": [
+    "cbc_terminal_ballistics:copycat_armor_layer",
+    "cbc_terminal_ballistics:framed_collapsible_copycat_armor_block"
+  ]
+}
