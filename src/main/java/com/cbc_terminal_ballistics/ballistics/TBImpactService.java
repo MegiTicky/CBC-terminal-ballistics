@@ -4,10 +4,12 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.TestLauncherProjectileCompat;
 import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
+import com.cbc_terminal_ballistics.data.ImpactSurfaceManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
+import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
 import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
@@ -67,12 +69,13 @@ public final class TBImpactService {
             double deflection = CBCReflect.ballistic(projectile, "deflection", 0.2);
             double fallbackHardness = 1.0; // CBC fallback hardness
             double fallbackToughness = Math.max(0.0, state.getBlock().getExplosionResistance()); // CBC fallback toughness
-            double armorToughness = CBCReflect.armorToughness(level, state, pos, fallbackToughness);
+            double baseArmorToughness = CBCReflect.armorToughness(level, state, pos, fallbackToughness);
             double armorHardness = CBCReflect.armorHardness(level, state, pos, fallbackHardness);
             boolean unbreakable = CBCReflect.griefNoDamage(projectileContext) || state.getDestroySpeed(level, pos) < 0;
 
             BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, hit).orElse(state);
             MaterialStats material = MaterialManager.INSTANCE.get(materialState);
+            ImpactSurfaceType impactSurface = ImpactSurfaceManager.INSTANCE.get(materialState, baseArmorToughness);
             TBCaliber caliber = ProjectileClassifier.classify(projectile, autocannonHint);
             boolean autocannon = caliber == TBCaliber.AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
@@ -84,12 +87,18 @@ public final class TBImpactService {
             double bonusMomentum = 1.0 + Math.max(0.0, velMag - 1.0) * 0.10;
             double momentum = mass * incidentVel * bonusMomentum;
             double attack = momentum;
+            double effectiveDuctility = effectiveDuctility(materialState, material, baseArmorToughness);
+            double threshold = integrityThreshold(materialState, material, baseArmorToughness);
+            double savedDamage = 0.0D;
+            if (level instanceof ServerLevel server) {
+                ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(server).getEntry(server, pos);
+                savedDamage = entry == null ? 0.0D : entry.damage;
+            }
+            double armorToughness = degradedToughness(baseArmorToughness, savedDamage, threshold);
             double effectiveToughness = Math.max(0.02, armorToughness);
             double hardnessPenaltyRaw = armorHardness - penetration;
             double hardnessPenalty = Math.max(0.0, hardnessPenaltyRaw);
             double perforationResistance = effectiveToughness;
-            double effectiveDuctility = effectiveDuctility(materialState, material, armorToughness);
-            double threshold = integrityThreshold(materialState, material, armorToughness);
             double penetrationRatio = attack / perforationResistance;
 
             // Integrity damage is calibrated from CBC block toughness, not from CBCTB toughness multipliers.
@@ -99,8 +108,8 @@ public final class TBImpactService {
             double impactSeverity = penetrationRatio >= 1.0
                 ? Mth.clamp(penetrationRatio, 0.90, 1.35)
                 : Mth.clamp(penetrationRatio * 0.55, 0.10, 0.70);
-            double rawDamage = armorToughness * caliberIntegrityWear(caliber) * impactSeverity * TBConfig.IMPACT_DAMAGE_SCALE.get();
-            if (autocannon && armorToughness > 8.0) rawDamage *= TBConfig.AUTOCANNON_ARMOR_DAMAGE_MULTIPLIER.get();
+            double rawDamage = baseArmorToughness * caliberIntegrityWear(caliber) * impactSeverity * TBConfig.IMPACT_DAMAGE_SCALE.get();
+            if (autocannon && baseArmorToughness > 8.0) rawDamage *= TBConfig.AUTOCANNON_ARMOR_DAMAGE_MULTIPLIER.get();
 
             String outcome = "STOP";
             ImpactMarkKind markKind = ImpactMarkKind.PALE;
@@ -121,7 +130,7 @@ public final class TBImpactService {
                     CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), effectNormal, true);
                     if (level instanceof ServerLevel server) {
                         playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
-                        addImpactMark(server, pos, state, hit, ImpactMarkKind.STREAK, caliber, curVel);
+                        addImpactMark(server, pos, state, hit, ImpactMarkKind.STREAK, caliber, impactSurface, curVel);
                     }
                 }
                 Object bounceResult = CBCReflect.newImpactResult("BOUNCE", false);
@@ -135,7 +144,8 @@ public final class TBImpactService {
                 if (appliedDamage > 0) data.addDamage(server, pos, state, appliedDamage);
                 double currentDamage = data.damage(server, pos, state);
                 shatter = material.brittleness() > 0.70 && effectiveDuctility < 1.0 && attack > perforationResistance * (1.25 - material.brittleness() * 0.25);
-                boolean immediateBreak = shouldBreakImmediately(materialState, material, armorToughness, attack, false);
+                syncIntegrityProgress(server, pos, currentDamage, threshold);
+                boolean immediateBreak = shouldBreakImmediately(materialState, material, baseArmorToughness, attack, false);
                 integrityBreak = immediateBreak || currentDamage >= threshold || shatter;
             }
             if (perforates) {
@@ -157,9 +167,9 @@ public final class TBImpactService {
                 CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), curVel.reverse(), false);
                 playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
                 ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
-                data.addMark(server, pos, state, mark(server, pos, hit, markKind, caliber, markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F));
+                data.addMark(server, pos, state, mark(server, pos, hit, markKind, caliber, impactSurface, markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F));
                 if (outcome.equals("PENETRATE")) {
-                    data.addMark(server, pos, state, exitMark(server, pos, hit, caliber));
+                    data.addMark(server, pos, state, exitMark(server, pos, hit, caliber, impactSurface));
                 }
                 syncMarks(server, pos, data.entryFor(server, pos, state).marks);
 
@@ -178,12 +188,12 @@ public final class TBImpactService {
                         double factor = Mth.clamp(1.0 - (massLoss / mass) * damping, 0.05, 1.0);
                         projectile.setDeltaMovement(projectile.getDeltaMovement().scale(factor));
                     }
-                    if (!autocannon && ProjectileClassifier.isApStyle(projectile) && ProjectileClassifier.shellSpallModifier(projectile) > 0) {
+                    if (ProjectileClassifier.isApStyle(projectile) && ProjectileClassifier.shellSpallModifier(projectile) > 0) {
                         Vec3 spallOrigin = hit.getLocation().add(velDir.scale(1.05));
                         spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, caliber, Math.max(0, attack - perforationResistance), material);
                         spallReason = spallFragments > 0 ? "spawned" : "zero_fragments";
                     } else {
-                        spallReason = autocannon ? "autocannon" : "not_ap_style";
+                        spallReason = "not_ap_style";
                     }
                 } else {
                     CBCReflect.setProjectileMass(projectile, 0.0);
@@ -225,23 +235,29 @@ public final class TBImpactService {
         return Math.max(0.05, armorToughness * Math.max(0.05, effectiveDuctility(materialState, material, armorToughness)) * TBConfig.INTEGRITY_MULTIPLIER.get());
     }
 
+    public static double degradedToughness(double baseToughness, double savedDamage, double threshold) {
+        double damageRatio = threshold <= 0.0D ? 0.0D : Mth.clamp(savedDamage / threshold, 0.0D, 1.0D);
+        return baseToughness * Mth.lerp(damageRatio, 1.0D, 0.5D);
+    }
+
     public static void clearMarks(ServerLevel level, BlockPos pos) {
         ArmorIntegritySavedData.get(level).clear(pos);
         syncMarks(level, pos, java.util.List.of());
+        syncIntegrityProgress(level, pos, -1);
     }
 
     public static void syncMarksToPlayers(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
         syncMarks(level, pos, marks);
     }
 
-    private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, Vec3 incomingVelocity) {
-        ImpactMark mark = mark(server, pos, hit, kind, caliber, kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F);
+    private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, Vec3 incomingVelocity) {
+        ImpactMark mark = mark(server, pos, hit, kind, caliber, surface, kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F);
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
         data.addMark(server, pos, state, mark);
         syncMarks(server, pos, data.entryFor(server, pos, state).marks);
     }
 
-    private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, float rotation) {
+    private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, float rotation) {
         Vec3 loc = localHitLocation(level, pos, hit.getLocation());
         // For VS ship raycasts the BlockHitResult direction is already the block-local/shipyard face.
         // Transforming it again by worldToShip makes marks flip/rotate incorrectly when the ship is not axis-aligned.
@@ -249,7 +265,7 @@ public final class TBImpactService {
         float x = (float) Mth.clamp(loc.x - pos.getX(), 0.001, 0.999);
         float y = (float) Mth.clamp(loc.y - pos.getY(), 0.001, 0.999);
         float z = (float) Mth.clamp(loc.z - pos.getZ(), 0.001, 0.999);
-        return new ImpactMark(kind, caliber, face, x, y, z, rotation, level.getGameTime());
+        return new ImpactMark(kind, caliber, surface, face, x, y, z, rotation, level.getGameTime());
     }
 
     private static float ricochetMarkRotation(ServerLevel level, BlockPos pos, BlockHitResult hit, Vec3 incomingVelocity) {
@@ -281,7 +297,7 @@ public final class TBImpactService {
         return (float) angle;
     }
 
-    private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, TBCaliber caliber) {
+    private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, TBCaliber caliber, ImpactSurfaceType surface) {
         Vec3 entry = localHitLocation(level, pos, hit.getLocation());
         Direction exitFace = hit.getDirection().getOpposite();
         double x = entry.x - pos.getX();
@@ -295,7 +311,7 @@ public final class TBImpactService {
             case WEST -> x = 0.001D;
             case EAST -> x = 0.999D;
         }
-        return new ImpactMark(ImpactMarkKind.EXIT_HOLE, caliber, exitFace,
+        return new ImpactMark(ImpactMarkKind.EXIT_HOLE, caliber, surface, exitFace,
             (float) Mth.clamp(x, 0.001D, 0.999D),
             (float) Mth.clamp(y, 0.001D, 0.999D),
             (float) Mth.clamp(z, 0.001D, 0.999D),
@@ -316,6 +332,22 @@ public final class TBImpactService {
     private static void syncMarks(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
         if (TBNetwork.CHANNEL == null) return;
         ClientboundImpactMarksPacket packet = new ClientboundImpactMarksPacket(pos, java.util.List.copyOf(marks));
+        Vec3 markCenter = Vec3.atCenterOf(pos);
+        for (ServerPlayer player : level.players()) {
+            if (VSCompat.squaredDistanceBetweenInclShips(level, markCenter, player.position()) <= 128 * 128) {
+                TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+            }
+        }
+    }
+
+    private static void syncIntegrityProgress(ServerLevel level, BlockPos pos, double damage, double threshold) {
+        int stage = damage <= 0.0D || threshold <= 0.0D ? -1 : Mth.clamp((int) Math.floor((damage / threshold) * 10.0D), 0, 9);
+        syncIntegrityProgress(level, pos, stage);
+    }
+
+    private static void syncIntegrityProgress(ServerLevel level, BlockPos pos, int stage) {
+        if (TBNetwork.CHANNEL == null) return;
+        ClientboundIntegrityProgressPacket packet = new ClientboundIntegrityProgressPacket(pos, stage);
         Vec3 markCenter = Vec3.atCenterOf(pos);
         for (ServerPlayer player : level.players()) {
             if (VSCompat.squaredDistanceBetweenInclShips(level, markCenter, player.position()) <= 128 * 128) {
@@ -477,7 +509,13 @@ public final class TBImpactService {
     }
 
     private static double localEffectiveToughness(ServerLevel level, BlockState state, BlockPos pos) {
-        return CBCReflect.armorToughness(level, state, pos, Math.max(0.0, state.getBlock().getExplosionResistance()));
+        double base = CBCReflect.armorToughness(level, state, pos, Math.max(0.0, state.getBlock().getExplosionResistance()));
+        BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, null).orElse(state);
+        MaterialStats material = MaterialManager.INSTANCE.get(materialState);
+        double threshold = integrityThreshold(materialState, material, base);
+        ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
+        double damage = entry == null ? 0.0D : entry.damage;
+        return degradedToughness(base, damage, threshold);
     }
 
     private static boolean isFragileForSpall(ServerLevel level, BlockState state, BlockPos pos, double localArmor, float speed) {
@@ -558,4 +596,3 @@ public final class TBImpactService {
 
     private TBImpactService() {}
 }
-

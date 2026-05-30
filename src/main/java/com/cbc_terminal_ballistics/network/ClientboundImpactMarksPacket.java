@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.network;
 
 import com.cbc_terminal_ballistics.ballistics.ImpactMarkKind;
+import com.cbc_terminal_ballistics.ballistics.ImpactSurfaceType;
 import com.cbc_terminal_ballistics.ballistics.TBCaliber;
 import com.cbc_terminal_ballistics.state.ImpactMark;
 import net.minecraft.core.BlockPos;
@@ -21,6 +22,7 @@ public record ClientboundImpactMarksPacket(BlockPos pos, List<ImpactMark> marks)
         for (ImpactMark mark : marks) {
             buf.writeEnum(mark.kind());
             buf.writeEnum(mark.caliber());
+            buf.writeEnum(mark.surface());
             buf.writeEnum(mark.face());
             buf.writeFloat(mark.x());
             buf.writeFloat(mark.y());
@@ -37,8 +39,9 @@ public record ClientboundImpactMarksPacket(BlockPos pos, List<ImpactMark> marks)
         for (int i = 0; i < count; i++) {
             ImpactMarkKind kind = buf.readEnum(ImpactMarkKind.class);
             TBCaliber caliber = buf.readEnum(TBCaliber.class);
+            ImpactSurfaceType surface = buf.readEnum(ImpactSurfaceType.class);
             Direction face = buf.readEnum(Direction.class);
-            marks.add(new ImpactMark(kind, caliber, face, buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readLong()));
+            marks.add(new ImpactMark(kind, caliber, surface, face, buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readLong()));
         }
         return new ClientboundImpactMarksPacket(pos, marks);
     }

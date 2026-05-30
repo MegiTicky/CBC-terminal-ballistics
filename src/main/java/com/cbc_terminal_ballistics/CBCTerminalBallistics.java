@@ -7,6 +7,7 @@ import com.cbc_terminal_ballistics.compat.CbcArmorCompat;
 import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.data.ImpactSurfaceManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.cbc_terminal_ballistics.registry.ModBlockEntities;
@@ -62,6 +63,7 @@ public class CBCTerminalBallistics {
     @SubscribeEvent
     public void addReloadListeners(AddReloadListenerEvent event) {
         event.addListener(MaterialManager.INSTANCE);
+        event.addListener(ImpactSurfaceManager.INSTANCE);
     }
 
     @SubscribeEvent
@@ -84,7 +86,9 @@ public class CBCTerminalBallistics {
         }
         if (event.getServer().getTickCount() % 1200 != 0) return;
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
-            ArmorIntegritySavedData.get(level).cleanup(level);
+            for (net.minecraft.core.BlockPos pos : ArmorIntegritySavedData.get(level).cleanup(level)) {
+                TBImpactService.clearMarks(level, pos);
+            }
         }
     }
 

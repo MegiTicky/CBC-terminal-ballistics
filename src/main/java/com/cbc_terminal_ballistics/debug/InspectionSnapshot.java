@@ -38,12 +38,13 @@ public record InspectionSnapshot(
         ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
         double damage = entry == null ? 0.0D : entry.damage;
         double threshold = TBImpactService.integrityThreshold(materialState, material, toughness);
+        double degradedToughness = TBImpactService.degradedToughness(toughness, damage, threshold);
         TBImpactService.LastImpact impact = TBImpactService.lastImpact(level, pos);
         ResourceLocation materialId = BuiltInRegistries.BLOCK.getKey(materialState.getBlock());
         return new InspectionSnapshot(
                 pos,
                 materialId,
-                toughness,
+                degradedToughness,
                 hardness,
                 material.ductility(),
                 material.brittleness(),

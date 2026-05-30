@@ -113,7 +113,7 @@ public final class TBCommands {
                 source.sendFailure(Component.literal("No targeted block."));
                 return 0;
             }
-            ArmorIntegritySavedData.get(player.serverLevel()).clear(bhr.getBlockPos());
+            TBImpactService.clearMarks(player.serverLevel(), bhr.getBlockPos());
             source.sendSuccess(() -> Component.literal("Cleared CBCTB integrity data at " + bhr.getBlockPos().toShortString()), false);
             return 1;
         } catch (Exception ex) {
@@ -145,12 +145,11 @@ public final class TBCommands {
         ServerLevel level = source.getLevel();
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
         java.util.List<BlockPos> positions = data.entriesView().entrySet().stream()
-            .filter(entry -> !entry.getValue().marks.isEmpty())
             .map(entry -> BlockPos.of(entry.getKey()))
             .toList();
         int count = data.clearAll();
         for (BlockPos pos : positions) {
-            TBImpactService.syncMarksToPlayers(level, pos, java.util.List.of());
+            TBImpactService.clearMarks(level, pos);
         }
         source.sendSuccess(() -> Component.literal("Deleted impact/integrity data for " + count + " blocks."), true);
         return count;
