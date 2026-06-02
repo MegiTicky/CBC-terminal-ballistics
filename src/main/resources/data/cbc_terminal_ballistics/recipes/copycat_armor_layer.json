@@ -1,12 +1,17 @@
 {
   "type": "minecraft:crafting_shaped",
   "category": "misc",
-  "pattern": ["III"],
+  "pattern": [
+    "III",
+    "LLL",
+    "III"
+  ],
   "key": {
-    "I": { "item": "minecraft:iron_ingot" }
+    "I": { "item": "minecraft:iron_ingot" },
+    "L": { "item": "copycats:copycat_layer"}
   },
   "result": {
     "item": "cbc_terminal_ballistics:copycat_armor_layer",
-    "count": 8
+    "count": 3
   }
 }
