@@ -1,6 +1,6 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "minecraft:item/netherite_upgrade_smithing_template"
+    "layer0": "cbc_terminal_ballistics:item/armor_upgrader"
   }
 }

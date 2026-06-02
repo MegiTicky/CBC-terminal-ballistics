@@ -163,7 +163,7 @@ public final class CopycatMaterialResolver {
         double bestDuctility = Double.NEGATIVE_INFINITY;
         for (BlockState candidate : candidates) {
             double toughness = copiedMaterialToughness(level, pos, candidate);
-            double ductility = MaterialManager.INSTANCE.get(candidate).ductility();
+            double ductility = MaterialManager.INSTANCE.get(candidate, toughness).ductility();
             if (best == null
                     || toughness > bestToughness + 1.0e-6
                     || (Math.abs(toughness - bestToughness) <= 1.0e-6 && ductility > bestDuctility)) {

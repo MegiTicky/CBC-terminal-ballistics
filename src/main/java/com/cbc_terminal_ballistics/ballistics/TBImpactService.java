@@ -4,7 +4,6 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.TestLauncherProjectileCompat;
 import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
-import com.cbc_terminal_ballistics.data.ImpactSurfaceManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
@@ -74,8 +73,8 @@ public final class TBImpactService {
             boolean unbreakable = CBCReflect.griefNoDamage(projectileContext) || state.getDestroySpeed(level, pos) < 0;
 
             BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, hit).orElse(state);
-            MaterialStats material = MaterialManager.INSTANCE.get(materialState);
-            ImpactSurfaceType impactSurface = ImpactSurfaceManager.INSTANCE.get(materialState, baseArmorToughness);
+            MaterialStats material = MaterialManager.INSTANCE.get(materialState, baseArmorToughness);
+            ImpactSurfaceType impactSurface = material.surface();
             TBCaliber caliber = ProjectileClassifier.classify(projectile, autocannonHint);
             boolean autocannon = caliber == TBCaliber.AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
@@ -511,7 +510,7 @@ public final class TBImpactService {
     private static double localEffectiveToughness(ServerLevel level, BlockState state, BlockPos pos) {
         double base = CBCReflect.armorToughness(level, state, pos, Math.max(0.0, state.getBlock().getExplosionResistance()));
         BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, null).orElse(state);
-        MaterialStats material = MaterialManager.INSTANCE.get(materialState);
+        MaterialStats material = MaterialManager.INSTANCE.get(materialState, base);
         double threshold = integrityThreshold(materialState, material, base);
         ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
         double damage = entry == null ? 0.0D : entry.damage;
@@ -537,55 +536,13 @@ public final class TBImpactService {
     }
 
     private static double effectiveDuctility(BlockState state, MaterialStats material, double cbcToughness) {
-        // Explicit datapack/fallback material entries own their ductility. For unclassified blocks,
-        // infer only broad material behavior from id/toughness so ductility scales sensibly with CBC toughness.
-        if (material != MaterialStats.DEFAULT) return material.ductility();
-        double scale = Math.sqrt(Math.max(1.0, cbcToughness) / 20.0);
-        if (isArmorLike(state)) return Mth.clamp(5.0 * scale, 2.5, 8.0);
-        if (isMetalLike(state)) return Mth.clamp(3.0 * scale, 1.5, 5.0);
-        if (isSoilLike(state)) return Mth.clamp(1.35 * scale, 0.8, 2.5);
-        if (isMasonryLike(state)) return Mth.clamp(1.50 * scale, 0.9, 3.0);
-        return cbcToughness >= 8.0 ? 0.75 : 0.35;
+        return material.ductility();
     }
 
     private static boolean shouldBreakImmediately(BlockState state, MaterialStats material, double cbcToughness, double attack, boolean bounced) {
         if (bounced || attack <= 0) return false;
-        // Blocks below 8 CBC toughness/blast resistance should not use the persistent armor-integrity model
-        // unless a datapack intentionally gives them high ductility.
         if (cbcToughness < 8.0 && effectiveDuctility(state, material, cbcToughness) <= 1.25) return true;
-        // Above that, only armor/metal/soil/masonry-style blocks get multi-hit survivability by default.
-        // Other blocks are treated as fragile/internal structure and break immediately on a cannon hit.
-        return !isDurableIntegrityMaterial(state) && effectiveDuctility(state, material, cbcToughness) <= 1.25;
-    }
-
-    private static boolean isDurableIntegrityMaterial(BlockState state) {
-        return isArmorLike(state) || isMetalLike(state) || isSoilLike(state) || isMasonryLike(state);
-    }
-
-    private static boolean isArmorLike(BlockState state) {
-        net.minecraft.resources.ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock());
-        String ns = id.getNamespace();
-        String path = id.getPath();
-        return ns.equals("rha") || ns.equals("s_a_b") || path.contains("armor") || path.contains("armour") || path.contains("rha");
-    }
-
-    private static boolean isMetalLike(BlockState state) {
-        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-        return path.contains("steel") || path.contains("iron") || path.contains("copper") || path.contains("bronze")
-            || path.contains("brass") || path.contains("netherite") || path.contains("metal");
-    }
-
-    private static boolean isSoilLike(BlockState state) {
-        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-        return path.contains("dirt") || path.contains("sand") || path.contains("gravel") || path.contains("mud")
-            || path.contains("clay") || path.contains("soil") || path.contains("grass_block") || path.contains("podzol");
-    }
-
-    private static boolean isMasonryLike(BlockState state) {
-        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-        return path.contains("stone") || path.contains("deepslate") || path.contains("cobble") || path.contains("brick")
-            || path.contains("concrete") || path.contains("basalt") || path.contains("tuff") || path.contains("andesite")
-            || path.contains("diorite") || path.contains("granite") || path.contains("blackstone") || path.contains("obsidian");
+        return material.surface() != ImpactSurfaceType.METALLIC && effectiveDuctility(state, material, cbcToughness) <= 1.25;
     }
 
     public record LastImpact(String outcome, double damage, double threshold, TBCaliber caliber, MaterialStats material,

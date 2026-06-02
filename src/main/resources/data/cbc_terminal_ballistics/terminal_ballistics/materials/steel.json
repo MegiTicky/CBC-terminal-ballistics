@@ -1,8 +1,7 @@
 {
+  "surface": "metallic",
   "tags": ["#forge:storage_blocks/steel", "#forge:ingots/steel"],
-  "toughness_multiplier": 4.0,
   "brittleness": 0.10,
-  "ductility": 4.0,
   "spall_multiplier": 0.9,
   "caliber_damage_scale": {"autocannon": 0.22, "small": 0.45, "small_medium": 0.60, "medium": 0.75, "big": 0.9}
 }

@@ -1,8 +1,8 @@
 {
+  "surface": "general",
   "tags": ["#forge:stone", "#forge:cobblestone"],
   "toughness_multiplier": 0.75,
   "brittleness": 0.45,
-  "ductility": 0.75,
   "spall_multiplier": 0.45,
   "caliber_damage_scale": {"autocannon": 0.75, "small": 0.85, "small_medium": 0.95, "medium": 1.0, "big": 1.0}
 }

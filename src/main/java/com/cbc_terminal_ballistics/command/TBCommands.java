@@ -7,6 +7,7 @@ import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.util.CBCReflect;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.ChatFormatting;
@@ -54,7 +55,8 @@ public final class TBCommands {
             BlockPos pos = bhr.getBlockPos();
             BlockState state = level.getBlockState(pos);
             BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state).orElse(state);
-            MaterialStats mat = MaterialManager.INSTANCE.get(materialState);
+            double toughness = CBCReflect.armorToughness(level, state, pos, Math.max(0.0, state.getBlock().getExplosionResistance()));
+            MaterialStats mat = MaterialManager.INSTANCE.get(materialState, toughness);
             ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
             TBImpactService.LastImpact last = TBImpactService.lastImpact(level, pos);
             source.sendSuccess(() -> Component.literal("Terminal ballistics @ " + pos.toShortString()).withStyle(ChatFormatting.GOLD), false);
@@ -62,7 +64,7 @@ public final class TBCommands {
             if (materialState != state) {
                 source.sendSuccess(() -> Component.literal("Resolved material: " + materialState), false);
             }
-            source.sendSuccess(() -> Component.literal(String.format("Material: toughness x%.2f, brittleness %.2f, ductility %.2f, spall x%.2f", mat.toughnessMultiplier(), mat.brittleness(), mat.ductility(), mat.spallMultiplier())), false);
+            source.sendSuccess(() -> Component.literal(String.format("Material: surface %s, toughness x%.2f, brittleness %.2f, ductility %.2f, spall x%.2f", mat.surface(), mat.toughnessMultiplier(), mat.brittleness(), mat.ductility(), mat.spallMultiplier())), false);
             source.sendSuccess(() -> Component.literal(entry == null ? "Integrity: no saved damage" : String.format("Integrity damage: %.2f, marks: %d", entry.damage, entry.marks.size())), false);
             if (last == null) {
                 source.sendSuccess(() -> Component.literal("Last impact: none"), false);

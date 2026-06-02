@@ -7,11 +7,11 @@ import com.cbc_terminal_ballistics.compat.CbcArmorCompat;
 import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
-import com.cbc_terminal_ballistics.data.ImpactSurfaceManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.cbc_terminal_ballistics.registry.ModBlockEntities;
 import com.cbc_terminal_ballistics.registry.ModBlocks;
+import com.cbc_terminal_ballistics.registry.ModCreativeTabs;
 import com.cbc_terminal_ballistics.registry.ModItems;
 import com.cbc_terminal_ballistics.registry.ModRecipeSerializers;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
@@ -42,6 +42,7 @@ public class CBCTerminalBallistics {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         ModBlocks.BLOCKS.register(modBus);
         ModItems.ITEMS.register(modBus);
+        ModCreativeTabs.CREATIVE_MODE_TABS.register(modBus);
         ModBlockEntities.BLOCK_ENTITIES.register(modBus);
         ModRecipeSerializers.RECIPE_SERIALIZERS.register(modBus);
         modBus.addListener(this::commonSetup);
@@ -63,7 +64,6 @@ public class CBCTerminalBallistics {
     @SubscribeEvent
     public void addReloadListeners(AddReloadListenerEvent event) {
         event.addListener(MaterialManager.INSTANCE);
-        event.addListener(ImpactSurfaceManager.INSTANCE);
     }
 
     @SubscribeEvent
