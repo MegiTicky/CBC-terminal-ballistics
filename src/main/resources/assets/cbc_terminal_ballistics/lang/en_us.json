@@ -1,6 +1,7 @@
 {
   "block.cbc_terminal_ballistics.copycat_armor_layer": "Copycat Armor Layer",
   "block.cbc_terminal_ballistics.framed_collapsible_copycat_armor_block": "Framed Collapsible Copycat Armor Block",
+  "itemGroup.cbc_terminal_ballistics.armor": "CBC Terminal Ballistics Armor",
   "item.cbc_terminal_ballistics.armor_upgrader": "Armor Upgrader",
   "tooltip.cbc_terminal_ballistics.copycat_armor_layer.level": "Armor Level: %s",
   "tooltip.cbc_terminal_ballistics.copycat_armor_layer.toughness": "CBC Toughness: %s",
