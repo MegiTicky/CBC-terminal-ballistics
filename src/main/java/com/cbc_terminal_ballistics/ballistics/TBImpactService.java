@@ -79,13 +79,11 @@ public final class TBImpactService {
             boolean autocannon = caliber == TBCaliber.AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
 
-            // Penetration/no-penetration now intentionally follows CBC's original basis:
-            //   block is perforated if projectile_mass * incident_velocity * velocity_bonus >= CBC block toughness.
-            // This means datapacks that tune CBC "durability_mass" on each munition directly control penetration.
-            // CBCTB material toughness multipliers and caliber scales are not used for this decision.
+            // Penetration/no-penetration intentionally follows CBC's original basis for now:
+            // block is perforated if projectile_mass * incident_velocity * velocity_bonus >= CBC block toughness. (default CBC penetration)
             double bonusMomentum = 1.0 + Math.max(0.0, velMag - 1.0) * 0.10;
             double momentum = mass * incidentVel * bonusMomentum;
-            double attack = momentum;
+            double attack = momentum * caliber.penetrationScale;;
             double effectiveDuctility = effectiveDuctility(materialState, material, baseArmorToughness);
             double threshold = integrityThreshold(materialState, material, baseArmorToughness);
             double savedDamage = 0.0D;
@@ -109,6 +107,7 @@ public final class TBImpactService {
                 : Mth.clamp(penetrationRatio * 0.55, 0.10, 0.70);
             double rawDamage = baseArmorToughness * caliberIntegrityWear(caliber) * impactSeverity * TBConfig.IMPACT_DAMAGE_SCALE.get();
             if (autocannon && baseArmorToughness > 8.0) rawDamage *= TBConfig.AUTOCANNON_ARMOR_DAMAGE_MULTIPLIER.get();
+            // fragile blocks get broken by autocannon straight away
 
             String outcome = "STOP";
             ImpactMarkKind markKind = ImpactMarkKind.PALE;
@@ -180,7 +179,8 @@ public final class TBImpactService {
                     } else {
                         TemporaryBlockPassage.phaseForThisTick(server, pos, state);
                     }
-                    massLoss = Mth.clamp(((hardnessPenalty + 1.0) * effectiveToughness / Math.max(incidentVel, 0.1)) * caliber.massLossScale, 0.01, Math.max(0.01, mass * 0.95));
+                    // (Removed) Velocity dependent mass loss formula (not default CBC behaivor): massLoss = Mth.clamp(((hardnessPenalty + 1.0) * effectiveToughness / Math.max(incidentVel, 0.1)) * caliber.massLossScale, 0.01, Math.max(0.01, mass * 0.95));
+                    massLoss = ((float) Math.max(0, hardnessPenalty) + 1) * (float) effectiveToughness / (float) incidentVel; //Same as CBC durabilityPenalty formula
                     CBCReflect.setProjectileMass(projectile, Math.max(0.0, mass - massLoss));
                     double damping = TBConfig.VELOCITY_DAMPING_PER_MASS_LOSS.get();
                     if (damping > 0 && mass > 1e-4) {

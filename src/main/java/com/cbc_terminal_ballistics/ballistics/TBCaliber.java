@@ -1,17 +1,16 @@
 package com.cbc_terminal_ballistics.ballistics;
 
 public enum TBCaliber {
-    // penetrationScale is currently retained for config/API compatibility but is not used for
     // the penetrate/stop decision, which follows CBC mass/momentum vs block toughness.
     // integrityDamageScale: permanent armor fatigue;
     // massLossScale: how quickly projectiles are bled off across layers; spallScale: AP spall output.
-    // Autocannon AP is allowed to keep flying after light masonry (~10 toughness/resistance),
+    // Autocannon AP is allowed to keep flying after penetration
     // while cannon calibers lose noticeably more energy per plate to reduce over-penetration.
-    AUTOCANNON(1.45, 0.04, 0.25, 0.0),
-    SMALL(0.45, 0.18, 1.15, 0.65),
-    SMALL_MEDIUM(0.60, 0.25, 1.35, 0.85),
-    MEDIUM(0.70, 0.32, 1.55, 1.05),
-    BIG(0.78, 0.45, 1.75, 1.25);
+    AUTOCANNON(0.5, 0.04, 1, 0.3),
+    SMALL(1, 0.18, 1, 0.65),
+    SMALL_MEDIUM(1, 0.25, 1, 0.85),
+    MEDIUM(1, 0.3, 1, 1.05),
+    BIG(1, 0.45, 1, 1.5);
 
     public final double penetrationScale;
     public final double integrityDamageScale;
