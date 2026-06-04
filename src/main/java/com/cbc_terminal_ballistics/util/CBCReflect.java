@@ -77,6 +77,52 @@ public final class CBCReflect {
         return Vec3.atLowerCornerOf(hit.getDirection().getNormal());
     }
 
+    /**
+     * Plays the block's break sound at the given world position. This is the
+     * exact same call CBC's AbstractBigCannonProjectile makes in its stopped
+     * branch (line 230-235 of 5.10.2 / 6.x):
+     * <pre>
+     *   level.playSound(null, x, y, z, state.getSoundType().getBreakSound(),
+     *                   SoundSource.BLOCKS, volume, pitch);
+     * </pre>
+     * With penetration CTB replaces calculateBlockPenetration, so this sound
+     * is never played by CBC anymore. We replay it here for the perforation
+     * case (the block stays intact and the projectile continues, just like the
+     * stopped case in stock CBC).
+     */
+    public static void playBlockImpactBreakSound(Level level, BlockState state, Vec3 hitLoc) {
+        if (level == null || state == null || hitLoc == null) return;
+        if (level.isClientSide) return;
+        try {
+            Object soundType = tryInvoke(state, "getSoundType", new Class<?>[]{});
+            if (soundType == null) return;
+            Object breakSound = tryInvoke(soundType, "getBreakSound", new Class<?>[]{});
+            if (breakSound == null) return;
+            float volume = callFloat(soundType, 1.0F, "getVolume");
+            float pitch = callFloat(soundType, 1.0F, "getPitch");
+            // Level.playSound(Player, double, double, double, SoundEvent, SoundSource, float, float)
+            Class<?> soundSourceCls = Class.forName("net.minecraft.sounds.SoundSource");
+            Object blocksSource = soundSourceCls.getField("BLOCKS").get(null);
+            Method playSound = Level.class.getMethod("playSound",
+                net.minecraft.world.entity.player.Player.class,
+                double.class, double.class, double.class,
+                Class.forName("net.minecraft.sounds.SoundEvent"),
+                soundSourceCls,
+                float.class, float.class);
+            playSound.invoke(level, null, hitLoc.x, hitLoc.y, hitLoc.z, breakSound, blocksSource, volume, pitch);
+        } catch (Throwable t) {
+            CBCTerminalBallistics.LOGGER.debug("Failed to play CBC block impact break sound", t);
+        }
+    }
+
+    public static float callFloat(Object target, float fallback, String... methodNames) {
+        for (String name : methodNames) {
+            Object v = tryInvoke(target, name, new Class<?>[]{});
+            if (v instanceof Number n) return n.floatValue();
+        }
+        return fallback;
+    }
+
 
     public static void addBlockHitEffect(Object projectileContext, Entity projectile, Level level, BlockState state, BlockPos pos, Vec3 hitLoc, Vec3 effectNormal, boolean bounced) {
         if (projectileContext == null || projectile == null || level == null || state == null || pos == null || hitLoc == null || effectNormal == null) return;
@@ -89,7 +135,7 @@ public final class CBCReflect {
             addPlayedEffect.setAccessible(true);
 
             for (BlockState contained : containedBlockStates(level, state, pos)) {
-                Object packet = ctor.newInstance(contained, projectile.getType(), bounced, true,
+                Object packet = ctor.newInstance(contained, projectile.getType(), bounced, false,
                     hitLoc.x, hitLoc.y, hitLoc.z, (float) effectNormal.x, (float) effectNormal.y, (float) effectNormal.z);
                 addPlayedEffect.invoke(projectileContext, packet);
             }

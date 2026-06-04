@@ -48,7 +48,7 @@ public final class TBImpactService {
     private static final double MIN_SPALL_VISUAL_CLEARANCE = 0.85D;
     private static final double RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES = 40.0D;
     private static final double RICOCHET_MARK_MAX_INCIDENCE = Math.cos(Math.toRadians(RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES));
-    private static final double HARD_BLOCK_IMPACT_SOUND_TOUGHNESS = 15.0D;
+    private static final double HARD_BLOCK_IMPACT_SOUND_TOUGHNESS = 5.0D;
     private static final ResourceLocation CBC_PROJECTILE_IMPACT_SOUND = new ResourceLocation("createbigcannons", "projectile_impact");
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
@@ -180,6 +180,13 @@ public final class TBImpactService {
                         playBreakSound(server, pos, state);
                         clearMarks(server, pos);
                     } else {
+                        // Perforation that did not break the block. In stock CBC this
+                        // never happens (the projectile breaks the block or stops on
+                        // it), so CBC's "block break on impact" sound is not played.
+                        // CTB keeps the block intact, so replay the same sound CBC
+                        // would have used in the stopped branch.
+                        Vec3 spallLoc = hit.getLocation().add(velDir.normalize().scale(2));
+                        CBCReflect.playBlockImpactBreakSound(server, state, spallLoc);
                         TemporaryBlockPassage.phaseForThisTick(server, pos, state);
                     }
                     // (Removed) Velocity dependent mass loss formula (not default CBC behaivor): massLoss = Mth.clamp(((hardnessPenalty + 1.0) * effectiveToughness / Math.max(incidentVel, 0.1)) * caliber.massLossScale, 0.01, Math.max(0.01, mass * 0.95));
@@ -410,7 +417,7 @@ public final class TBImpactService {
         };
         float toughnessVolume = (float) Mth.clamp(armorToughness / HARD_BLOCK_IMPACT_SOUND_TOUGHNESS, 1.0D, 1.8D);
         float velocityPitch = (float) Mth.clamp(0.95D + velocity * 0.01D, 0.85D, 1.25D);
-        level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
+        //level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
     }
 
     private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, TBCaliber caliber, double residual, MaterialStats material) {
