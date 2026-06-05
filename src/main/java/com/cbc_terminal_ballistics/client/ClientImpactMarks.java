@@ -87,11 +87,70 @@ public final class ClientImpactMarks {
         long now = mc.level.getGameTime();
         int lifetime = overlayLifetime();
         MARKS.entrySet().removeIf(entry -> entry.getValue().stream().allMatch(mark -> now - mark.gameTime() >= lifetime));
+
+        // --- ADDED PERSISTENT FLAME LOGIC ---
+        for (Map.Entry<BlockPos, List<ImpactMark>> entry : MARKS.entrySet()) {
+            BlockPos pos = entry.getKey();
+            for (ImpactMark mark : entry.getValue()) {
+                long age = now - mark.gameTime();
+
+                // Burn for 3 seconds (60 ticks).
+                // Only spawn on the entry HOLE, not EXIT_HOLE or STREAK.
+                if (age < 60 && mark.kind() == ImpactMarkKind.HOLE && mark.surface() == ImpactSurfaceType.METALLIC) {
+
+                    // 1. Determine a scale multiplier based on the caliber
+                    float scale = switch (mark.caliber()) {
+                        case AUTOCANNON -> 0.4f;
+                        case SMALL, SMALL_MEDIUM -> 1.0f;
+                        case MEDIUM -> 1.5f;
+                        case BIG -> 2.5f;
+                    };
+
+                    // 2. Scale the spawn chance (Big = thicker fire, Autocannon = sparse flickering)
+                    if (mc.level.random.nextFloat() < 0.3f * scale) {
+                        Vec3 localNormal = Vec3.atLowerCornerOf(mark.face().getNormal());
+
+                        // 3. Add random spread (jitter) across the face of the hole based on the scale
+                        double jitterX = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                        double jitterY = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                        double jitterZ = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+
+                        // Apply the normal pushout AND the spread jitter
+                        Vec3 localPos = mark.absolute(pos)
+                                .add(localNormal.scale(0.05))
+                                .add(jitterX, jitterY, jitterZ);
+
+                        // --- VALKYRIEN SKIES COMPATIBILITY ---
+                        Vec3 worldPos = VSCompat.toWorldCoordinates(mc.level, localPos);
+                        Vec3 worldPos2 = VSCompat.toWorldCoordinates(mc.level, localPos.add(localNormal));
+                        Vec3 worldNormal = worldPos2.subtract(worldPos).normalize();
+                        // -------------------------------------
+
+                        // 4. Scale the velocity so big flames shoot further out into the air
+                        mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.FLAME,
+                                worldPos.x, worldPos.y, worldPos.z,
+                                worldNormal.x * 0.02 * scale,
+                                worldNormal.y * 0.02 * scale + (0.01 * scale),
+                                worldNormal.z * 0.02 * scale);
+
+                        // Also scale the smoke!
+                        if (mc.level.random.nextFloat() < 0.5f) {
+                            mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.SMOKE,
+                                    worldPos.x, worldPos.y, worldPos.z,
+                                    worldNormal.x * 0.01 * scale,
+                                    worldNormal.y * 0.04 * scale,
+                                    worldNormal.z * 0.01 * scale);
+                        }
+                    }
+                }
+            }
+        }
+        // ------------------------------------
     }
 
     @SubscribeEvent
     public static void renderLevel(RenderLevelStageEvent event) {
-        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+        if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null || MARKS.isEmpty()) return;
 

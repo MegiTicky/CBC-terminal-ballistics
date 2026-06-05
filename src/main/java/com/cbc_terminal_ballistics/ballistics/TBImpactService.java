@@ -405,6 +405,7 @@ public final class TBImpactService {
         level.playSound(null, pos, sound.getBreakSound(), SoundSource.BLOCKS, sound.getVolume(), sound.getPitch());
     }
 
+    //this function doesnt quite do anything now
     private static void playHardBlockImpactSound(ServerLevel level, BlockPos pos, double armorToughness, TBCaliber caliber, double velocity) {
         if (armorToughness < HARD_BLOCK_IMPACT_SOUND_TOUGHNESS) return;
         SoundEvent sound = ForgeRegistries.SOUND_EVENTS.getValue(CBC_PROJECTILE_IMPACT_SOUND);
@@ -425,7 +426,7 @@ public final class TBImpactService {
         int fragments = Mth.clamp((int) Math.round((10 + residual * 0.45) * multiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
         if (fragments <= 0) return 0;
         double range = Mth.clamp(5.0 + residual * 0.08 + caliber.ordinal() * 1.5, 5.0, 24.0);
-        double coneCos = 0.68; // wide enough for glass/components immediately behind a plate, still front-biased
+        double coneCos = 0.5; // wide enough for glass/components immediately behind a plate, still front-biased
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
 
