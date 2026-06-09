@@ -7,6 +7,7 @@ public enum TBCaliber {
     // Autocannon AP is allowed to keep flying after penetration
     // while cannon calibers lose noticeably more energy per plate to reduce over-penetration.
     AUTOCANNON(0.5, 0.04, 1, 0.3),
+    HEAVY_AUTOCANNON(1, 0.18, 1, 0.65),
     SMALL(1, 0.18, 1, 0.65),
     SMALL_MEDIUM(1, 0.25, 1, 0.85),
     MEDIUM(1, 0.3, 1, 1.05),

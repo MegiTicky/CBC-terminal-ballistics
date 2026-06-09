@@ -47,7 +47,7 @@ public final class TBImpactService {
     private static final double MIN_SPALL_VISUAL_CLEARANCE = 0.85D;
     private static final double RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES = 40.0D;
     private static final double RICOCHET_MARK_MAX_INCIDENCE = Math.cos(Math.toRadians(RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES));
-    private static final double HARD_BLOCK_IMPACT_SOUND_TOUGHNESS = 15.0D;
+    private static final double HARD_BLOCK_IMPACT_SOUND_TOUGHNESS = 5.0D;
     private static final ResourceLocation CBC_PROJECTILE_IMPACT_SOUND = new ResourceLocation("createbigcannons", "projectile_impact");
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
@@ -77,14 +77,16 @@ public final class TBImpactService {
             MaterialStats material = MaterialManager.INSTANCE.get(materialState, baseArmorToughness);
             ImpactSurfaceType impactSurface = material.surface();
             TBCaliber caliber = ProjectileClassifier.classify(projectile, autocannonHint);
-            boolean autocannon = caliber == TBCaliber.AUTOCANNON;
+            boolean autocannon = caliber == TBCaliber.AUTOCANNON || caliber == TBCaliber.HEAVY_AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
 
             // Penetration/no-penetration intentionally follows CBC's original basis for now:
             // block is perforated if projectile_mass * incident_velocity * velocity_bonus >= CBC block toughness. (default CBC penetration)
+            // This means datapacks that tune CBC "durability_mass" on each munition directly control penetration.
+            // CBCTB material toughness multipliers and caliber scales are not used for this decision.
             double bonusMomentum = 1.0 + Math.max(0.0, velMag - 1.0) * 0.10;
             double momentum = mass * incidentVel * bonusMomentum;
-            double attack = momentum * caliber.penetrationScale;;
+            double attack = momentum * caliber.penetrationScale;
             double effectiveDuctility = effectiveDuctility(materialState, material, baseArmorToughness);
             double threshold = integrityThreshold(materialState, material, baseArmorToughness);
             double savedDamage = 0.0D;
@@ -396,19 +398,20 @@ public final class TBImpactService {
         level.playSound(null, pos, sound.getBreakSound(), SoundSource.BLOCKS, sound.getVolume(), sound.getPitch());
     }
 
+    //this function doesnt quite do anything now
     private static void playHardBlockImpactSound(ServerLevel level, BlockPos pos, double armorToughness, TBCaliber caliber, double velocity) {
         if (armorToughness < HARD_BLOCK_IMPACT_SOUND_TOUGHNESS) return;
         SoundEvent sound = ForgeRegistries.SOUND_EVENTS.getValue(CBC_PROJECTILE_IMPACT_SOUND);
         if (sound == null) return;
         float caliberVolume = switch (caliber) {
             case AUTOCANNON -> 0.55F;
-            case SMALL, SMALL_MEDIUM -> 0.8F;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> 0.8F;
             case MEDIUM -> 1.05F;
             case BIG -> 1.35F;
         };
         float toughnessVolume = (float) Mth.clamp(armorToughness / HARD_BLOCK_IMPACT_SOUND_TOUGHNESS, 1.0D, 1.8D);
         float velocityPitch = (float) Mth.clamp(0.95D + velocity * 0.01D, 0.85D, 1.25D);
-        level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
+        //level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
     }
 
     private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, TBCaliber caliber, double residual, MaterialStats material) {
@@ -416,7 +419,7 @@ public final class TBImpactService {
         int fragments = Mth.clamp((int) Math.round((10 + residual * 0.45) * multiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
         if (fragments <= 0) return 0;
         double range = Mth.clamp(5.0 + residual * 0.08 + caliber.ordinal() * 1.5, 5.0, 24.0);
-        double coneCos = 0.68; // wide enough for glass/components immediately behind a plate, still front-biased
+        double coneCos = 0.5; // wide enough for glass/components immediately behind a plate, still front-biased
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
 
@@ -511,7 +514,7 @@ public final class TBImpactService {
     private static double localEffectiveToughness(ServerLevel level, BlockState state, BlockPos pos) {
         double base = CBCReflect.armorToughness(level, state, pos, Math.max(0.0, state.getBlock().getExplosionResistance()));
         BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, null).orElse(state);
-        MaterialStats material = MaterialManager.INSTANCE.get(materialState, base);
+        MaterialStats material = MaterialManager.INSTANCE.get(materialState);
         double threshold = integrityThreshold(materialState, material, base);
         ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
         double damage = entry == null ? 0.0D : entry.damage;
@@ -529,7 +532,7 @@ public final class TBImpactService {
     private static double caliberIntegrityWear(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> 0.15;
-            case SMALL -> 0.625;
+            case HEAVY_AUTOCANNON, SMALL -> 0.625;
             case SMALL_MEDIUM -> 0.85;
             case MEDIUM -> 1.25;
             case BIG -> 2.50;
@@ -537,13 +540,55 @@ public final class TBImpactService {
     }
 
     private static double effectiveDuctility(BlockState state, MaterialStats material, double cbcToughness) {
-        return material.ductility();
+        // Explicit datapack/fallback material entries own their ductility. For unclassified blocks,
+        // infer only broad material behavior from id/toughness so ductility scales sensibly with CBC toughness.
+        if (material != MaterialStats.DEFAULT) return material.ductility();
+        double scale = Math.sqrt(Math.max(1.0, cbcToughness) / 20.0);
+        if (isArmorLike(state)) return Mth.clamp(5.0 * scale, 2.5, 8.0);
+        if (isMetalLike(state)) return Mth.clamp(3.0 * scale, 1.5, 5.0);
+        if (isSoilLike(state)) return Mth.clamp(1.35 * scale, 0.8, 2.5);
+        if (isMasonryLike(state)) return Mth.clamp(1.50 * scale, 0.9, 3.0);
+        return cbcToughness >= 8.0 ? 0.75 : 0.35;
     }
 
     private static boolean shouldBreakImmediately(BlockState state, MaterialStats material, double cbcToughness, double attack, boolean bounced) {
         if (bounced || attack <= 0) return false;
+        // Blocks below 8 CBC toughness/blast resistance should not use the persistent armor-integrity model
+        // unless a datapack intentionally gives them high ductility.
         if (cbcToughness < 8.0 && effectiveDuctility(state, material, cbcToughness) <= 1.25) return true;
-        return material.surface() != ImpactSurfaceType.METALLIC && effectiveDuctility(state, material, cbcToughness) <= 1.25;
+        // Above that, only armor/metal/soil/masonry-style blocks get multi-hit survivability by default.
+        // Other blocks are treated as fragile/internal structure and break immediately on a cannon hit.
+        return !isDurableIntegrityMaterial(state) && effectiveDuctility(state, material, cbcToughness) <= 1.25;
+    }
+
+    private static boolean isDurableIntegrityMaterial(BlockState state) {
+        return isArmorLike(state) || isMetalLike(state) || isSoilLike(state) || isMasonryLike(state);
+    }
+
+    private static boolean isArmorLike(BlockState state) {
+        net.minecraft.resources.ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        String ns = id.getNamespace();
+        String path = id.getPath();
+        return ns.equals("rha") || ns.equals("s_a_b") || path.contains("armor") || path.contains("armour") || path.contains("rha");
+    }
+
+    private static boolean isMetalLike(BlockState state) {
+        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+        return path.contains("steel") || path.contains("iron") || path.contains("copper") || path.contains("bronze")
+            || path.contains("brass") || path.contains("netherite") || path.contains("metal");
+    }
+
+    private static boolean isSoilLike(BlockState state) {
+        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+        return path.contains("dirt") || path.contains("sand") || path.contains("gravel") || path.contains("mud")
+            || path.contains("clay") || path.contains("soil") || path.contains("grass_block") || path.contains("podzol");
+    }
+
+    private static boolean isMasonryLike(BlockState state) {
+        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
+        return path.contains("stone") || path.contains("deepslate") || path.contains("cobble") || path.contains("brick")
+            || path.contains("concrete") || path.contains("basalt") || path.contains("tuff") || path.contains("andesite")
+            || path.contains("diorite") || path.contains("granite") || path.contains("blackstone") || path.contains("obsidian");
     }
 
     public record LastImpact(String outcome, double damage, double threshold, TBCaliber caliber, MaterialStats material,

@@ -101,7 +101,7 @@ public final class ClientImpactMarks {
                     // 1. Determine a scale multiplier based on the caliber
                     float scale = switch (mark.caliber()) {
                         case AUTOCANNON -> 0.4f;
-                        case SMALL, SMALL_MEDIUM -> 1.0f;
+                        case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> 1.0f;
                         case MEDIUM -> 1.5f;
                         case BIG -> 2.5f;
                     };
@@ -533,7 +533,7 @@ public final class ClientImpactMarks {
     private static ResourceLocation penetratedTexture(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> PENETRATED_AUTOCANNON_TEXTURE;
-            case SMALL, SMALL_MEDIUM -> PENETRATED_SMALL_TEXTURE;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> PENETRATED_SMALL_TEXTURE;
             case MEDIUM -> PENETRATED_MEDIUM_TEXTURE;
             case BIG -> PENETRATED_BIG_TEXTURE;
         };
@@ -542,7 +542,7 @@ public final class ClientImpactMarks {
     private static ResourceLocation stoppedTexture(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> STOPPED_AUTOCANNON_TEXTURE;
-            case SMALL, SMALL_MEDIUM -> STOPPED_SMALL_TEXTURE;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> STOPPED_SMALL_TEXTURE;
             case MEDIUM -> STOPPED_MEDIUM_TEXTURE;
             case BIG -> STOPPED_BIG_TEXTURE;
         };
@@ -551,7 +551,7 @@ public final class ClientImpactMarks {
     private static ResourceLocation ricochetTexture(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> RICOCHET_AUTOCANNON_TEXTURE;
-            case SMALL, SMALL_MEDIUM -> RICOCHET_SMALL_TEXTURE;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> RICOCHET_SMALL_TEXTURE;
             case MEDIUM -> RICOCHET_MEDIUM_TEXTURE;
             case BIG -> RICOCHET_BIG_TEXTURE;
         };
@@ -560,7 +560,7 @@ public final class ClientImpactMarks {
     private static ResourceLocation generalPenetratedTexture(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> GENERAL_PENETRATED_AUTOCANNON_TEXTURE;
-            case SMALL, SMALL_MEDIUM -> GENERAL_PENETRATED_SMALL_TEXTURE;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> GENERAL_PENETRATED_SMALL_TEXTURE;
             case MEDIUM -> GENERAL_PENETRATED_MEDIUM_TEXTURE;
             case BIG -> GENERAL_PENETRATED_BIG_TEXTURE;
         };
@@ -569,7 +569,7 @@ public final class ClientImpactMarks {
     private static ResourceLocation generalStoppedTexture(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> GENERAL_STOPPED_AUTOCANNON_TEXTURE;
-            case SMALL, SMALL_MEDIUM -> GENERAL_STOPPED_SMALL_TEXTURE;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> GENERAL_STOPPED_SMALL_TEXTURE;
             case MEDIUM -> GENERAL_STOPPED_MEDIUM_TEXTURE;
             case BIG -> GENERAL_STOPPED_BIG_TEXTURE;
         };
@@ -578,7 +578,7 @@ public final class ClientImpactMarks {
     private static ResourceLocation generalRicochetTexture(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> GENERAL_RICOCHET_AUTOCANNON_TEXTURE;
-            case SMALL, SMALL_MEDIUM -> GENERAL_RICOCHET_SMALL_TEXTURE;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> GENERAL_RICOCHET_SMALL_TEXTURE;
             case MEDIUM -> GENERAL_RICOCHET_MEDIUM_TEXTURE;
             case BIG -> GENERAL_RICOCHET_BIG_TEXTURE;
         };
