@@ -32,9 +32,9 @@ public record InspectionSnapshot(
     public static InspectionSnapshot build(ServerLevel level, BlockPos pos, BlockHitResult hit) {
         BlockState state = level.getBlockState(pos);
         BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, hit).orElse(state);
-        MaterialStats material = MaterialManager.INSTANCE.get(materialState);
         double toughness = CBCReflect.armorToughness(level, state, pos, Math.max(0.0, state.getBlock().getExplosionResistance()));
         double hardness = CBCReflect.armorHardness(level, state, pos, 1.0D);
+        MaterialStats material = MaterialManager.INSTANCE.get(materialState, toughness);
         ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
         double damage = entry == null ? 0.0D : entry.damage;
         double threshold = TBImpactService.integrityThreshold(materialState, material, toughness);

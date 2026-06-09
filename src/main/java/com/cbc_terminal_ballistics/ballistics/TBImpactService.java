@@ -77,7 +77,7 @@ public final class TBImpactService {
             MaterialStats material = MaterialManager.INSTANCE.get(materialState, baseArmorToughness);
             ImpactSurfaceType impactSurface = material.surface();
             TBCaliber caliber = ProjectileClassifier.classify(projectile, autocannonHint);
-            boolean autocannon = caliber == TBCaliber.AUTOCANNON;
+            boolean autocannon = caliber == TBCaliber.AUTOCANNON || caliber == TBCaliber.HEAVY_AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
 
             // Penetration/no-penetration intentionally follows CBC's original basis for now:
@@ -412,7 +412,7 @@ public final class TBImpactService {
         if (sound == null) return;
         float caliberVolume = switch (caliber) {
             case AUTOCANNON -> 0.55F;
-            case SMALL, SMALL_MEDIUM -> 0.8F;
+            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> 0.8F;
             case MEDIUM -> 1.05F;
             case BIG -> 1.35F;
         };
@@ -539,7 +539,7 @@ public final class TBImpactService {
     private static double caliberIntegrityWear(TBCaliber caliber) {
         return switch (caliber) {
             case AUTOCANNON -> 0.15;
-            case SMALL -> 0.625;
+            case HEAVY_AUTOCANNON, SMALL -> 0.625;
             case SMALL_MEDIUM -> 0.85;
             case MEDIUM -> 1.25;
             case BIG -> 2.50;

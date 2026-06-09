@@ -28,6 +28,7 @@ public final class ProjectileClassifier {
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
         String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
 
+        if (cls.contains("heavy_autocannon") || cls.contains("heavyautocannon")) return TBCaliber.HEAVY_AUTOCANNON;
         if (autocannonMixin || path.contains("autocannon") || path.contains("rotarycannon") || cls.contains("autocannon") || cls.contains("rotarycannon")) return TBCaliber.AUTOCANNON;
         if (ns.equals("cbcmodernwarfare") || path.contains("medium") || cls.contains("medium_cannon") || cls.contains("mediumcannon")) return TBCaliber.MEDIUM;
         if (ns.equals("cbcmoreshells") || cls.contains("cbcmoreshells")) {

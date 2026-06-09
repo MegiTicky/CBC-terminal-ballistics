@@ -17,7 +17,7 @@ public record MaterialStats(ImpactSurfaceType surface, double toughnessMultiplie
 
     public static MaterialStats fallback(ImpactSurfaceType surface) {
         return switch (surface) {
-            case METALLIC -> new MaterialStats(ImpactSurfaceType.METALLIC, 1.0, 0.12, 4.0, 0.9, Map.of());
+            case METALLIC -> new MaterialStats(ImpactSurfaceType.METALLIC, 1.0, 0.12, 5.0, 0.9, Map.of());
             case GENERAL -> new MaterialStats(ImpactSurfaceType.GENERAL, 1.0, 0.45, 0.75, 0.45, Map.of());
         };
     }
