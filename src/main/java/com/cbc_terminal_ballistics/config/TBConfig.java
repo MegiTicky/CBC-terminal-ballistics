@@ -18,6 +18,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.DoubleValue AUTOCANNON_ARMOR_DAMAGE_MULTIPLIER;
     public static final ForgeConfigSpec.DoubleValue IMPACT_DAMAGE_SCALE;
     public static final ForgeConfigSpec.DoubleValue VELOCITY_DAMPING_PER_MASS_LOSS;
+    public static final ForgeConfigSpec.IntValue COPYCAT_ARMOR_MAX_LEVEL;
 
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> PROJECTILE_CLASS_OVERRIDES;
 
@@ -33,6 +34,7 @@ public final class TBConfig {
         AUTOCANNON_ARMOR_DAMAGE_MULTIPLIER = server.comment("Integrity damage multiplier for autocannon impacts against armor.").defineInRange("autocannonArmorDamageMultiplier", 0.16, 0.0, 10.0);
         IMPACT_DAMAGE_SCALE = server.comment("Scales energy/momentum into saved integrity damage.").defineInRange("impactDamageScale", 1.0, 0.01, 100.0);
         VELOCITY_DAMPING_PER_MASS_LOSS = server.comment("Optional extra velocity damping after penetration, proportional to fractional mass loss. 0 keeps CBC-like mass-only slowing.").defineInRange("velocityDampingPerMassLoss", 0.0, 0.0, 1.0);
+        COPYCAT_ARMOR_MAX_LEVEL = server.comment("Maximum armor level for copycat armor layer blocks. Changes require existing blocks to be updated with the Armor Upgrader tool.").defineInRange("copycatArmorMaxLevel", 20, 1, 100);
         server.pop();
         SERVER_SPEC = server.build();
 

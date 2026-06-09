@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.armor;
 
+import com.cbc_terminal_ballistics.config.TBConfig;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
@@ -67,7 +68,8 @@ public final class ArmorCopycatItemData {
     }
 
     public static int clampLevel(int level) {
-        return Math.max(MIN_LEVEL, Math.min(MAX_LEVEL, level));
+        int max = TBConfig.COPYCAT_ARMOR_MAX_LEVEL.get();
+        return Math.max(MIN_LEVEL, Math.min(max, level));
     }
 
     public static int sanitizeOffsets(int packedOffsets) {

@@ -21,7 +21,8 @@
     "CBCMSCannonTorpedoProjectileMixin",
     "CBCMSShellessInertBigCannonProjectileMixin",
     "CBCMSIncendiaryHEShellProjectileMixin",
-    "CBCMSAntiairMachineGunProjectileMixin"
+    "CBCMSAntiairMachineGunProjectileMixin",
+    "CBCATHeavyAutocannonProjectileMixin"
   ],
   "injectors": {
     "defaultRequire": 1

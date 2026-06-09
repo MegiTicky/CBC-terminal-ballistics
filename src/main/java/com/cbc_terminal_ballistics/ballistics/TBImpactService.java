@@ -52,6 +52,7 @@ public final class TBImpactService {
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
         if (!TBConfig.ENABLED.get()) return null;
+        if (ProjectileClassifier.shouldBypassTB(projectile)) return null;
         try {
             Level level = projectile.level();
             BlockPos pos = hit.getBlockPos();
