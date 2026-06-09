@@ -8,6 +8,14 @@ import net.minecraftforge.registries.ForgeRegistries;
 import java.util.Locale;
 
 public final class ProjectileClassifier {
+    public static boolean shouldBypassTB(Entity projectile) {
+        ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        return text.contains("heap") || text.contains("heat") || text.contains("heapburst") || cls.contains("cbcprojectileburst") && cls.contains("heap");
+    }
+
     public static TBCaliber classify(Entity projectile, boolean autocannonMixin) {
         ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
         String idStr = id == null ? "" : id.toString();
@@ -20,7 +28,7 @@ public final class ProjectileClassifier {
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
         String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
 
-        if (autocannonMixin || path.contains("autocannon") || cls.contains("autocannon")) return TBCaliber.AUTOCANNON;
+        if (autocannonMixin || path.contains("autocannon") || path.contains("rotarycannon") || cls.contains("autocannon") || cls.contains("rotarycannon")) return TBCaliber.AUTOCANNON;
         if (ns.equals("cbcmodernwarfare") || path.contains("medium") || cls.contains("medium_cannon") || cls.contains("mediumcannon")) return TBCaliber.MEDIUM;
         if (ns.equals("cbcmoreshells") || cls.contains("cbcmoreshells")) {
             if (path.contains("small_medium") || path.contains("smallmedium") || path.contains("racked") || cls.contains("racked_projectile")) return TBCaliber.SMALL_MEDIUM;
