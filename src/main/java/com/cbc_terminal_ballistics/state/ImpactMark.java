@@ -34,6 +34,10 @@ public record ImpactMark(ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceTy
     }
 
     public Vec3 absolute(net.minecraft.core.BlockPos pos) {
-        return new Vec3(pos.getX() + x, pos.getY() + y, pos.getZ() + z);
+        // Cast to double before adding so we don't lose precision
+        // at massive Valkyrien Skies shipyard coordinates!
+        return new Vec3(pos.getX() + (double) x,
+                pos.getY() + (double) y,
+                pos.getZ() + (double) z);
     }
 }
