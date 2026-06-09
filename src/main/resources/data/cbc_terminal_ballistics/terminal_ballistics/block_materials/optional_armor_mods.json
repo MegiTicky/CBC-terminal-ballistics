@@ -1,8 +1,0 @@
-{
-  "tags": ["#rha:armor", "#s_a_b:armor", "#s_a_b:hard", "#s_a_b:basic", "#s_a_b:cut", "#forge:armor_plates"],
-  "toughness_multiplier": 8.0,
-  "brittleness": 0.08,
-  "ductility": 5.0,
-  "spall_multiplier": 0.9,
-  "caliber_damage_scale": {"autocannon": 0.12, "small": 0.32, "small_medium": 0.48, "medium": 0.65, "big": 0.9}
-}

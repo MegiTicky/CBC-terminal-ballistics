@@ -4,7 +4,6 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.TestLauncherProjectileCompat;
 import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
-import com.cbc_terminal_ballistics.data.ImpactSurfaceManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
@@ -74,8 +73,8 @@ public final class TBImpactService {
             boolean unbreakable = CBCReflect.griefNoDamage(projectileContext) || state.getDestroySpeed(level, pos) < 0;
 
             BlockState materialState = CopycatMaterialResolver.resolve(level, pos, state, hit).orElse(state);
-            MaterialStats material = MaterialManager.INSTANCE.get(materialState);
-            ImpactSurfaceType impactSurface = ImpactSurfaceManager.INSTANCE.get(materialState, baseArmorToughness);
+            MaterialStats material = MaterialManager.INSTANCE.get(materialState, baseArmorToughness);
+            ImpactSurfaceType impactSurface = material.surface();
             TBCaliber caliber = ProjectileClassifier.classify(projectile, autocannonHint);
             boolean autocannon = caliber == TBCaliber.AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
