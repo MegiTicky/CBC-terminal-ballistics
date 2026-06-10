@@ -164,7 +164,7 @@ public final class ClientSpallConeVisuals {
         Vec3 orthoUp = right.cross(f).normalize();
         double golden = Math.PI * (3.0D - Math.sqrt(5.0D));
         double t = (index + 0.5D) / Math.max(1, count);
-        double cos = 1.0D - (1.0D - coneCos) * Math.sqrt(t);
+        double cos = 1.0D - (1.0D - coneCos) * t * t;
         double sin = Math.sqrt(Math.max(0.0D, 1.0D - cos * cos));
         double phi = index * golden + jitter * 0.35D;
         return f.scale(cos).add(right.scale(Math.cos(phi) * sin)).add(orthoUp.scale(Math.sin(phi) * sin)).normalize();
