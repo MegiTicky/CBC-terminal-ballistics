@@ -27,6 +27,8 @@ public record ClientboundInspectionSnapshotPacket(InspectionSnapshot snapshot) {
         buf.writeDouble(s.lastVelocity());
         buf.writeDouble(s.lastDamage());
         buf.writeVarInt(s.lastSpallFragments());
+        buf.writeDouble(s.lastMassRatio());
+        buf.writeDouble(s.lastSpallDamageModifier());
     }
 
     public static ClientboundInspectionSnapshotPacket decode(FriendlyByteBuf buf) {
@@ -46,7 +48,9 @@ public record ClientboundInspectionSnapshotPacket(InspectionSnapshot snapshot) {
                 buf.readUtf(),
                 buf.readDouble(),
                 buf.readDouble(),
-                buf.readVarInt()));
+                buf.readVarInt(),
+                buf.readDouble(),
+                buf.readDouble()));
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

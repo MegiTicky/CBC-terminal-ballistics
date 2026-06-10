@@ -47,18 +47,36 @@ public final class ProjectileClassifier {
         return text.contains("ap") || text.contains("shot") || text.contains("inert");
     }
 
-    public static double shellSpallModifier(Entity projectile) {
+    public static double shellSpallCountModifier(Entity projectile) {
         ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
         String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
         String text = path + " " + cls;
-        if (text.contains("apfsds")) return 0.20;
-        if (text.contains("apds")) return 0.35;
-        if (text.contains("apbc")) return 0.75;
+        if (text.contains("apfsds")) return 0.5;
+        if (text.contains("apds")) return 0.6;
+        if (text.contains("apbc")) return 0.9;
+        if (text.contains("aphe")) return 1.0;
+        if (text.contains("ap")) return 1.0;
+        if (text.contains("shot") || text.contains("inert")) return 0.7;
+        return 0.0;
+    }
+
+    public static double shellSpallDamageModifier(Entity projectile) {
+        ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        if (text.contains("apfsds")) return 1.5;
+        if (text.contains("apds")) return 1.3;
+        if (text.contains("apbc")) return 0.9;
         if (text.contains("aphe")) return 0.85;
         if (text.contains("ap")) return 1.0;
-        if (text.contains("shot") || text.contains("inert")) return 0.55;
+        if (text.contains("shot") || text.contains("inert")) return 0.8;
         return 0.0;
+    }
+
+    public static boolean canSpall(Entity projectile) {
+        return shellSpallCountModifier(projectile) > 0;
     }
 
     private static TBCaliber parse(String raw, TBCaliber fallback) {
