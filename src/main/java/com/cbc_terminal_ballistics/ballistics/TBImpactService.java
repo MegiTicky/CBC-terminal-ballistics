@@ -162,6 +162,7 @@ public final class TBImpactService {
 
             double massLoss = 0.0;
             int spallFragments = 0;
+            double spallDamageModifier = 0.0;
             String spallReason = "not_checked";
             if (level instanceof ServerLevel server) {
                 if (projectile instanceof Projectile p) state.onProjectileHit(level, state, hit, p);
@@ -190,9 +191,11 @@ public final class TBImpactService {
                         double factor = Mth.clamp(1.0 - (massLoss / mass) * damping, 0.05, 1.0);
                         projectile.setDeltaMovement(projectile.getDeltaMovement().scale(factor));
                     }
-                    if (ProjectileClassifier.isApStyle(projectile) && ProjectileClassifier.shellSpallModifier(projectile) > 0) {
+                    if (ProjectileClassifier.canSpall(projectile)) {
                         Vec3 spallOrigin = hit.getLocation().add(velDir.scale(1.05));
-                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, caliber, Math.max(0, attack - perforationResistance), material);
+                        spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
+                        double massAfter = Math.max(0.0, mass - massLoss);
+                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, caliber, mass, massAfter, material, baseArmorToughness);
                         spallReason = spallFragments > 0 ? "spawned" : "zero_fragments";
                     } else {
                         spallReason = "not_ap_style";
@@ -207,7 +210,7 @@ public final class TBImpactService {
                     spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
                 }
                 LAST_IMPACTS.put(server.dimension().location().hashCode() * 31L + pos.asLong(),
-                    new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallReason));
+                    new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason));
             }
 
             TBDebug.serviceOutcome(outcome, appliedDamage, threshold);
@@ -359,11 +362,11 @@ public final class TBImpactService {
     }
 
     private static void sendSpallCone(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double coneCos, double range,
-                                      int visualFragments, int fragments, double residual, TBCaliber caliber) {
+                                      int visualFragments, int fragments, double massRatio, TBCaliber caliber) {
         if (TBNetwork.CHANNEL == null) return;
         visualFragments = Math.min(visualFragments, 24);
         if (visualFragments <= 0) return;
-        float intensity = (float) Mth.clamp(0.65D + residual * 0.010D + caliber.ordinal() * 0.12D, 0.45D, 2.25D);
+        float intensity = (float) Mth.clamp(0.65D + massRatio * 1.0D + caliber.ordinal() * 0.12D, 0.45D, 2.25D);
         long seed = spallVisualSeed(level, projectile, origin, dir, fragments);
         ClientboundSpallConePacket packet = new ClientboundSpallConePacket(origin, dir.normalize(), coneCos, range,
             visualFragments, seed, intensity, caliber);
@@ -414,22 +417,21 @@ public final class TBImpactService {
         //level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
     }
 
-    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, TBCaliber caliber, double residual, MaterialStats material) {
-        double multiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallModifier(projectile);
-        int fragments = Mth.clamp((int) Math.round((10 + residual * 0.45) * multiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
+    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness) {
+        double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
+        int fragments = Mth.clamp((int) Math.round(armorToughness * countMultiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
         if (fragments <= 0) return 0;
-        double range = Mth.clamp(5.0 + residual * 0.08 + caliber.ordinal() * 1.5, 5.0, 24.0);
-        double coneCos = 0.5; // wide enough for glass/components immediately behind a plate, still front-biased
+        double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
+        double range = Mth.clamp(5.0 + massRatio * 12.0 + caliber.ordinal() * 1.5, 5.0, 24.0);
+        double coneCos = 0.5;
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
+        double damageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
 
-        // First simulate actual fragment rays.  The old implementation sampled random points, which commonly
-        // missed glass panes/blocks behind armor and made spall feel absent.  These rays stop at the first solid
-        // block; fragile blocks can be broken, but high-toughness armor absorbs the fragment and is never pierced.
         java.util.List<LivingEntity> candidates = level.getEntitiesOfClass(LivingEntity.class, box, e -> e.isAlive() && e != owner);
         Map<LivingEntity, Integer> rayHits = new HashMap<>();
-        int fragileBreakBudget = Math.min(Math.max(4, fragments / 2), 18);
-        int fragileBreaks = 0;
+        double spallToughnessThreshold = TBConfig.SPALL_INTEGRITY_DAMAGE_TOUGHNESS_THRESHOLD.get();
+        double spallDamageScale = TBConfig.SPALL_INTEGRITY_DAMAGE_SCALE.get();
         boolean visualOriginInsideArmor = isCatchingArmorAt(level, origin);
         int visualClearRays = 0;
         double visualRange = 0.0D;
@@ -460,18 +462,28 @@ public final class TBImpactService {
                 float speed = st.getDestroySpeed(level, bp);
                 if (speed < 0) continue;
                 double localArmor = localEffectiveToughness(level, st, bp);
-                if (localArmor >= 5.0) continue; // armor/stone-like blocks catch spall; no pass-through
-                if (fragileBreaks < fragileBreakBudget && isFragileForSpall(level, st, bp, localArmor, speed)) {
-                    double breakChance = Mth.clamp(0.45 + residual * 0.015 + (fragments - i) * 0.004 - localArmor * 0.08, 0.15, 0.95);
-                    if (level.random.nextDouble() < breakChance) {
-                        level.destroyBlock(bp, true, projectile);
-                        fragileBreaks++;
+                if (localArmor > spallToughnessThreshold) continue;
+                if (spallDamageScale > 0.0 && localArmor > 0.0) {
+                    double baseDamage = localArmor * caliberIntegrityWear(caliber) * spallDamageScale * damageModifier;
+                    double fragmentShare = Math.max(1.0, fragments / 8.0);
+                    double fragmentDamage = baseDamage * massRatio / fragmentShare;
+                    ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
+                    data.addDamage(level, bp, st, fragmentDamage);
+                    BlockState materialState = CopycatMaterialResolver.resolve(level, bp, st, null).orElse(st);
+                    MaterialStats blockMaterial = MaterialManager.INSTANCE.get(materialState, localArmor);
+                    double threshold = integrityThreshold(materialState, blockMaterial, localArmor);
+                    double currentDamage = data.damage(level, bp, st);
+                    syncIntegrityProgress(level, bp, currentDamage, threshold);
+                    if (currentDamage >= threshold) {
+                        level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
+                        playBreakSound(level, bp, st);
+                        clearMarks(level, bp);
                     }
                 }
             }
         }
         if (visualClearRays > 0 && visualRange >= MIN_SPALL_VISUAL_CLEARANCE) {
-            sendSpallCone(level, projectile, origin, dir, coneCos, visualRange, Math.min(fragments, visualClearRays), fragments, residual, caliber);
+            sendSpallCone(level, projectile, origin, dir, coneCos, visualRange, Math.min(fragments, visualClearRays), fragments, massRatio, caliber);
         }
 
         // Then apply cone lethality.  This keeps spall dangerous even when the finite ray sample does not
@@ -485,7 +497,7 @@ public final class TBImpactService {
             if (occlusion.getType() != HitResult.Type.MISS && occlusion.getLocation().distanceToSqr(origin) + 0.25 < entity.getEyePosition().distanceToSqr(origin)) continue;
             int directHits = rayHits.getOrDefault(entity, 0);
             double coneStrength = cone * cone;
-            float damage = (float) Mth.clamp((residual * 0.35 + fragments * 1.15) * coneStrength / Math.sqrt(dist) + directHits * 3.5, 4.0, 48.0);
+            float damage = (float) (Mth.clamp((massRatio * 15.0 + fragments * 1.15) * coneStrength / Math.sqrt(dist) + directHits * 3.5, 4.0, 48.0) * damageModifier);
             entity.hurt(level.damageSources().generic(), damage);
         }
         return fragments;
@@ -519,14 +531,6 @@ public final class TBImpactService {
         ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
         double damage = entry == null ? 0.0D : entry.damage;
         return degradedToughness(base, damage, threshold);
-    }
-
-    private static boolean isFragileForSpall(ServerLevel level, BlockState state, BlockPos pos, double localArmor, float speed) {
-        String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock()).getPath();
-        if (path.contains("glass") || path.contains("pane") || path.contains("lamp")) return localArmor <= 4.0;
-        if (path.contains("wool") || path.contains("leaves")) return localArmor <= 3.5;
-        // Do not let spall chew through stone/armor substitutes; default to only very soft internals.
-        return speed <= 1.0f && localArmor <= 2.5;
     }
 
     private static double caliberIntegrityWear(TBCaliber caliber) {
@@ -595,7 +599,7 @@ public final class TBImpactService {
                              double massBefore, double massAfter, double velocity, double incidence,
                              double armorToughness, double armorHardness, double effectiveToughness,
                              double attack, double resistance, double penetrationRatio, double massLoss,
-                             int spallFragments, String spallReason) {}
+                             int spallFragments, double spallDamageModifier, String spallReason) {}
 
     private TBImpactService() {}
 }

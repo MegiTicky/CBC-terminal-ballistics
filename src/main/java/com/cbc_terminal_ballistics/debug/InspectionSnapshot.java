@@ -27,7 +27,9 @@ public record InspectionSnapshot(
         String lastCaliber,
         double lastVelocity,
         double lastDamage,
-        int lastSpallFragments) {
+        int lastSpallFragments,
+        double lastMassRatio,
+        double lastSpallDamageModifier) {
 
     public static InspectionSnapshot build(ServerLevel level, BlockPos pos, BlockHitResult hit) {
         BlockState state = level.getBlockState(pos);
@@ -41,6 +43,12 @@ public record InspectionSnapshot(
         double degradedToughness = TBImpactService.degradedToughness(toughness, damage, threshold);
         TBImpactService.LastImpact impact = TBImpactService.lastImpact(level, pos);
         ResourceLocation materialId = BuiltInRegistries.BLOCK.getKey(materialState.getBlock());
+        double massRatio = 0.0D;
+        double spallDamageModifier = 0.0D;
+        if (impact != null && impact.massBefore() > 0.0D) {
+            massRatio = impact.massAfter() / impact.massBefore();
+            spallDamageModifier = impact.spallDamageModifier();
+        }
         return new InspectionSnapshot(
                 pos,
                 materialId,
@@ -55,6 +63,8 @@ public record InspectionSnapshot(
                 impact == null ? "" : impact.caliber().name(),
                 impact == null ? 0.0D : impact.velocity() * 20.0D,
                 impact == null ? 0.0D : impact.damage(),
-                impact == null ? 0 : impact.spallFragments());
+                impact == null ? 0 : impact.spallFragments(),
+                massRatio,
+                spallDamageModifier);
     }
 }

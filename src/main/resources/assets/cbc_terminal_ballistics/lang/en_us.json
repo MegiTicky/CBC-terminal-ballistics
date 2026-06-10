@@ -14,7 +14,7 @@
   "tooltip.cbc_terminal_ballistics.advanced_inspector.cbc": "CBC Toughness/Hardness: %s / %s",
   "tooltip.cbc_terminal_ballistics.advanced_inspector.material_stats": "Ductility/Brittleness/Spall: %s / %s / %sx",
   "tooltip.cbc_terminal_ballistics.advanced_inspector.integrity": "Integrity Damage: %s / %s",
-  "tooltip.cbc_terminal_ballistics.advanced_inspector.last_impact": "Last Impact: %s %s, %s m/s, %s dmg, %s spall",
+  "tooltip.cbc_terminal_ballistics.advanced_inspector.last_impact": "Last Impact: %s %s, %s m/s, %s dmg, %s spall, %s energy, %sx dmg",
   "tooltip.cbc_terminal_ballistics.ballistic_test_launcher.velocity": "Muzzle Velocity: %s m/s",
   "tooltip.cbc_terminal_ballistics.ballistic_test_launcher.controls": "Shift-scroll to adjust; right-click fires offhand ammo without consuming it.",
   "message.cbc_terminal_ballistics.ballistic_test_launcher.velocity": "Muzzle velocity: %s m/s",

@@ -20,7 +20,7 @@ public final class AdvancedInspectionOverlayHooks {
         tooltip.add(Component.translatable("tooltip.cbc_terminal_ballistics.advanced_inspector.integrity", fmt(snapshot.integrityDamage()), fmt(snapshot.integrityThreshold())).withStyle(ChatFormatting.YELLOW));
         if (!snapshot.lastOutcome().isEmpty()) {
             tooltip.add(Component.translatable("tooltip.cbc_terminal_ballistics.advanced_inspector.last_impact",
-                    snapshot.lastOutcome(), snapshot.lastCaliber(), fmt(snapshot.lastVelocity()), fmt(snapshot.lastDamage()), snapshot.lastSpallFragments()).withStyle(ChatFormatting.DARK_GRAY));
+                    snapshot.lastOutcome(), snapshot.lastCaliber(), fmt(snapshot.lastVelocity()), fmt(snapshot.lastDamage()), snapshot.lastSpallFragments(), fmt(snapshot.lastMassRatio()), fmt(snapshot.lastSpallDamageModifier())).withStyle(ChatFormatting.DARK_GRAY));
         }
     }
 
