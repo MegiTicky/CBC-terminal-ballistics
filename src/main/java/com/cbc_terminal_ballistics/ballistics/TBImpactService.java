@@ -529,7 +529,7 @@ public final class TBImpactService {
         double golden = Math.PI * (3.0 - Math.sqrt(5.0));
         double t = (index + 0.5) / Math.max(1, count);
         // Bias toward the center of the cone so targets directly behind the plate receive several fragments.
-        double cos = 1.0 - (1.0 - coneCos) * Math.sqrt(t);
+        double cos = 1.0 - (1.0 - coneCos) * t * t;
         double sin = Math.sqrt(Math.max(0.0, 1.0 - cos * cos));
         double phi = index * golden + jitter * 0.35;
         return f.scale(cos).add(right.scale(Math.cos(phi) * sin)).add(orthoUp.scale(Math.sin(phi) * sin)).normalize();
