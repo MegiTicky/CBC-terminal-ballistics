@@ -8,6 +8,7 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Explosion;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
@@ -72,5 +73,14 @@ public class CopycatArmorLayerBlock extends CopycatLayerBlock {
     @Override
     public BlockState getStateForPlacement(BlockPlaceContext context) {
         return super.getStateForPlacement(context);
+    }
+
+    @Override
+    public float getExplosionResistance(BlockState state, BlockGetter level, BlockPos pos, Explosion explosion) {
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be instanceof CopycatArmorLayerBlockEntity armor) {
+            return 20.0f + (armor.getArmorLevel() - 1) * 1.0f;
+        }
+        return 20.0f;
     }
 }
