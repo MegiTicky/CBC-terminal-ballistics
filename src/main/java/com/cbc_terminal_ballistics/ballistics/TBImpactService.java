@@ -195,7 +195,7 @@ public final class TBImpactService {
                         Vec3 spallOrigin = hit.getLocation().add(velDir.scale(1.05));
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
                         double massAfter = Math.max(0.0, mass - massLoss);
-                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, caliber, mass, massAfter, material, baseArmorToughness);
+                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness);
                         spallReason = spallFragments > 0 ? "spawned" : "zero_fragments";
                     } else {
                         spallReason = "not_ap_style";
@@ -417,13 +417,25 @@ public final class TBImpactService {
         //level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
     }
 
-    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness) {
+    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness) {
         double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
         int fragments = Mth.clamp((int) Math.round(armorToughness * countMultiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
         if (fragments <= 0) return 0;
         double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
         double range = Mth.clamp(5.0 + massRatio * 12.0 + caliber.ordinal() * 1.5, 5.0, 24.0);
-        double coneCos = 0.5;
+        
+        double baselineVel = TBConfig.SPALL_CONE_VELOCITY_BASELINE.get();
+        double minAngle = TBConfig.SPALL_CONE_MIN_ANGLE.get();
+        double maxAngle = TBConfig.SPALL_CONE_MAX_ANGLE.get();
+        double velocityFactor = Mth.clamp(1.0 - (velMag - baselineVel) / 400.0, 0.0, 1.0);
+        double massRatioFactor = 1.0 - massRatio;
+        double toughnessFactor = Mth.clamp(armorToughness / 40.0, 0.0, 1.0);
+        double caliberFactor = caliber.ordinal() / 4.0;
+        double shellTypeFactor = ProjectileClassifier.shellSpallConeModifier(projectile);
+        double combined = velocityFactor * 0.15 + massRatioFactor * 0.25 + toughnessFactor * 0.25 + caliberFactor * 0.15 + shellTypeFactor * 0.20;
+        double coneAngleDeg = Mth.lerp(combined, minAngle, maxAngle);
+        double coneCos = Math.cos(Math.toRadians(coneAngleDeg));
+        
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
         double damageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);

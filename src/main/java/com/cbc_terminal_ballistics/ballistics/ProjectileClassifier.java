@@ -75,6 +75,20 @@ public final class ProjectileClassifier {
         return 0.0;
     }
 
+    public static double shellSpallConeModifier(Entity projectile) {
+        ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        if (text.contains("apfsds")) return 0.4;
+        if (text.contains("apds")) return 0.5;
+        if (text.contains("apbc")) return 0.85;
+        if (text.contains("aphe")) return 1.0;
+        if (text.contains("ap")) return 0.9;
+        if (text.contains("shot") || text.contains("inert")) return 0.95;
+        return 1.0;
+    }
+
     public static boolean canSpall(Entity projectile) {
         return shellSpallCountModifier(projectile) > 0;
     }

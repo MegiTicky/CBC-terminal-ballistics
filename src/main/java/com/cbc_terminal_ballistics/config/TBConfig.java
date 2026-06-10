@@ -21,6 +21,9 @@ public final class TBConfig {
     public static final ForgeConfigSpec.IntValue COPYCAT_ARMOR_MAX_LEVEL;
     public static final ForgeConfigSpec.DoubleValue SPALL_INTEGRITY_DAMAGE_SCALE;
     public static final ForgeConfigSpec.DoubleValue SPALL_INTEGRITY_DAMAGE_TOUGHNESS_THRESHOLD;
+    public static final ForgeConfigSpec.DoubleValue SPALL_CONE_VELOCITY_BASELINE;
+    public static final ForgeConfigSpec.DoubleValue SPALL_CONE_MIN_ANGLE;
+    public static final ForgeConfigSpec.DoubleValue SPALL_CONE_MAX_ANGLE;
 
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> PROJECTILE_CLASS_OVERRIDES;
 
@@ -37,8 +40,11 @@ public final class TBConfig {
         IMPACT_DAMAGE_SCALE = server.comment("Scales energy/momentum into saved integrity damage.").defineInRange("impactDamageScale", 1.0, 0.01, 100.0);
         VELOCITY_DAMPING_PER_MASS_LOSS = server.comment("Optional extra velocity damping after penetration, proportional to fractional mass loss. 0 keeps CBC-like mass-only slowing.").defineInRange("velocityDampingPerMassLoss", 0.0, 0.0, 1.0);
         COPYCAT_ARMOR_MAX_LEVEL = server.comment("Maximum armor level for copycat armor layer blocks. Changes require existing blocks to be updated with the Armor Upgrader tool.").defineInRange("copycatArmorMaxLevel", 20, 1, 100);
-        SPALL_INTEGRITY_DAMAGE_SCALE = server.comment("Integrity damage multiplier for spall fragments against blocks with toughness <= spallIntegrityDamageToughnessThreshold.").defineInRange("spallIntegrityDamageScale", 0.1, 0.0, 10.0);
+        SPALL_INTEGRITY_DAMAGE_SCALE = server.comment("Integrity damage multiplier for spall fragments against blocks with toughness <= spallIntegrityDamageToughnessThreshold.").defineInRange("spallIntegrityDamageScale", 0.5, 0.0, 10.0);
         SPALL_INTEGRITY_DAMAGE_TOUGHNESS_THRESHOLD = server.comment("Maximum block toughness for spall to apply integrity damage. Blocks above this threshold ignore spall damage entirely.").defineInRange("spallIntegrityDamageToughnessThreshold", 16.0, 0.0, 100.0);
+        SPALL_CONE_VELOCITY_BASELINE = server.comment("Velocity (m/s) at which spall cone is widest. Higher velocities produce narrower cones.").defineInRange("spallConeVelocityBaseline", 200.0, 50.0, 500.0);
+        SPALL_CONE_MIN_ANGLE = server.comment("Minimum spall cone half-angle in degrees. Used for high-velocity focused penetrations.").defineInRange("spallConeMinAngle", 15.0, 5.0, 45.0);
+        SPALL_CONE_MAX_ANGLE = server.comment("Maximum spall cone half-angle in degrees. Used for low-velocity oblique penetrations.").defineInRange("spallConeMaxAngle", 60.0, 30.0, 90.0);
         server.pop();
         SERVER_SPEC = server.build();
 
