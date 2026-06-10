@@ -1,29 +1,32 @@
 package com.cbc_terminal_ballistics.armor;
 
 import com.cbc_terminal_ballistics.registry.ModBlockEntities;
+import com.copycatsplus.copycats.foundation.copycat.CCCopycatBlockEntity;
+import com.simibubi.create.content.contraptions.StructureTransform;
+import com.simibubi.create.content.schematics.requirement.ItemRequirement;
+import com.simibubi.create.content.schematics.requirement.ItemRequirement.ItemUseType;
+import com.simibubi.create.foundation.blockEntity.behaviour.BlockEntityBehaviour;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
-import net.minecraft.network.Connection;
-import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
-import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import org.jetbrains.annotations.Nullable;
 
-public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
+import java.util.List;
+
+public class FramedCollapsibleCopycatArmorBlockEntity extends CCCopycatBlockEntity {
     public static final int MIN_LEVEL = ArmorCopycatItemData.MIN_LEVEL;
     public static final int MAX_LEVEL = ArmorCopycatItemData.MAX_LEVEL;
     public static final int TOUGHNESS_PER_LEVEL = ArmorCopycatItemData.TOUGHNESS_PER_LEVEL;
     public static final String HAS_MATERIAL_TAG = "HasMaterial";
+    private static final String COPYCATS_ITEM_TAG = "Item";
 
-    private BlockState copiedMaterial = ArmorCopycatItemData.defaultMaterial();
-    private boolean hasCopiedMaterial = false;
     private int armorLevel = MIN_LEVEL;
     private int packedOffsets = 0;
 
@@ -32,27 +35,29 @@ public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
     }
 
     public BlockState getCopiedMaterial() {
-        return copiedMaterial == null || copiedMaterial.isAir() ? ArmorCopycatItemData.defaultMaterial() : copiedMaterial;
+        BlockState material = getMaterial();
+        return material == null || material.isAir() ? ArmorCopycatItemData.defaultMaterial() : material;
     }
 
     public void setCopiedMaterial(BlockState copiedMaterial) {
-        this.copiedMaterial = copiedMaterial == null || copiedMaterial.isAir() ? ArmorCopycatItemData.defaultMaterial() : copiedMaterial;
-        this.hasCopiedMaterial = true;
-        setChangedAndUpdate();
+        BlockState material = copiedMaterial == null || copiedMaterial.isAir()
+                ? ArmorCopycatItemData.defaultMaterial()
+                : copiedMaterial;
+        setMaterial(material);
+        setConsumedItem(stackForMaterial(material));
     }
 
     public boolean hasCopiedMaterial() {
-        return hasCopiedMaterial;
+        return hasCustomMaterial();
     }
 
     public ItemStack removeCopiedMaterial() {
-        if (!hasCopiedMaterial) {
+        if (!hasCopiedMaterial()) {
             return ItemStack.EMPTY;
         }
         Item item = getCopiedMaterial().getBlock().asItem();
-        this.copiedMaterial = ArmorCopycatItemData.defaultMaterial();
-        this.hasCopiedMaterial = false;
-        setChangedAndUpdate();
+        setMaterial(ArmorCopycatItemData.defaultMaterial());
+        setConsumedItem(ItemStack.EMPTY);
         return item == Items.AIR ? ItemStack.EMPTY : new ItemStack(item);
     }
 
@@ -62,7 +67,7 @@ public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
 
     public void setArmorLevel(int armorLevel) {
         this.armorLevel = ArmorCopycatItemData.clampLevel(armorLevel);
-        setChangedAndUpdate();
+        notifyUpdate();
     }
 
     public double getToughness() {
@@ -75,7 +80,7 @@ public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
 
     public void setPackedOffsets(int packedOffsets) {
         this.packedOffsets = ArmorCopycatItemData.sanitizeOffsets(packedOffsets);
-        setChangedAndUpdate();
+        notifyUpdate();
     }
 
     public int getFaceOffset(Direction side) {
@@ -98,19 +103,20 @@ public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
         int idx = side.ordinal() * 4;
         int mask = 0xF << idx;
         packedOffsets = (packedOffsets & ~mask) | (offset << idx);
-        setChangedAndUpdate();
+        notifyUpdate();
     }
 
     public void loadFromItem(ItemStack stack) {
-        setArmorLevel(FramedCollapsibleCopycatArmorItem.getArmorLevel(stack));
-        if (stack.getTag() != null && stack.getTag().contains(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG)) {
-            this.copiedMaterial = FramedCollapsibleCopycatArmorItem.getStoredMaterial(stack);
-            this.hasCopiedMaterial = stack.getTag().contains(HAS_MATERIAL_TAG)
-                    ? stack.getTag().getBoolean(HAS_MATERIAL_TAG)
-                    : true;
+        this.armorLevel = FramedCollapsibleCopycatArmorItem.getArmorLevel(stack);
+
+        CompoundTag tag = stack.getTag();
+        if (tag != null && tag.contains(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG)
+                && (!tag.contains(HAS_MATERIAL_TAG) || tag.getBoolean(HAS_MATERIAL_TAG))) {
+            BlockState material = FramedCollapsibleCopycatArmorItem.getStoredMaterial(stack);
+            setMaterial(material);
+            setConsumedItem(stackForMaterial(material));
         } else {
-            this.copiedMaterial = ArmorCopycatItemData.defaultMaterial();
-            this.hasCopiedMaterial = false;
+            notifyUpdate();
         }
         setPackedOffsets(FramedCollapsibleCopycatArmorItem.getOffsets(stack));
     }
@@ -119,46 +125,71 @@ public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
     public void saveToItem(ItemStack stack) {
         super.saveToItem(stack);
         FramedCollapsibleCopycatArmorItem.setArmorLevel(stack, getArmorLevel());
-        stack.getOrCreateTag().putBoolean(HAS_MATERIAL_TAG, hasCopiedMaterial);
-        if (hasCopiedMaterial) {
-            FramedCollapsibleCopycatArmorItem.setStoredMaterial(stack, getCopiedMaterial());
-        } else if (stack.getTag() != null) {
+        FramedCollapsibleCopycatArmorItem.setOffsets(stack, getPackedOffsets());
+        if (stack.getTag() != null) {
             stack.getTag().remove(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG);
+            stack.getTag().remove(HAS_MATERIAL_TAG);
         }
         FramedCollapsibleCopycatArmorItem.setOffsets(stack, getPackedOffsets());
     }
 
-    private void setChangedAndUpdate() {
-        setChanged();
-        if (level != null) {
-            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), Block.UPDATE_ALL);
-        }
+    @Override
+    public void addBehaviours(List<BlockEntityBehaviour> behaviours) {
     }
 
     @Override
-    protected void saveAdditional(CompoundTag tag) {
-        super.saveAdditional(tag);
-        tag.putBoolean(HAS_MATERIAL_TAG, hasCopiedMaterial);
-        if (hasCopiedMaterial) {
-            tag.put(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG, NbtUtils.writeBlockState(getCopiedMaterial()));
+    public ItemRequirement getRequiredItems(BlockState state) {
+        ItemStack consumedItem = getConsumedItem();
+        if (consumedItem.isEmpty()) {
+            return ItemRequirement.NONE;
         }
-        tag.putInt(FramedCollapsibleCopycatArmorItem.ARMOR_LEVEL_TAG, getArmorLevel());
-        tag.putInt(FramedCollapsibleCopycatArmorItem.OFFSETS_TAG, getPackedOffsets());
+        return new ItemRequirement(ItemUseType.CONSUME, consumedItem);
     }
 
     @Override
-    public void load(CompoundTag tag) {
-        super.load(tag);
-        if (tag.contains(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG)) {
-            this.copiedMaterial = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(),
-                    tag.getCompound(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG));
-            this.hasCopiedMaterial = tag.contains(HAS_MATERIAL_TAG)
-                    ? tag.getBoolean(HAS_MATERIAL_TAG)
-                    : true;
-        } else {
-            this.copiedMaterial = ArmorCopycatItemData.defaultMaterial();
-            this.hasCopiedMaterial = false;
+    public void transform(StructureTransform transform) {
+        packedOffsets = transformOffsets(packedOffsets, transform);
+        notifyUpdate();
+    }
+
+    private static int transformOffsets(int packedOffsets, StructureTransform transform) {
+        if (transform.rotationAxis == null) {
+            return packedOffsets;
         }
+        byte[] offsets = unpackOffsets(packedOffsets);
+        for (int i = 0; i < 6; i++) {
+            Direction original = Direction.values()[i];
+            Direction transformed = transformFacing(original, transform);
+            offsets[transformed.ordinal()] = (byte) ((packedOffsets >> (i * 4)) & 0xF);
+        }
+        return packOffsets(offsets);
+    }
+
+    private static Direction transformFacing(Direction facing, StructureTransform transform) {
+        facing = transform.mirrorFacing(facing);
+        return transform.rotateFacing(facing);
+    }
+
+    private static byte[] unpackOffsets(int packedOffsets) {
+        byte[] offsets = new byte[6];
+        for (int i = 0; i < 6; i++) {
+            offsets[i] = (byte) ((packedOffsets >> (i * 4)) & 0xF);
+        }
+        return offsets;
+    }
+
+    private static int packOffsets(byte[] offsets) {
+        int packed = 0;
+        for (int i = 0; i < 6; i++) {
+            packed |= (offsets[i] & 0xF) << (i * 4);
+        }
+        return packed;
+    }
+
+    @Override
+    public void read(CompoundTag tag, boolean clientPacket) {
+        synthesizeCopycatsItemForLegacyMaterial(tag);
+        super.read(tag, clientPacket);
         this.armorLevel = tag.contains(FramedCollapsibleCopycatArmorItem.ARMOR_LEVEL_TAG)
                 ? tag.getInt(FramedCollapsibleCopycatArmorItem.ARMOR_LEVEL_TAG)
                 : MIN_LEVEL;
@@ -168,23 +199,38 @@ public class FramedCollapsibleCopycatArmorBlockEntity extends BlockEntity {
     }
 
     @Override
-    public CompoundTag getUpdateTag() {
-        CompoundTag tag = super.getUpdateTag();
-        saveAdditional(tag);
-        return tag;
+    public void write(CompoundTag tag, boolean clientPacket) {
+        super.write(tag, clientPacket);
+        tag.putInt(FramedCollapsibleCopycatArmorItem.ARMOR_LEVEL_TAG, getArmorLevel());
+        tag.putInt(FramedCollapsibleCopycatArmorItem.OFFSETS_TAG, getPackedOffsets());
     }
 
     @Nullable
     @Override
-    public ClientboundBlockEntityDataPacket getUpdatePacket() {
-        return ClientboundBlockEntityDataPacket.create(this);
+    public void writeSafe(CompoundTag tag) {
+        super.writeSafe(tag);
+        tag.putInt(FramedCollapsibleCopycatArmorItem.ARMOR_LEVEL_TAG, getArmorLevel());
+        tag.putInt(FramedCollapsibleCopycatArmorItem.OFFSETS_TAG, getPackedOffsets());
     }
 
-    @Override
-    public void onDataPacket(Connection net, ClientboundBlockEntityDataPacket pkt) {
-        CompoundTag tag = pkt.getTag();
-        if (tag != null) {
-            load(tag);
+    private void synthesizeCopycatsItemForLegacyMaterial(CompoundTag tag) {
+        if (!tag.contains(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG) || tag.contains(COPYCATS_ITEM_TAG)
+                || (tag.contains(HAS_MATERIAL_TAG) && !tag.getBoolean(HAS_MATERIAL_TAG))) {
+            return;
         }
+        BlockState material = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(),
+                tag.getCompound(FramedCollapsibleCopycatArmorItem.MATERIAL_TAG));
+        ItemStack consumed = stackForMaterial(material);
+        if (!consumed.isEmpty()) {
+            tag.put(COPYCATS_ITEM_TAG, consumed.save(new CompoundTag()));
+        }
+    }
+
+    private static ItemStack stackForMaterial(BlockState material) {
+        if (material == null || material.isAir()) {
+            return ItemStack.EMPTY;
+        }
+        Item item = material.getBlock().asItem();
+        return item == Items.AIR ? ItemStack.EMPTY : new ItemStack(item);
     }
 }

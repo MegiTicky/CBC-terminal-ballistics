@@ -1,6 +1,9 @@
 package com.cbc_terminal_ballistics.armor;
 
+import com.cbc_terminal_ballistics.registry.ModBlockEntities;
 import com.cbc_terminal_ballistics.registry.ModItems;
+import com.copycatsplus.copycats.foundation.copycat.CCCopycatBlockEntity;
+import com.simibubi.create.foundation.block.IBE;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceLocation;
@@ -14,6 +17,7 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Explosion;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.block.Block;
@@ -43,7 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-public class FramedCollapsibleCopycatArmorBlock extends Block implements EntityBlock, SimpleWaterloggedBlock {
+public class FramedCollapsibleCopycatArmorBlock extends Block implements IBE<CCCopycatBlockEntity>, SimpleWaterloggedBlock {
     public static final BooleanProperty WATERLOGGED = BlockStateProperties.WATERLOGGED;
 
     private static final int UP = Direction.UP.ordinal();
@@ -91,32 +95,37 @@ public class FramedCollapsibleCopycatArmorBlock extends Block implements EntityB
         if (level.isClientSide) {
             return InteractionResult.SUCCESS;
         }
-        BlockEntity be = level.getBlockEntity(pos);
-        if (!(be instanceof FramedCollapsibleCopycatArmorBlockEntity armor)) {
-            return InteractionResult.PASS;
-        }
-        armor.setCopiedMaterial(material);
-        level.playSound(null, pos, material.getSoundType().getPlaceSound(), SoundSource.BLOCKS, 1.0f, 0.75f);
-        if (!player.isCreative()) {
-            stack.shrink(1);
-        }
-        return InteractionResult.CONSUME;
+        return onBlockEntityUse(level, pos, armor -> {
+            if (armor.hasCustomMaterial()) {
+                return InteractionResult.PASS;
+            }
+            armor.setMaterial(material);
+            armor.setConsumedItem(stack);
+            level.playSound(null, pos, material.getSoundType().getPlaceSound(), SoundSource.BLOCKS, 1.0f, 0.75f);
+            if (!player.isCreative()) {
+                stack.shrink(1);
+            }
+            return InteractionResult.CONSUME;
+        });
     }
 
     private InteractionResult removeCopiedMaterial(Level level, BlockPos pos, Player player) {
         if (level.isClientSide) {
             return InteractionResult.SUCCESS;
         }
-        BlockEntity be = level.getBlockEntity(pos);
-        if (be instanceof FramedCollapsibleCopycatArmorBlockEntity armor && armor.hasCopiedMaterial()) {
-            ItemStack removed = armor.removeCopiedMaterial();
+        return onBlockEntityUse(level, pos, armor -> {
+            if (!armor.hasCustomMaterial()) {
+                return InteractionResult.PASS;
+            }
+            ItemStack removed = armor.getConsumedItem();
+            armor.setMaterial(ArmorCopycatItemData.defaultMaterial());
+            armor.setConsumedItem(ItemStack.EMPTY);
             if (!removed.isEmpty() && !player.isCreative()) {
                 player.getInventory().placeItemBackInInventory(removed);
             }
             level.playSound(null, pos, SoundEvents.ITEM_FRAME_REMOVE_ITEM, SoundSource.BLOCKS, 0.75f, 0.95f);
             return InteractionResult.CONSUME;
-        }
-        return InteractionResult.PASS;
+        });
     }
 
     private static boolean isAcceptedMaterial(Level level, BlockPos pos, BlockState material) {
@@ -165,10 +174,11 @@ public class FramedCollapsibleCopycatArmorBlock extends Block implements EntityB
     @Override
     public void setPlacedBy(Level level, BlockPos pos, BlockState state, @Nullable LivingEntity placer, ItemStack stack) {
         super.setPlacedBy(level, pos, state, placer, stack);
-        BlockEntity be = level.getBlockEntity(pos);
-        if (be instanceof FramedCollapsibleCopycatArmorBlockEntity armor) {
-            armor.loadFromItem(stack);
-        }
+        withBlockEntityDo(level, pos, be -> {
+            if (be instanceof FramedCollapsibleCopycatArmorBlockEntity armor) {
+                armor.loadFromItem(stack);
+            }
+        });
     }
 
     @Override
@@ -267,10 +277,24 @@ public class FramedCollapsibleCopycatArmorBlock extends Block implements EntityB
         return super.updateShape(state, direction, neighborState, level, pos, neighborPos);
     }
 
-    @Nullable
+    @SuppressWarnings({"unchecked", "rawtypes"})
     @Override
-    public BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
-        return new FramedCollapsibleCopycatArmorBlockEntity(pos, state);
+    public Class<CCCopycatBlockEntity> getBlockEntityClass() {
+        return (Class) FramedCollapsibleCopycatArmorBlockEntity.class;
+    }
+
+    @Override
+    public BlockEntityType<? extends CCCopycatBlockEntity> getBlockEntityType() {
+        return ModBlockEntities.FRAMED_COLLAPSIBLE_COPYCAT_ARMOR.get();
+    }
+
+    @Override
+    public float getExplosionResistance(BlockState state, BlockGetter level, BlockPos pos, Explosion explosion) {
+        BlockEntity be = level.getBlockEntity(pos);
+        if (be instanceof FramedCollapsibleCopycatArmorBlockEntity armor) {
+            return 20.0f + (armor.getArmorLevel() - 1) * 1.0f;
+        }
+        return 20.0f;
     }
 
     @Nullable
