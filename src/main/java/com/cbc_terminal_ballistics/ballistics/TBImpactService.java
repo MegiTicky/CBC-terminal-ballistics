@@ -181,13 +181,6 @@ public final class TBImpactService {
                         playBreakSound(server, pos, state);
                         clearMarks(server, pos);
                     } else {
-                        // Perforation that did not break the block. In stock CBC this
-                        // never happens (the projectile breaks the block or stops on
-                        // it), so CBC's "block break on impact" sound is not played.
-                        // CTB keeps the block intact, so replay the same sound CBC
-                        // would have used in the stopped branch.
-                        Vec3 spallLoc = hit.getLocation().add(velDir.normalize().scale(2));
-                        CBCReflect.playBlockImpactBreakSound(server, state, spallLoc);
                         TemporaryBlockPassage.phaseForThisTick(server, pos, state);
                     }
                     // (Removed) Velocity dependent mass loss formula (not default CBC behaivor): massLoss = Mth.clamp(((hardnessPenalty + 1.0) * effectiveToughness / Math.max(incidentVel, 0.1)) * caliber.massLossScale, 0.01, Math.max(0.01, mass * 0.95));
@@ -344,9 +337,10 @@ public final class TBImpactService {
     private static void syncMarks(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
         if (TBNetwork.CHANNEL == null) return;
         ClientboundImpactMarksPacket packet = new ClientboundImpactMarksPacket(pos, java.util.List.copyOf(marks));
-        Vec3 markCenter = Vec3.atCenterOf(pos);
+        Vec3 markCenterShipyard = Vec3.atCenterOf(pos);
+        Vec3 markCenterWorld = VSCompat.toWorldCoordinates(level, markCenterShipyard);
         for (ServerPlayer player : level.players()) {
-            if (VSCompat.squaredDistanceBetweenInclShips(level, markCenter, player.position()) <= 128 * 128) {
+            if (markCenterWorld.distanceToSqr(player.position()) <= 128 * 128) {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
             }
         }
@@ -360,25 +354,27 @@ public final class TBImpactService {
     private static void syncIntegrityProgress(ServerLevel level, BlockPos pos, int stage) {
         if (TBNetwork.CHANNEL == null) return;
         ClientboundIntegrityProgressPacket packet = new ClientboundIntegrityProgressPacket(pos, stage);
-        Vec3 markCenter = Vec3.atCenterOf(pos);
+        Vec3 markCenterShipyard = Vec3.atCenterOf(pos);
+        Vec3 markCenterWorld = VSCompat.toWorldCoordinates(level, markCenterShipyard);
         for (ServerPlayer player : level.players()) {
-            if (VSCompat.squaredDistanceBetweenInclShips(level, markCenter, player.position()) <= 128 * 128) {
+            if (markCenterWorld.distanceToSqr(player.position()) <= 128 * 128) {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
             }
         }
     }
 
     private static void sendSpallCone(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double coneCos, double range,
-                                      int visualFragments, int fragments, double massRatio, TBCaliber caliber) {
+                                       int visualFragments, int fragments, double massRatio, TBCaliber caliber) {
         if (TBNetwork.CHANNEL == null) return;
         visualFragments = Math.min(visualFragments, 24);
         if (visualFragments <= 0) return;
-        float intensity = (float) Mth.clamp(0.65D + massRatio * 1.0D + caliber.ordinal() * 0.12D, 0.45D, 2.25D);
+        float intensity = (float) Mth.clamp(0.65D + massRatio * 1.0D + caliber.ordinal() * 0.12D, 0.45F, 2.25F);
         long seed = spallVisualSeed(level, projectile, origin, dir, fragments);
-        ClientboundSpallConePacket packet = new ClientboundSpallConePacket(origin, dir.normalize(), coneCos, range,
+        Vec3 worldOrigin = VSCompat.toWorldCoordinates(level, origin);
+        ClientboundSpallConePacket packet = new ClientboundSpallConePacket(worldOrigin, dir.normalize(), coneCos, range,
             visualFragments, seed, intensity, caliber);
         for (ServerPlayer player : level.players()) {
-            if (VSCompat.squaredDistanceBetweenInclShips(level, origin, player.position()) <= 128 * 128) {
+            if (worldOrigin.distanceToSqr(player.position()) <= 128 * 128) {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
             }
         }
@@ -430,7 +426,7 @@ public final class TBImpactService {
         if (fragments <= 0) return 0;
         double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
         double range = Mth.clamp(5.0 + massRatio * 12.0 + caliber.ordinal() * 1.5, 5.0, 24.0);
-        
+
         double baselineVel = TBConfig.SPALL_CONE_VELOCITY_BASELINE.get();
         double minAngle = TBConfig.SPALL_CONE_MIN_ANGLE.get();
         double maxAngle = TBConfig.SPALL_CONE_MAX_ANGLE.get();
@@ -442,7 +438,7 @@ public final class TBImpactService {
         double combined = velocityFactor * 0.15 + massRatioFactor * 0.25 + toughnessFactor * 0.25 + caliberFactor * 0.15 + shellTypeFactor * 0.20;
         double coneAngleDeg = Mth.lerp(combined, minAngle, maxAngle);
         double coneCos = Math.cos(Math.toRadians(coneAngleDeg));
-        
+
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
         double damageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
@@ -505,6 +501,8 @@ public final class TBImpactService {
             sendSpallCone(level, projectile, origin, dir, coneCos, visualRange, Math.min(fragments, visualClearRays), fragments, massRatio, caliber);
         }
 
+        // Then apply cone lethality.  This keeps spall dangerous even when the finite ray sample does not
+        // geometrically intersect a player's small AABB, while the LOS check still prevents damage through armor.
         for (LivingEntity entity : candidates) {
             Vec3 to = entity.getEyePosition().subtract(origin);
             double dist = Math.max(0.5, to.length());
