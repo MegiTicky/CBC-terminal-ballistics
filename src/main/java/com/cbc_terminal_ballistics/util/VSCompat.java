@@ -2,11 +2,14 @@ package com.cbc_terminal_ballistics.util;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.Vec3i;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
 import net.minecraftforge.fml.ModList;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
 
@@ -14,17 +17,32 @@ import java.lang.reflect.Method;
  * Optional Valkyrien Skies integration kept behind reflection so CBC Terminal Ballistics
  * can still load without VS present. VS stores ship blocks in shipyard coordinates, so
  * vanilla distance checks against those coordinates fail for physically nearby ships.
+ * 
+ * IMPLEMENTATION NOTE:
+ * VSGameUtilsKt contains methods with ClientLevel parameters. On dedicated server,
+ * Class.getMethod() triggers JVM verification of ALL methods in the class, which fails
+ * because ClientLevel doesn't exist. We work around this by:
+ * 1. Getting methods from the implementing class (MinecraftServer) rather than the interface
+ * 2. Using Class.getDeclaredMethods() and filtering by name to avoid signature matching
  */
 public final class VSCompat {
+    private static final Logger LOG = LoggerFactory.getLogger("CBCTB/VSCompat");
     private static final String VS_GAME_UTILS = "org.valkyrienskies.mod.common.VSGameUtilsKt";
+    private static final String DIMENSION_ID_PROVIDER = "org.valkyrienskies.mod.common.util.DimensionIdProvider";
 
     private static Boolean loaded;
     private static Method squaredDistanceMethod;
     private static Method toWorldCoordinatesMethod;
-    private static Method getLoadedShipManagingPosMethod;
     private static boolean squaredDistanceLookupFailed;
     private static boolean toWorldLookupFailed;
-    private static boolean getShipLookupFailed;
+    
+    // Cached for direct ship world access
+    private static Method getShipObjectWorldMethod;
+    private static Method getDimensionIdMethod;
+    private static Method getAllShipsMethod;
+    private static Method isChunkInShipyardMethod;
+    private static Method getByChunkPosMethod;
+    private static boolean shipWorldAccessFailed;
 
     public static boolean isLoaded() {
         if (loaded == null) {
@@ -64,7 +82,7 @@ public final class VSCompat {
      * managing {@code shipyardPos}. If the block is not on a VS ship, returns the original position.
      */
     public static Vec3 toShipCoordinates(Level level, BlockPos shipyardPos, Vec3 worldPosition) {
-        Object ship = getLoadedShipManagingPos(level, shipyardPos);
+        Object ship = getShipManagingPos(level, shipyardPos);
         Object worldToShip = worldToShip(ship);
         return transformPosition(worldToShip, worldPosition);
     }
@@ -73,7 +91,7 @@ public final class VSCompat {
      * Converts a world-space hit face direction into the local ship face direction.
      */
     public static Direction toShipDirection(Level level, BlockPos shipyardPos, Direction worldDirection) {
-        Object ship = getLoadedShipManagingPos(level, shipyardPos);
+        Object ship = getShipManagingPos(level, shipyardPos);
         Object worldToShip = worldToShip(ship);
         if (worldToShip == null) return worldDirection;
         Vec3 local = transformDirection(worldToShip, Vec3.atLowerCornerOf(worldDirection.getNormal()));
@@ -96,7 +114,7 @@ public final class VSCompat {
      * {@code shipyardPos}. If the block is not on a VS ship, returns the original vector.
      */
     public static Vec3 toShipVector(Level level, BlockPos shipyardPos, Vec3 worldVector) {
-        Object ship = getLoadedShipManagingPos(level, shipyardPos);
+        Object ship = getShipManagingPos(level, shipyardPos);
         Object worldToShip = worldToShip(ship);
         return transformDirection(worldToShip, worldVector);
     }
@@ -106,14 +124,28 @@ public final class VSCompat {
      */
     public static Vec3 toWorldCoordinates(Level level, Vec3 position) {
         if (!isLoaded() || level == null) return position;
+        boolean isLikelyShipyard = position.x < -100000 || position.x > 100000 || position.z < -100000 || position.z > 100000;
+        if (!isLikelyShipyard) return position;
+
+        // Try VS method first (works on client/integrated server)
         try {
             Method method = toWorldCoordinatesMethod();
             if (method != null) {
                 Object result = method.invoke(null, level, position);
-                if (result instanceof Vec3 vec) return vec;
+                if (result instanceof Vec3 vec) {
+                    return vec;
+                }
             }
-        } catch (Throwable ignored) {
-            toWorldLookupFailed = true;
+        } catch (Throwable ignored) {}
+
+        // Manual fallback: find ship and transform (works on dedicated server)
+        BlockPos pos = BlockPos.containing(position);
+        Object ship = getShipManagingPos(level, pos);
+        if (ship != null) {
+            Object shipToWorldMatrix = shipToWorld(ship);
+            if (shipToWorldMatrix != null) {
+                return transformPosition(shipToWorldMatrix, position);
+            }
         }
         return position;
     }
@@ -122,21 +154,9 @@ public final class VSCompat {
         if (squaredDistanceMethod != null || squaredDistanceLookupFailed) return squaredDistanceMethod;
         try {
             Class<?> utils = Class.forName(VS_GAME_UTILS);
-            for (Method method : utils.getMethods()) {
-                Class<?>[] params = method.getParameterTypes();
-                if (!method.getName().equals("squaredDistanceBetweenInclShips") || params.length != 7) continue;
-                if (!params[0].isAssignableFrom(Level.class)) continue;
-                boolean doubles = true;
-                for (int i = 1; i < params.length; i++) {
-                    if (params[i] != double.class) {
-                        doubles = false;
-                        break;
-                    }
-                }
-                if (!doubles) continue;
-                squaredDistanceMethod = method;
-                return squaredDistanceMethod;
-            }
+            squaredDistanceMethod = utils.getMethod("squaredDistanceBetweenInclShips",
+                Level.class, double.class, double.class, double.class, double.class, double.class, double.class);
+            return squaredDistanceMethod;
         } catch (Throwable ignored) {
             // Fall through to vanilla distance.
         }
@@ -146,67 +166,164 @@ public final class VSCompat {
 
     private static Method toWorldCoordinatesMethod() {
         if (toWorldCoordinatesMethod != null || toWorldLookupFailed) return toWorldCoordinatesMethod;
+        
         try {
             Class<?> utils = Class.forName(VS_GAME_UTILS);
-            for (Method method : utils.getMethods()) {
-                Class<?>[] params = method.getParameterTypes();
-                if (!method.getName().equals("toWorldCoordinates") || params.length != 2) continue;
-                if (!params[0].isAssignableFrom(Level.class)) continue;
-                if (params[1] != Vec3.class) continue;
-                toWorldCoordinatesMethod = method;
-                return toWorldCoordinatesMethod;
+            toWorldCoordinatesMethod = utils.getMethod("toWorldCoordinates", Level.class, Vec3.class);
+            return toWorldCoordinatesMethod;
+        } catch (Throwable t) {
+            // This catches the class verification error on dedicated server
+            // where ClientLevel doesn't exist in VSGameUtilsKt
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("toWorldCoordinatesMethod lookup failed (expected on dedicated server): {}", t.getMessage());
             }
-        } catch (Throwable ignored) {
-            // Fall through to identity transform.
         }
+        
         toWorldLookupFailed = true;
         return null;
     }
 
 
-    private static Object getLoadedShipManagingPos(Level level, BlockPos pos) {
+    /**
+     * Core ship lookup using direct reflection on implementing classes.
+     * This avoids VSGameUtilsKt which has client-only methods that fail verification on dedicated server.
+     */
+    private static Object getShipManagingPos(Level level, BlockPos pos) {
         if (!isLoaded() || level == null || pos == null) return null;
-        try {
-            Method method = getLoadedShipManagingPosMethod();
-            return method == null ? null : method.invoke(null, level, pos);
-        } catch (Throwable ignored) {
-            getShipLookupFailed = true;
-            return null;
-        }
+
+        Object ship = tryDirectShipWorldAccess(level, pos);
+        if (ship != null) return ship;
+
+        return null;
     }
 
-    private static Method getLoadedShipManagingPosMethod() {
-        if (getLoadedShipManagingPosMethod != null || getShipLookupFailed) return getLoadedShipManagingPosMethod;
+    /**
+     * Direct access to ship world via MinecraftServer's implementation of IShipObjectWorldServerProvider.
+     * This bypasses VSGameUtilsKt entirely to avoid client-only method signatures.
+     * 
+     * Key insight: We get methods from the ACTUAL implementing class (DedicatedServer/IntegratedServer)
+     * rather than the interface, which avoids JVM verification of the interface file that contains
+     * IShipObjectWorldClientProvider (which has ClientShipWorldCore references).
+     */
+    private static Object tryDirectShipWorldAccess(Level level, BlockPos pos) {
+        if (shipWorldAccessFailed) return null;
+        if (!(level instanceof ServerLevel serverLevel)) return null;
+
         try {
-            Class<?> utils = Class.forName(VS_GAME_UTILS);
-            Method fallback = null;
-            for (Method method : utils.getMethods()) {
-                Class<?>[] params = method.getParameterTypes();
-                if (!isShipManagingPosMethod(method.getName()) || params.length != 2) continue;
-                if (!params[0].isAssignableFrom(Level.class)) continue;
-                if (!params[1].isAssignableFrom(BlockPos.class) && !params[1].isAssignableFrom(Vec3i.class)) continue;
-                if (params[0] == Level.class) {
-                    getLoadedShipManagingPosMethod = method;
-                    return getLoadedShipManagingPosMethod;
+            // Step 1: Get MinecraftServer
+            MinecraftServer server = serverLevel.getServer();
+
+            // Step 2: Get shipObjectWorld - use getDeclaredMethods() to avoid interface verification
+            if (getShipObjectWorldMethod == null) {
+                getShipObjectWorldMethod = findMethodByName(server.getClass(), "getShipObjectWorld");
+                if (getShipObjectWorldMethod == null) {
+                    shipWorldAccessFailed = true;
+                    return null;
                 }
-                if (fallback == null) fallback = method;
+                getShipObjectWorldMethod.setAccessible(true);
             }
-            getLoadedShipManagingPosMethod = fallback;
-            return getLoadedShipManagingPosMethod;
-        } catch (Throwable ignored) {
-            getShipLookupFailed = true;
-            return null;
+
+            Object shipWorld = getShipObjectWorldMethod.invoke(server);
+            if (shipWorld == null) {
+                shipWorldAccessFailed = true;
+                return null;
+            }
+
+            // Step 3: Get dimensionId from Level
+            if (getDimensionIdMethod == null) {
+                getDimensionIdMethod = findMethodByName(level.getClass(), "getDimensionId");
+                if (getDimensionIdMethod == null) {
+                    // Try the interface
+                    Class<?> dimProviderClass = Class.forName(DIMENSION_ID_PROVIDER);
+                    getDimensionIdMethod = findMethodByName(dimProviderClass, "getDimensionId");
+                }
+                if (getDimensionIdMethod != null) {
+                    getDimensionIdMethod.setAccessible(true);
+                }
+            }
+
+            if (getDimensionIdMethod == null) {
+                shipWorldAccessFailed = true;
+                return null;
+            }
+
+            Object dimensionId = getDimensionIdMethod.invoke(level);
+
+            // Step 4: Get allShips
+            if (getAllShipsMethod == null) {
+                getAllShipsMethod = findMethodByName(shipWorld.getClass(), "getAllShips");
+                if (getAllShipsMethod != null) {
+                    getAllShipsMethod.setAccessible(true);
+                }
+            }
+
+            if (getAllShipsMethod == null) {
+                shipWorldAccessFailed = true;
+                return null;
+            }
+
+            Object allShips = getAllShipsMethod.invoke(shipWorld);
+
+            // Step 5: Check isChunkInShipyard
+            int chunkX = pos.getX() >> 4;
+            int chunkZ = pos.getZ() >> 4;
+
+            if (isChunkInShipyardMethod == null) {
+                isChunkInShipyardMethod = findMethodByName(shipWorld.getClass(), "isChunkInShipyard");
+                if (isChunkInShipyardMethod != null) {
+                    isChunkInShipyardMethod.setAccessible(true);
+                }
+            }
+
+            if (isChunkInShipyardMethod != null) {
+                try {
+                    Boolean inShipyard = (Boolean) isChunkInShipyardMethod.invoke(shipWorld, chunkX, chunkZ, dimensionId);
+                    if (!inShipyard) return null;
+                } catch (Throwable ignored) {}
+            }
+
+            // Step 6: Get ship by chunk position
+            if (getByChunkPosMethod == null) {
+                getByChunkPosMethod = findMethodByName(allShips.getClass(), "getByChunkPos");
+                if (getByChunkPosMethod != null) {
+                    getByChunkPosMethod.setAccessible(true);
+                }
+            }
+
+            if (getByChunkPosMethod == null) {
+                shipWorldAccessFailed = true;
+                return null;
+            }
+
+            return getByChunkPosMethod.invoke(allShips, chunkX, chunkZ, dimensionId);
+
+        } catch (Throwable t) {
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Direct ship world access failed: {}", t.getMessage());
+            }
         }
+
+        shipWorldAccessFailed = true;
+        return null;
     }
 
-    private static boolean isShipManagingPosMethod(String name) {
-        // VS 2.4+ exposes getLoadedShipManagingPos in some builds; VS 2.3's
-        // public helpers are named getShipObjectManagingPos/getShipManagingPos.
-        // Accept all known spellings so shipyard coordinates can be resolved in
-        // both the modern and legacy stacks.
-        return name.equals("getLoadedShipManagingPos")
-            || name.equals("getShipObjectManagingPos")
-            || name.equals("getShipManagingPos");
+    /**
+     * Find a method by name, ignoring parameter types.
+     * This avoids JVM verification issues with specific parameter type matching.
+     */
+    private static Method findMethodByName(Class<?> clazz, String methodName) {
+        for (Method method : clazz.getMethods()) {
+            if (method.getName().equals(methodName)) {
+                return method;
+            }
+        }
+        // Also check declared methods (for non-public)
+        for (Method method : clazz.getDeclaredMethods()) {
+            if (method.getName().equals(methodName)) {
+                return method;
+            }
+        }
+        return null;
     }
 
     private static Object worldToShip(Object ship) {
@@ -223,6 +340,25 @@ public final class VSCompat {
             Object transform = transformGetter.invoke(ship);
             if (transform == null) return null;
             Method matrixGetter = transform.getClass().getMethod("getWorldToShip");
+            return matrixGetter.invoke(transform);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static Object shipToWorld(Object ship) {
+        if (ship == null) return null;
+
+        try {
+            Method direct = ship.getClass().getMethod("getShipToWorld");
+            Object matrix = direct.invoke(ship);
+            if (matrix != null) return matrix;
+        } catch (Throwable ignored) {}
+        try {
+            Method transformGetter = ship.getClass().getMethod("getTransform");
+            Object transform = transformGetter.invoke(ship);
+            if (transform == null) return null;
+            Method matrixGetter = transform.getClass().getMethod("getShipToWorld");
             return matrixGetter.invoke(transform);
         } catch (Throwable ignored) {
             return null;

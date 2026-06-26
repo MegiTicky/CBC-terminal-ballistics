@@ -162,13 +162,35 @@ public final class ClientImpactMarks {
 
         for (Map.Entry<BlockPos, List<ImpactMark>> entry : MARKS.entrySet()) {
             BlockPos pos = entry.getKey();
-            if (VSCompat.squaredDistanceBetweenInclShips(mc.level, Vec3.atCenterOf(pos), mc.player.position()) > 128 * 128) continue;
-            BlockState state = mc.level.getBlockState(pos);
-            if (!canAttach(mc.level, pos, state)) continue;
+            double distSquared = VSCompat.squaredDistanceBetweenInclShips(mc.level, Vec3.atCenterOf(pos), mc.player.position());
+            if (distSquared > 128 * 128) {
+                continue;
+            }
+
+            BlockPos renderPos = pos;
+            BlockState state = mc.level.getBlockState(renderPos);
+            if (state.isAir() && mc.level instanceof net.minecraft.client.multiplayer.ClientLevel) {
+                net.minecraft.client.multiplayer.ClientLevel clientLevel = (net.minecraft.client.multiplayer.ClientLevel) mc.level;
+                BlockPos shipyardPos = VSClientCompat.toShipyardCoordinates(clientLevel, pos);
+                if (!shipyardPos.equals(pos)) {
+                    BlockState shipState = mc.level.getBlockState(shipyardPos);
+                    if (!shipState.isAir()) {
+                        renderPos = shipyardPos;
+                        state = shipState;
+                    }
+                }
+            }
+
+            boolean canAttach = canAttach(mc.level, renderPos, state);
+            if (!canAttach) {
+                continue;
+            }
             for (ImpactMark mark : entry.getValue()) {
                 long age = now - mark.gameTime();
-                if (age < 0 || age >= lifetime) continue;
-                renderMark(buffers, poseStack, mc.level, pos, mark, camera, age, lifetime);
+                if (age < 0 || age >= lifetime) {
+                    continue;
+                }
+                renderMark(buffers, poseStack, mc.level, renderPos, mark, camera, age, lifetime);
             }
         }
 
