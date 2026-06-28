@@ -12,6 +12,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.level.Level;
@@ -64,7 +65,8 @@ public class BallisticTestLauncherItem extends Item {
             return InteractionResultHolder.fail(launcher);
         }
 
-        Entity projectile = createProjectile(server, ammo);
+        ItemStack ammoCopy = deepCopyItemStack(ammo);
+        Entity projectile = createProjectile(server, ammoCopy);
         if (projectile == null) {
             serverPlayer.displayClientMessage(Component.translatable("message.cbc_terminal_ballistics.ballistic_test_launcher.unsupported").withStyle(ChatFormatting.RED), true);
             return InteractionResultHolder.fail(launcher);
@@ -155,6 +157,13 @@ public class BallisticTestLauncherItem extends Item {
             }
         }
         return null;
+    }
+
+    private static ItemStack deepCopyItemStack(ItemStack original) {
+        if (original.isEmpty()) return ItemStack.EMPTY;
+        CompoundTag tag = new CompoundTag();
+        original.save(tag);
+        return ItemStack.of(tag);
     }
 
     @Override
