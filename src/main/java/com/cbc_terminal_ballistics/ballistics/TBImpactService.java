@@ -169,6 +169,8 @@ public final class TBImpactService {
             int spallFragments = 0;
             double spallDamageModifier = 0.0;
             String spallReason = "not_checked";
+            boolean temporaryPassagePending = false;
+            boolean blockBreakPending = false;
             if (level instanceof ServerLevel server) {
                 if (projectile instanceof Projectile p) state.onProjectileHit(level, state, hit, p);
                 CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), curVel.reverse(), false);
@@ -182,11 +184,12 @@ public final class TBImpactService {
 
                 if (outcome.equals("PENETRATE") && !unbreakable) {
                     if (integrityBreak || shatter) {
-                        server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-                        playBreakSound(server, pos, state);
-                        clearMarks(server, pos);
+                        blockBreakPending = true;
                     } else {
-                        TemporaryBlockPassage.phaseForThisTick(server, pos, state);
+                        // Keep the contact block present until CBC's native onImpact/fuze callback
+                        // has run. Immediate fuzes must detonate against the real block; delayed
+                        // fuzes can request temporary passage after the callback returns.
+                        temporaryPassagePending = true;
                     }
                     // (Removed) Velocity dependent mass loss formula (not default CBC behaivor): massLoss = Mth.clamp(((hardnessPenalty + 1.0) * effectiveToughness / Math.max(incidentVel, 0.1)) * caliber.massLossScale, 0.01, Math.max(0.01, mass * 0.95));
                     massLoss = ((float) Math.max(0, hardnessPenalty) + 1) * (float) effectiveToughness / (float) incidentVel; //Same as CBC durabilityPenalty formula
@@ -208,9 +211,7 @@ public final class TBImpactService {
                 } else {
                     CBCReflect.setProjectileMass(projectile, 0.0);
                     if (integrityBreak && !unbreakable) {
-                        server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-                        playBreakSound(server, pos, state);
-                        clearMarks(server, pos);
+                        blockBreakPending = true;
                     }
                     spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
                 }
@@ -225,10 +226,21 @@ public final class TBImpactService {
             }
             Object impactResult = CBCReflect.newImpactResult(outcome, shatter);
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
+            if (!onImpactRemove && level instanceof ServerLevel server && server.getBlockState(pos).equals(state)) {
+                if (blockBreakPending) {
+                    server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                    playBreakSound(server, pos, state);
+                    clearMarks(server, pos);
+                } else if (temporaryPassagePending) {
+                    TemporaryBlockPassage.phaseForThisTick(server, pos, state);
+                }
+            }
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
             // punching through light blocks instead of continuing into the block behind them.
-            boolean shouldRemove = autocannon ? (!level.isClientSide && (shatter || outcome.equals("STOP"))) : shatter;
+            boolean shouldRemove = onImpactRemove || (autocannon
+                ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
+                : shatter);
             return CBCReflect.newImpactResult(outcome, shouldRemove);
         } catch (Throwable t) {
             TBDebug.fallback(t);
