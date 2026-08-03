@@ -226,6 +226,9 @@ public final class TBImpactService {
             }
             Object impactResult = CBCReflect.newImpactResult(outcome, shatter);
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
+            if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)) {
+                clearMarks(server, pos);
+            }
             if (!onImpactRemove && level instanceof ServerLevel server && server.getBlockState(pos).equals(state)) {
                 if (blockBreakPending) {
                     server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
