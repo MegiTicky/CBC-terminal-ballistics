@@ -1,6 +1,5 @@
 package com.cbc_terminal_ballistics.data;
 
-import com.cbc_terminal_ballistics.armor.CopycatArmorLayerBlockEntity;
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlockEntity;
 import com.cbc_terminal_ballistics.util.CBCReflect;
 import net.minecraft.core.BlockPos;

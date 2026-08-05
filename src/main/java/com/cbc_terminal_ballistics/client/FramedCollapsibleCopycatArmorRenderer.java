@@ -12,10 +12,12 @@ import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.block.state.BlockState;
@@ -28,6 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 public class FramedCollapsibleCopycatArmorRenderer implements BlockEntityRenderer<FramedCollapsibleCopycatArmorBlockEntity> {
+    private static final ResourceLocation BASE_TEXTURE = ResourceLocation.fromNamespaceAndPath("create", "block/copycat_base");
     private static final int UP = Direction.UP.ordinal();
     private static final int DOWN = Direction.DOWN.ordinal();
     private static final int NORTH = Direction.NORTH.ordinal();
@@ -41,11 +44,6 @@ public class FramedCollapsibleCopycatArmorRenderer implements BlockEntityRendere
     @Override
     public void render(FramedCollapsibleCopycatArmorBlockEntity be, float partialTick, PoseStack poseStack,
                        MultiBufferSource bufferSource, int packedLight, int packedOverlay) {
-        BlockState material = be.getCopiedMaterial();
-        if (material.isAir() || material.getBlock() instanceof FramedCollapsibleCopycatArmorBlock) {
-            return;
-        }
-
         byte[] offsets = FramedCollapsibleCopycatArmorBlock.unpackOffsets(be.getPackedOffsets());
         Box box = new Box(
                 offsets[WEST],
@@ -60,49 +58,55 @@ public class FramedCollapsibleCopycatArmorRenderer implements BlockEntityRendere
         }
 
         Minecraft minecraft = Minecraft.getInstance();
-        BakedModel model = minecraft.getBlockRenderer().getBlockModel(material);
-        FaceSprites sprites = FaceSprites.from(minecraft, be.getLevel(), be.getBlockPos(), material, model);
-        RenderType renderType = ItemBlockRenderTypes.getRenderType(material, false);
+        FaceSprites sprites;
+        RenderType renderType;
+        if (be.hasCopiedMaterial()) {
+            BlockState material = be.getCopiedMaterial();
+            if (material.isAir() || material.getBlock() instanceof FramedCollapsibleCopycatArmorBlock) {
+                return;
+            }
+            BakedModel model = minecraft.getBlockRenderer().getBlockModel(material);
+            sprites = FaceSprites.from(minecraft, be.getLevel(), be.getBlockPos(), material, model);
+            renderType = ItemBlockRenderTypes.getRenderType(material, false);
+        } else {
+            TextureAtlasSprite sprite = minecraft.getTextureAtlas(TextureAtlas.LOCATION_BLOCKS).apply(BASE_TEXTURE);
+            sprites = FaceSprites.single(sprite);
+            renderType = RenderType.cutout();
+        }
         VertexConsumer consumer = bufferSource.getBuffer(renderType);
 
         for (Direction face : Direction.values()) {
-            renderFace(box, face, sprites.get(face), poseStack, consumer, packedLight, packedOverlay);
+            float shade = be.getLevel() == null ? 1.0F : be.getLevel().getShade(face, true);
+            renderFace(box, face, sprites.get(face), poseStack, consumer, packedLight, packedOverlay, shade);
         }
     }
 
     private static void renderFace(Box box, Direction face, FaceTexture texture, PoseStack poseStack,
-                                   VertexConsumer consumer, int packedLight, int packedOverlay) {
+                                   VertexConsumer consumer, int packedLight, int packedOverlay, float shade) {
         PoseStack.Pose pose = poseStack.last();
         Matrix4f matrix = pose.pose();
         Matrix3f normalMatrix = pose.normal();
         int color = texture.color;
-        float r = ((color >> 16) & 0xFF) / 255.0f;
-        float g = ((color >> 8) & 0xFF) / 255.0f;
-        float b = (color & 0xFF) / 255.0f;
+        float r = ((color >> 16) & 0xFF) / 255.0f * shade;
+        float g = ((color >> 8) & 0xFF) / 255.0f * shade;
+        float b = (color & 0xFF) / 255.0f * shade;
         float nX = face.getStepX();
         float nY = face.getStepY();
         float nZ = face.getStepZ();
 
         for (Vertex[] vertices : verticesForFace(box, face, texture.sprite)) {
             for (Vertex vertex : vertices) {
-                consumer.vertex(matrix, vertex.x / 16.0f, vertex.y / 16.0f, vertex.z / 16.0f)
-                        .color(r, g, b, 1.0f)
-                        .uv(vertex.u, vertex.v)
-                        .overlayCoords(packedOverlay)
-                        .uv2(packedLight)
-                        .normal(normalMatrix, nX, nY, nZ)
-                        .endVertex();
+                consumer.addVertex(matrix, vertex.x / 16.0f, vertex.y / 16.0f, vertex.z / 16.0f)
+                        .setColor(r, g, b, 1.0f)
+                        .setUv(vertex.u, vertex.v)
+                        .setOverlay(packedOverlay)
+                        .setLight(packedLight)
+                        .setNormal(pose, nX, nY, nZ);
             }
         }
     }
 
     private static List<Vertex[]> verticesForFace(Box b, Direction face, TextureAtlasSprite sprite) {
-        /*
-         * Match copycat-layer visual behavior: do not squash the whole
-         * 16x16 texture onto a smaller face, and do not simply crop the texture
-         * to the moved bounds.  Instead, keep edge slices from the copied block
-         * and remove/compress the middle.
-         */
         List<Vertex[]> quads = new ArrayList<>(4);
         switch (face) {
             case UP -> {
@@ -207,7 +211,7 @@ public class FramedCollapsibleCopycatArmorRenderer implements BlockEntityRendere
     }
 
     private static Vertex vertex(float x, float y, float z, TextureAtlasSprite sprite, float u16, float v16) {
-        return new Vertex(x, y, z, sprite.getU(u16), sprite.getV(v16));
+        return new Vertex(x, y, z, sprite.getU(u16 / 16.0F), sprite.getV(v16 / 16.0F));
     }
 
     private record Box(float x0, float y0, float z0, float x1, float y1, float z1) {
@@ -227,6 +231,15 @@ public class FramedCollapsibleCopycatArmorRenderer implements BlockEntityRendere
 
         private FaceTexture get(Direction direction) {
             return textures.get(direction);
+        }
+
+        private static FaceSprites single(TextureAtlasSprite sprite) {
+            FaceSprites result = new FaceSprites();
+            FaceTexture texture = new FaceTexture(sprite, 0xFFFFFF);
+            for (Direction direction : Direction.values()) {
+                result.textures.put(direction, texture);
+            }
+            return result;
         }
 
         private static FaceSprites from(Minecraft minecraft, BlockAndTintGetter level, BlockPos pos,

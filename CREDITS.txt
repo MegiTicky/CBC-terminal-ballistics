@@ -1,3 +1,27 @@
+CBC Terminal Ballistics - Credits
+================================
+
+Original Author: MegiTicky (https://github.com/MegiTicky/CBC-terminal-ballistics)
+
+This is a port/adaptation of the original CBC Terminal Ballistics mod
+to NeoForge 1.21.1, with Sable (Valkyrien Skies) compatibility and
+Copycats+ framed armor block support.
+
+Modifications:
+- Ported from Forge to NeoForge 1.21.1
+- Added Sable (Valkyrien Skies) compatibility for impact marks on physical structures
+- Added Framed Collapsible Copycat Armor Block
+- Added spall cone visualization
+- Improved impact mark rendering with sub-level coordinate handling
+
+Based on original work by MegiTicky, licensed under CC BY-NC-SA 4.0.
+This adaptation is also licensed under CC BY-NC-SA 4.0.
+
+Complete license text: see LICENSE.txt
+License: https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+=========================================================================
+
 Minecraft Forge: Credits/Thank You
 
 Forge is a set of tools and modifications to the Minecraft base game code to assist

@@ -8,7 +8,6 @@ import java.util.List;
 
 public final class AdvancedInspectionOverlayHooks {
     public static void addBlockArmorInfo(List<Component> tooltip, BlockPos pos) {
-        if (!isClientHoldingAdvancedTool()) return;
         InspectionSnapshot snapshot = clientSnapshot(pos);
         if (snapshot == null) {
             tooltip.add(Component.translatable("tooltip.cbc_terminal_ballistics.advanced_inspector.syncing").withStyle(ChatFormatting.DARK_GRAY));
@@ -30,21 +29,11 @@ public final class AdvancedInspectionOverlayHooks {
 
     private static InspectionSnapshot clientSnapshot(BlockPos pos) {
         try {
-            Class<?> cache = Class.forName("com.cbc_terminal_ballistics.client.ClientAdvancedInspectionAccess");
-            Object value = cache.getMethod("snapshot", BlockPos.class).invoke(null, pos);
+            Class<?> cache = Class.forName("com.cbc_terminal_ballistics.client.ClientInspectionSnapshots");
+            Object value = cache.getMethod("get", BlockPos.class).invoke(null, pos);
             return value instanceof InspectionSnapshot snapshot ? snapshot : null;
         } catch (Throwable ignored) {
             return null;
-        }
-    }
-
-    private static boolean isClientHoldingAdvancedTool() {
-        try {
-            Class<?> access = Class.forName("com.cbc_terminal_ballistics.client.ClientAdvancedInspectionAccess");
-            Object value = access.getMethod("isHoldingAdvancedTool").invoke(null);
-            return value instanceof Boolean b && b;
-        } catch (Throwable ignored) {
-            return false;
         }
     }
 

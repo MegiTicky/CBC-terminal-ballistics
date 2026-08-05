@@ -1,17 +1,27 @@
 package com.cbc_terminal_ballistics.network;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.debug.InspectionSnapshot;
 import net.minecraft.core.BlockPos;
-import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.RegistryFriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.codec.StreamDecoder;
+import net.minecraft.network.codec.StreamEncoder;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.fml.DistExecutor;
-import net.minecraftforge.network.NetworkEvent;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
 
-import java.util.function.Supplier;
+public record ClientboundInspectionSnapshotPacket(InspectionSnapshot snapshot) implements CustomPacketPayload {
 
-public record ClientboundInspectionSnapshotPacket(InspectionSnapshot snapshot) {
-    public void encode(FriendlyByteBuf buf) {
+    public static final Type<ClientboundInspectionSnapshotPacket> TYPE =
+        new Type<>(ResourceLocation.fromNamespaceAndPath(CBCTerminalBallistics.MOD_ID, "inspection_snapshot"));
+
+    public static final StreamCodec<RegistryFriendlyByteBuf, ClientboundInspectionSnapshotPacket> STREAM_CODEC = StreamCodec.of(
+        (StreamEncoder<RegistryFriendlyByteBuf, ClientboundInspectionSnapshotPacket>) (buf, packet) -> packet.encode(buf),
+        (StreamDecoder<RegistryFriendlyByteBuf, ClientboundInspectionSnapshotPacket>) ClientboundInspectionSnapshotPacket::decode
+    );
+
+    private void encode(RegistryFriendlyByteBuf buf) {
         InspectionSnapshot s = snapshot;
         buf.writeBlockPos(s.pos());
         buf.writeResourceLocation(s.materialId());
@@ -31,37 +41,42 @@ public record ClientboundInspectionSnapshotPacket(InspectionSnapshot snapshot) {
         buf.writeDouble(s.lastSpallDamageModifier());
     }
 
-    public static ClientboundInspectionSnapshotPacket decode(FriendlyByteBuf buf) {
+    private static ClientboundInspectionSnapshotPacket decode(RegistryFriendlyByteBuf buf) {
         BlockPos pos = buf.readBlockPos();
         ResourceLocation materialId = buf.readResourceLocation();
         return new ClientboundInspectionSnapshotPacket(new InspectionSnapshot(
-                pos,
-                materialId,
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readUtf(),
-                buf.readUtf(),
-                buf.readDouble(),
-                buf.readDouble(),
-                buf.readVarInt(),
-                buf.readDouble(),
-                buf.readDouble()));
+            pos,
+            materialId,
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readUtf(),
+            buf.readUtf(),
+            buf.readDouble(),
+            buf.readDouble(),
+            buf.readVarInt(),
+            buf.readDouble(),
+            buf.readDouble()));
     }
 
-    public void handle(Supplier<NetworkEvent.Context> ctx) {
-        ctx.get().enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT, () -> () -> {
+    @Override
+    public Type<? extends CustomPacketPayload> type() {
+        return TYPE;
+    }
+
+    public static void handle(ClientboundInspectionSnapshotPacket packet, IPayloadContext ctx) {
+        ctx.enqueueWork(() -> {
             try {
                 Class<?> handler = Class.forName("com.cbc_terminal_ballistics.client.ClientPacketHandlers");
-                handler.getMethod("handleInspectionSnapshot", ClientboundInspectionSnapshotPacket.class).invoke(null, this);
+                handler.getMethod("handleInspectionSnapshot", ClientboundInspectionSnapshotPacket.class)
+                    .invoke(null, packet);
             } catch (ReflectiveOperationException ex) {
                 throw new RuntimeException(ex);
             }
-        }));
-        ctx.get().setPacketHandled(true);
+        });
     }
 }

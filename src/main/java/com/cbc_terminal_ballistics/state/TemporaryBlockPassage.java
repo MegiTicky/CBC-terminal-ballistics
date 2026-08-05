@@ -4,6 +4,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.HashMap;
@@ -27,10 +28,15 @@ public final class TemporaryBlockPassage {
         CompoundTag blockEntityTag = null;
         BlockEntity be = level.getBlockEntity(pos);
         if (be != null) {
-            blockEntityTag = be.saveWithFullMetadata();
+            blockEntityTag = be.saveWithFullMetadata(level.registryAccess());
+            // Copycat blocks commonly drop their copied material from onRemove.
+            // Detach the saved block entity first so this one-tick collision
+            // bypass cannot duplicate its contents or copied material.
+            level.removeBlockEntity(pos);
         }
         levelMap.put(immutable, new SavedBlock(state, blockEntityTag));
-        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), 3);
+        int silentFlags = Block.UPDATE_NONE | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS;
+        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), silentFlags);
     }
 
     public static void restore(ServerLevel level) {
@@ -42,9 +48,10 @@ public final class TemporaryBlockPassage {
             BlockPos pos = entry.getKey();
             SavedBlock saved = entry.getValue();
             if (level.isLoaded(pos) && level.getBlockState(pos).isAir()) {
-                level.setBlock(pos, saved.state(), 3);
+                int silentFlags = Block.UPDATE_NONE | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS;
+                level.setBlock(pos, saved.state(), silentFlags);
                 if (saved.blockEntityTag() != null && level.getBlockEntity(pos) != null) {
-                    level.getBlockEntity(pos).load(saved.blockEntityTag());
+                    level.getBlockEntity(pos).loadWithComponents(saved.blockEntityTag(), level.registryAccess());
                 }
             }
             it.remove();

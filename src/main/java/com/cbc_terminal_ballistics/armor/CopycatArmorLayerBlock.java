@@ -19,11 +19,6 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
-/**
- * CBCTB's armor-bearing layer block, backed by Copycats+' copycat layer behavior.
- * CBCTB keeps its registry id and armor NBT; Copycats+ owns material copying,
- * stacking, wrench behavior, model assembly, and material synchronization.
- */
 public class CopycatArmorLayerBlock extends CopycatLayerBlock {
     public CopycatArmorLayerBlock(Properties properties) {
         super(properties);
@@ -43,17 +38,17 @@ public class CopycatArmorLayerBlock extends CopycatLayerBlock {
         BlockEntity be = params.getOptionalParameter(LootContextParams.BLOCK_ENTITY);
         ItemStack stack = new ItemStack(asItem(), state.getValue(LAYERS));
         if (be instanceof CopycatArmorLayerBlockEntity armorLayer) {
-            armorLayer.saveToItem(stack);
+            armorLayer.saveToItem(stack, params.getLevel().registryAccess());
         }
         return List.of(stack);
     }
 
     @Override
-    public ItemStack getCloneItemStack(BlockGetter level, BlockPos pos, BlockState state) {
+    public ItemStack getCloneItemStack(BlockState state, net.minecraft.world.phys.HitResult target, net.minecraft.world.level.LevelReader level, BlockPos pos, net.minecraft.world.entity.player.Player player) {
         ItemStack stack = new ItemStack(asItem());
         BlockEntity be = level.getBlockEntity(pos);
         if (be instanceof CopycatArmorLayerBlockEntity armorLayer) {
-            armorLayer.saveToItem(stack);
+            armorLayer.saveToItem(stack, level.registryAccess());
         }
         return stack;
     }

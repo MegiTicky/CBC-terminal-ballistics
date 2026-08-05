@@ -49,7 +49,7 @@ public final class CbcArmorCompat {
     private static Object createProvider(Class<?> providerInterface) {
         return Proxy.newProxyInstance(providerInterface.getClassLoader(), new Class<?>[]{providerInterface}, (proxy, method, args) -> {
             return switch (method.getName()) {
-                case "hardness" -> 1.0d;
+                case "hardness" -> hardness((Level) args[0], (BlockPos) args[2], (boolean) args[3]);
                 case "toughness" -> toughness((Level) args[0], (BlockPos) args[2], (boolean) args[3]);
                 case "containedBlockStates" -> containedBlockStates((Level) args[0], (BlockPos) args[2], (boolean) args[3]);
                 case "toString" -> "CBCTBCopycatArmorProperties";
@@ -80,6 +80,19 @@ public final class CbcArmorCompat {
             }
         }
         return CopycatArmorLayerBlockEntity.MIN_LEVEL * CopycatArmorLayerBlockEntity.TOUGHNESS_PER_LEVEL;
+    }
+
+    private static double hardness(Level level, BlockPos pos, boolean recurse) {
+        if (recurse) {
+            BlockEntity be = level.getBlockEntity(pos);
+            if (be instanceof CopycatArmorLayerBlockEntity armorLayer) {
+                return armorLayer.getArmorLevel();
+            }
+            if (be instanceof FramedCollapsibleCopycatArmorBlockEntity armorBlock) {
+                return armorBlock.getArmorLevel();
+            }
+        }
+        return CopycatArmorLayerBlockEntity.MIN_LEVEL;
     }
 
     private static List<BlockState> containedBlockStates(Level level, BlockPos pos, boolean recurse) {

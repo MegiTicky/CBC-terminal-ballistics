@@ -4,7 +4,7 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.fml.ModList;
+import net.neoforged.fml.ModList;
 
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -25,6 +25,8 @@ public final class TBDebug {
     public static volatile String LAST_BLOCK = "none";
     public static volatile String LAST_OUTCOME = "none";
     public static volatile String LAST_ERROR = "none";
+    public static volatile double LAST_INCIDENCE = -1.0;
+    public static volatile double LAST_PENETRATION_RATIO = -1.0;
 
     private static final AtomicInteger VERBOSE_LINES = new AtomicInteger();
 
@@ -78,16 +80,18 @@ public final class TBDebug {
         }
     }
 
-    public static void serviceOutcome(String outcome, double damage, double threshold) {
+    public static void serviceOutcome(String outcome, double damage, double threshold, double incidence, double penetrationRatio) {
         SERVICE_HITS.incrementAndGet();
         LAST_OUTCOME = outcome + String.format(" damage=%.3f threshold=%.3f", damage, threshold);
+        LAST_INCIDENCE = incidence;
+        LAST_PENETRATION_RATIO = penetrationRatio;
         switch (outcome) {
             case "PENETRATE" -> PENETRATES.incrementAndGet();
             case "BOUNCE" -> BOUNCES.incrementAndGet();
             default -> STOPS.incrementAndGet();
         }
         if (VERBOSE_LINES.getAndIncrement() < 200) {
-            CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] service outcome={} damage={} threshold={}", outcome, damage, threshold);
+            CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] service outcome={} damage={} threshold={} incidence={} penRatio={}", outcome, damage, threshold, incidence, penetrationRatio);
         }
     }
 
@@ -108,6 +112,8 @@ public final class TBDebug {
             + " lastProjectile=" + LAST_PROJECTILE
             + " lastBlock=" + LAST_BLOCK
             + " lastOutcome=" + LAST_OUTCOME
+            + " lastIncidence=" + String.format("%.3f", LAST_INCIDENCE)
+            + " lastPenRatio=" + String.format("%.3f", LAST_PENETRATION_RATIO)
             + " lastError=" + LAST_ERROR;
     }
 

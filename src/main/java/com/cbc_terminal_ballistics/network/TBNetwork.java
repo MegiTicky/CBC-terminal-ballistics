@@ -1,53 +1,58 @@
 package com.cbc_terminal_ballistics.network;
 
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraftforge.network.NetworkRegistry;
-import net.minecraftforge.network.simple.SimpleChannel;
+import net.neoforged.bus.api.IEventBus;
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 public final class TBNetwork {
-    private static final String VERSION = "6";
-    public static SimpleChannel CHANNEL;
-
-    public static void register() {
-        CHANNEL = NetworkRegistry.newSimpleChannel(new ResourceLocation(CBCTerminalBallistics.MOD_ID, "main"), () -> VERSION, VERSION::equals, VERSION::equals);
-        int id = 0;
-        CHANNEL.messageBuilder(ClientboundImpactMarksPacket.class, id++)
-            .encoder(ClientboundImpactMarksPacket::encode)
-            .decoder(ClientboundImpactMarksPacket::decode)
-            .consumerMainThread(ClientboundImpactMarksPacket::handle)
-            .add();
-        CHANNEL.messageBuilder(ClientboundSpallConePacket.class, id++)
-            .encoder(ClientboundSpallConePacket::encode)
-            .decoder(ClientboundSpallConePacket::decode)
-            .consumerMainThread(ClientboundSpallConePacket::handle)
-            .add();
-        CHANNEL.messageBuilder(ClientboundProjectileSlowdownPacket.class, id++)
-            .encoder(ClientboundProjectileSlowdownPacket::encode)
-            .decoder(ClientboundProjectileSlowdownPacket::decode)
-            .consumerMainThread(ClientboundProjectileSlowdownPacket::handle)
-            .add();
-        CHANNEL.messageBuilder(ServerboundInspectBlockPacket.class, id++)
-            .encoder(ServerboundInspectBlockPacket::encode)
-            .decoder(ServerboundInspectBlockPacket::decode)
-            .consumerMainThread(ServerboundInspectBlockPacket::handle)
-            .add();
-        CHANNEL.messageBuilder(ClientboundInspectionSnapshotPacket.class, id++)
-            .encoder(ClientboundInspectionSnapshotPacket::encode)
-            .decoder(ClientboundInspectionSnapshotPacket::decode)
-            .consumerMainThread(ClientboundInspectionSnapshotPacket::handle)
-            .add();
-        CHANNEL.messageBuilder(ClientboundIntegrityProgressPacket.class, id++)
-            .encoder(ClientboundIntegrityProgressPacket::encode)
-            .decoder(ClientboundIntegrityProgressPacket::decode)
-            .consumerMainThread(ClientboundIntegrityProgressPacket::handle)
-            .add();
-        CHANNEL.messageBuilder(ServerboundSetLauncherVelocityPacket.class, id++)
-            .encoder(ServerboundSetLauncherVelocityPacket::encode)
-            .decoder(ServerboundSetLauncherVelocityPacket::decode)
-            .consumerMainThread(ServerboundSetLauncherVelocityPacket::handle)
-            .add();
-    }
-
     private TBNetwork() {}
+
+    public static void register(IEventBus modBus) {
+        modBus.addListener(RegisterPayloadHandlersEvent.class, event -> {
+            PayloadRegistrar registrar = event.registrar(CBCTerminalBallistics.MOD_ID).versioned("9");
+
+            registrar.playToClient(
+                ClientboundImpactMarksPacket.TYPE,
+                ClientboundImpactMarksPacket.STREAM_CODEC,
+                ClientboundImpactMarksPacket::handle
+            );
+
+            registrar.playToClient(
+                ClientboundSpallConePacket.TYPE,
+                ClientboundSpallConePacket.STREAM_CODEC,
+                ClientboundSpallConePacket::handle
+            );
+
+            registrar.playToClient(
+                ClientboundProjectileSlowdownPacket.TYPE,
+                ClientboundProjectileSlowdownPacket.STREAM_CODEC,
+                ClientboundProjectileSlowdownPacket::handle
+            );
+
+            registrar.playToServer(
+                ServerboundInspectBlockPacket.TYPE,
+                ServerboundInspectBlockPacket.STREAM_CODEC,
+                ServerboundInspectBlockPacket::handle
+            );
+
+            registrar.playToClient(
+                ClientboundInspectionSnapshotPacket.TYPE,
+                ClientboundInspectionSnapshotPacket.STREAM_CODEC,
+                ClientboundInspectionSnapshotPacket::handle
+            );
+
+            registrar.playToClient(
+                ClientboundIntegrityProgressPacket.TYPE,
+                ClientboundIntegrityProgressPacket.STREAM_CODEC,
+                ClientboundIntegrityProgressPacket::handle
+            );
+
+            registrar.playToServer(
+                ServerboundSetLauncherVelocityPacket.TYPE,
+                ServerboundSetLauncherVelocityPacket.STREAM_CODEC,
+                ServerboundSetLauncherVelocityPacket::handle
+            );
+        });
+    }
 }

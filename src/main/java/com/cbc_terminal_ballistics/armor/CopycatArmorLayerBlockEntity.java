@@ -3,12 +3,15 @@ package com.cbc_terminal_ballistics.armor;
 import com.cbc_terminal_ballistics.registry.ModBlockEntities;
 import com.copycatsplus.copycats.foundation.copycat.CCCopycatBlockEntity;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.level.block.state.BlockState;
 
 public class CopycatArmorLayerBlockEntity extends CCCopycatBlockEntity {
@@ -67,11 +70,9 @@ public class CopycatArmorLayerBlockEntity extends CCCopycatBlockEntity {
     public void loadArmorFromItem(ItemStack stack) {
         this.armorLevel = CopycatArmorLayerItem.getArmorLevel(stack);
 
-        // Migration path for old CBCTB item stacks, which stored copied material
-        // as top-level ItemStack NBT rather than Copycats+' BlockEntityTag data.
-        CompoundTag tag = stack.getTag();
-        if (tag != null && tag.contains(CopycatArmorLayerItem.MATERIAL_TAG)
-                && (!tag.contains(HAS_MATERIAL_TAG) || tag.getBoolean(HAS_MATERIAL_TAG))) {
+        CustomData data = stack.get(DataComponents.CUSTOM_DATA);
+        if (data != null && data.contains(CopycatArmorLayerItem.MATERIAL_TAG)
+                && (!data.contains(HAS_MATERIAL_TAG) || data.copyTag().getBoolean(HAS_MATERIAL_TAG))) {
             BlockState material = CopycatArmorLayerItem.getStoredMaterial(stack);
             setMaterial(material);
             setConsumedItem(stackForMaterial(material));
@@ -81,38 +82,38 @@ public class CopycatArmorLayerBlockEntity extends CCCopycatBlockEntity {
     }
 
     @Override
-    public void saveToItem(ItemStack stack) {
-        super.saveToItem(stack);
+    public void saveToItem(ItemStack stack, HolderLookup.Provider provider) {
+        super.saveToItem(stack, provider);
         CopycatArmorLayerItem.setArmorLevel(stack, getArmorLevel());
-        // Do not write old top-level Material/HasMaterial tags on new drops.
-        if (stack.getTag() != null) {
-            stack.getTag().remove(CopycatArmorLayerItem.MATERIAL_TAG);
-            stack.getTag().remove(HAS_MATERIAL_TAG);
-        }
+        stack.update(DataComponents.CUSTOM_DATA, CustomData.EMPTY, data ->
+                data.update(tag -> {
+                    tag.remove(CopycatArmorLayerItem.MATERIAL_TAG);
+                    tag.remove(HAS_MATERIAL_TAG);
+                }));
     }
 
     @Override
-    public void read(CompoundTag tag, boolean clientPacket) {
-        synthesizeCopycatsItemForLegacyMaterial(tag);
-        super.read(tag, clientPacket);
+    public void read(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        synthesizeCopycatsItemForLegacyMaterial(tag, registries);
+        super.read(tag, registries, clientPacket);
         this.armorLevel = tag.contains(CopycatArmorLayerItem.ARMOR_LEVEL_TAG)
                 ? tag.getInt(CopycatArmorLayerItem.ARMOR_LEVEL_TAG)
                 : MIN_LEVEL;
     }
 
     @Override
-    public void write(CompoundTag tag, boolean clientPacket) {
-        super.write(tag, clientPacket);
+    public void write(CompoundTag tag, HolderLookup.Provider registries, boolean clientPacket) {
+        super.write(tag, registries, clientPacket);
         tag.putInt(CopycatArmorLayerItem.ARMOR_LEVEL_TAG, getArmorLevel());
     }
 
     @Override
-    public void writeSafe(CompoundTag tag) {
-        super.writeSafe(tag);
+    public void writeSafe(CompoundTag tag, HolderLookup.Provider registries) {
+        super.writeSafe(tag, registries);
         tag.putInt(CopycatArmorLayerItem.ARMOR_LEVEL_TAG, getArmorLevel());
     }
 
-    private static void synthesizeCopycatsItemForLegacyMaterial(CompoundTag tag) {
+    private static void synthesizeCopycatsItemForLegacyMaterial(CompoundTag tag, HolderLookup.Provider registries) {
         if (!tag.contains(CopycatArmorLayerItem.MATERIAL_TAG) || tag.contains(COPYCATS_ITEM_TAG)
                 || (tag.contains(HAS_MATERIAL_TAG) && !tag.getBoolean(HAS_MATERIAL_TAG))) {
             return;
@@ -121,7 +122,7 @@ public class CopycatArmorLayerBlockEntity extends CCCopycatBlockEntity {
                 tag.getCompound(CopycatArmorLayerItem.MATERIAL_TAG));
         ItemStack consumed = stackForMaterial(material);
         if (!consumed.isEmpty()) {
-            tag.put(COPYCATS_ITEM_TAG, consumed.save(new CompoundTag()));
+            tag.put(COPYCATS_ITEM_TAG, consumed.save(registries));
         }
     }
 
