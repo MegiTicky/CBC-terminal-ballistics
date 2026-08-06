@@ -86,7 +86,8 @@ public class ArmorIntegritySavedData extends SavedData {
     }
 
     private static boolean isNearDuplicate(ImpactMark a, ImpactMark b) {
-        if (a.kind() != b.kind() || a.caliber() != b.caliber() || a.surface() != b.surface() || a.face() != b.face()) return false;
+        if (a.kind() != b.kind() || a.caliber() != b.caliber() || a.surface() != b.surface()
+                || a.face() != b.face() || a.sparks() != b.sparks()) return false;
         if (Math.abs(a.gameTime() - b.gameTime()) > 2L) return false;
         double dx = a.x() - b.x();
         double dy = a.y() - b.y();

@@ -35,6 +35,7 @@ public final class SableCompat {
     private static Method getUniqueIdMethod;
     private static Method transformPositionMethod;
     private static Method transformPositionInverseMethod;
+    private static Method transformNormalMethod;
     private static Method transformNormalInverseMethod;
     private static boolean reflectionFailed;
     private static boolean reflectionInitialized;
@@ -123,6 +124,14 @@ public final class SableCompat {
         return transformWithContainingPose(level, subLevelPos, worldVector, transformNormalInverseMethod);
     }
 
+    /**
+     * Converts a local sub-level vector into world coordinates.
+     */
+    public static Vec3 toWorldVector(Level level, BlockPos subLevelPos, Vec3 localVector) {
+        if (!isLoaded()) return localVector;
+        return transformWithContainingPose(level, subLevelPos, localVector, transformNormalMethod);
+    }
+
     // ---- reflection init ----
 
     private static void initCompanion() {
@@ -186,6 +195,9 @@ public final class SableCompat {
                         } else if (method.getName().equals("transformPositionInverse")
                             && isVec3Transform(method)) {
                             transformPositionInverseMethod = method;
+                        } else if (method.getName().equals("transformNormal")
+                            && isVec3Transform(method)) {
+                            transformNormalMethod = method;
                         } else if (method.getName().equals("transformNormalInverse")
                             && isVec3Transform(method)) {
                             transformNormalInverseMethod = method;

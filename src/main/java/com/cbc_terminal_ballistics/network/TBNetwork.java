@@ -10,7 +10,7 @@ public final class TBNetwork {
 
     public static void register(IEventBus modBus) {
         modBus.addListener(RegisterPayloadHandlersEvent.class, event -> {
-            PayloadRegistrar registrar = event.registrar(CBCTerminalBallistics.MOD_ID).versioned("9");
+            PayloadRegistrar registrar = event.registrar(CBCTerminalBallistics.MOD_ID).versioned("10");
 
             registrar.playToClient(
                 ClientboundImpactMarksPacket.TYPE,

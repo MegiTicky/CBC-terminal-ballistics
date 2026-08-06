@@ -19,6 +19,8 @@ import com.cbc_terminal_ballistics.util.CBCReflect;
 import com.cbc_terminal_ballistics.util.SableCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.tags.TagKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.resources.ResourceLocation;
@@ -31,6 +33,7 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -54,6 +57,12 @@ public final class TBImpactService {
     private static final double RICOCHET_MARK_MAX_INCIDENCE = Math.cos(Math.toRadians(RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES));
     private static final double HARD_BLOCK_IMPACT_SOUND_TOUGHNESS = 5.0D;
     private static final ResourceLocation CBC_PROJECTILE_IMPACT_SOUND = ResourceLocation.fromNamespaceAndPath("createbigcannons", "projectile_impact");
+    private static final TagKey<Block> SPALL_DETONATES = TagKey.create(
+        Registries.BLOCK,
+        ResourceLocation.fromNamespaceAndPath(CBCTerminalBallistics.MOD_ID, "spall_detonates")
+    );
+    /** Cross-mod block event used by tagged ammunition stores. */
+    private static final int SPALL_DETONATION_BLOCK_EVENT = 19042;
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
         if (!TBConfig.ENABLED.get()) return null;
@@ -66,6 +75,7 @@ public final class TBImpactService {
             double velMag = Math.max(curVel.length(), 1e-4d);
             Vec3 velDir = curVel.normalize();
             Vec3 normal = CBCReflect.surfaceNormal(level, hit).normalize();
+            Direction localHitFace = localImpactFace(level, pos, hit.getDirection(), normal);
             double incidence = Math.max(0.0, velDir.dot(normal.reverse()));
             double incidentVel = velMag * incidence;
             double mass = Math.max(0.0, CBCReflect.projectileMass(projectile));
@@ -75,6 +85,7 @@ public final class TBImpactService {
             double fallbackHardness = 1.0; // CBC fallback hardness
             double fallbackToughness = Math.max(0.0, state.getBlock().getExplosionResistance()); // CBC fallback toughness
             double baseArmorToughness = CBCReflect.armorToughness(level, state, pos, fallbackToughness);
+            boolean durableImpactSparks = baseArmorToughness >= 15.0D;
             double armorHardness = CBCReflect.armorHardness(level, state, pos, fallbackHardness);
             boolean unbreakable = CBCReflect.griefNoDamage(projectileContext) || state.getDestroySpeed(level, pos) < 0;
 
@@ -134,7 +145,8 @@ public final class TBImpactService {
             double appliedDamage = rawDamage;
 
             // Let CBC ricochet behavior pass through instead of applying CBCTB terminal-ballistics logic.
-            // The normal comes from CBCUtils so Valkyrien Skies' CBC compat can transform ship normals exactly as CBC expects.
+            // The normal comes from CBCUtils so Sable's CBC compat can transform
+            // physical sub-level normals exactly as CBC expects.
             double bounceChance = 0.0D;
             if (deflection >= 1e-2D && incidence <= deflection) {
                 double bounceBonus = autocannon ? 1.0D : Math.max(1.0D - hardnessPenaltyRaw, 0.0D);
@@ -146,11 +158,15 @@ public final class TBImpactService {
                     CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), effectNormal, true);
                     if (level instanceof ServerLevel server) {
                         playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
-                        addImpactMark(server, pos, state, hit, ImpactMarkKind.STREAK, caliber, impactSurface, curVel);
+                        addImpactMark(server, pos, state, hit, localHitFace, ImpactMarkKind.STREAK,
+                            caliber, impactSurface, curVel, durableImpactSparks);
                     }
                 }
                 Object bounceResult = CBCReflect.newImpactResult("BOUNCE", false);
                 boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, bounceResult, projectileContext);
+                if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)) {
+                    clearMarks(server, pos);
+                }
                 return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
             }
 
@@ -179,6 +195,8 @@ public final class TBImpactService {
             int spallFragments = 0;
             double spallDamageModifier = 0.0;
             String spallReason = "not_checked";
+            boolean temporaryPassagePending = false;
+            boolean blockBreakPending = false;
             if (level instanceof ServerLevel server) {
                 if (projectile instanceof Projectile p && !shouldSkipProjectileHit(state, copiedMaterial.isPresent())) {
                     state.onProjectileHit(level, state, hit, p);
@@ -186,27 +204,35 @@ public final class TBImpactService {
                 CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), curVel.reverse(), false);
                 playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
                 ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
-                data.addMark(server, pos, state, mark(server, pos, hit, markKind, caliber, impactSurface, markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F));
+                // This is strictly CBC's block-armor toughness. Do not suppress
+                // sparks from a predicted integrity break: native CBC impact/fuze
+                // handling may leave the block in place. If the armor is actually
+                // removed or replaced below, clearMarks() removes this source
+                // before the client can emit particles.
+                boolean sparks = durableImpactSparks;
+                data.addMark(server, pos, state, mark(server, pos, hit, localHitFace, markKind, caliber,
+                    impactSurface, markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, localHitFace, curVel) : 0.0F,
+                    sparks));
                 if (outcome.equals("PENETRATE")) {
-                    data.addMark(server, pos, state, exitMark(server, pos, hit, caliber, impactSurface));
+                    data.addMark(server, pos, state, exitMark(server, pos, hit, localHitFace, caliber, impactSurface));
                 }
                 syncMarks(server, pos, data.entryFor(server, pos, state).marks);
 
                 if (outcome.equals("PENETRATE") && !unbreakable) {
                     if (integrityBreak || shatter) {
-                        server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-                        playBreakSound(server, pos, state);
-                        clearMarks(server, pos);
+                        blockBreakPending = true;
                     } else {
                         // Perforation that did not break the block. In stock CBC this
                         // never happens (the projectile breaks the block or stops on
                         // it), so CBC's "block break on impact" sound is not played.
                         // CTB keeps the block intact, so replay the same sound CBC
                         // would have used in the stopped branch.
-                        SpallExit spallExit = spallExitOrigin(server, pos, hit);
+                        SpallExit spallExit = spallExitOrigin(server, pos, hit, localHitFace);
                         Vec3 spallLoc = spallExit.origin().add(spallExit.direction().scale(1.5D));
                         CBCReflect.playBlockImpactBreakSound(server, state, spallLoc);
-                        TemporaryBlockPassage.phaseForThisTick(server, pos, state);
+                        // Keep the real block present until CBC's native impact/fuze
+                        // callback has finished, then phase it only if still needed.
+                        temporaryPassagePending = true;
                     }
                     // (Removed) Velocity dependent mass loss formula (not default CBC behaivor): massLoss = Mth.clamp(((hardnessPenalty + 1.0) * effectiveToughness / Math.max(incidentVel, 0.1)) * caliber.massLossScale, 0.01, Math.max(0.01, mass * 0.95));
                     massLoss = ((float) Math.max(0, hardnessPenalty) + 1) * (float) effectiveToughness / (float) incidentVel; //Same as CBC durabilityPenalty formula
@@ -217,7 +243,7 @@ public final class TBImpactService {
                         projectile.setDeltaMovement(projectile.getDeltaMovement().scale(factor));
                     }
                     if (ProjectileClassifier.canSpall(projectile)) {
-                        SpallExit spallExit = spallExitOrigin(server, pos, hit);
+                        SpallExit spallExit = spallExitOrigin(server, pos, hit, localHitFace);
                         Vec3 spallOrigin = spallExit.origin();
                         Vec3 spallDirection = spallExit.direction();
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
@@ -230,9 +256,7 @@ public final class TBImpactService {
                 } else {
                     CBCReflect.setProjectileMass(projectile, 0.0);
                     if (integrityBreak && !unbreakable) {
-                        server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-                        playBreakSound(server, pos, state);
-                        clearMarks(server, pos);
+                        blockBreakPending = true;
                     }
                     spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
                 }
@@ -247,10 +271,26 @@ public final class TBImpactService {
             }
             Object impactResult = CBCReflect.newImpactResult(outcome, shatter);
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
+            if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)) {
+                // Native fuze/block impact handling replaced or removed the block.
+                // Do not let its old integrity and impact marks leak onto the new state.
+                clearMarks(server, pos);
+            }
+            if (!onImpactRemove && level instanceof ServerLevel server && server.getBlockState(pos).equals(state)) {
+                if (blockBreakPending) {
+                    server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                    playBreakSound(server, pos, state);
+                    clearMarks(server, pos);
+                } else if (temporaryPassagePending) {
+                    TemporaryBlockPassage.phaseForThisTick(server, pos, state);
+                }
+            }
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
             // punching through light blocks instead of continuing into the block behind them.
-            boolean shouldRemove = launcherStop || (autocannon ? (!level.isClientSide && (shatter || outcome.equals("STOP"))) : (shatter || onImpactRemove));
+            boolean shouldRemove = launcherStop || onImpactRemove || (autocannon
+                ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
+                : shatter);
             return CBCReflect.newImpactResult(outcome, shouldRemove);
         } catch (Throwable t) {
             TBDebug.fallback(t);
@@ -282,32 +322,34 @@ public final class TBImpactService {
         syncMarks(level, pos, marks);
     }
 
-    private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, Vec3 incomingVelocity) {
-        ImpactMark mark = mark(server, pos, hit, kind, caliber, surface, kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F);
+    private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit,
+                                      Direction localFace, ImpactMarkKind kind, TBCaliber caliber,
+                                      ImpactSurfaceType surface, Vec3 incomingVelocity, boolean sparks) {
+        ImpactMark mark = mark(server, pos, hit, localFace, kind, caliber, surface,
+            kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, localFace, incomingVelocity) : 0.0F,
+            sparks);
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
         data.addMark(server, pos, state, mark);
         syncMarks(server, pos, data.entryFor(server, pos, state).marks);
     }
 
-    private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, float rotation) {
+    private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, Direction localFace,
+                                   ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface,
+                                   float rotation, boolean sparks) {
         Vec3 loc = localHitLocation(level, pos, hit.getLocation());
-        // For VS ship raycasts the BlockHitResult direction is already the block-local/shipyard face.
-        // Transforming it again by worldToShip makes marks flip/rotate incorrectly when the ship is not axis-aligned.
-        Direction face = hit.getDirection();
         float x = (float) Mth.clamp(loc.x - pos.getX(), 0.001, 0.999);
         float y = (float) Mth.clamp(loc.y - pos.getY(), 0.001, 0.999);
         float z = (float) Mth.clamp(loc.z - pos.getZ(), 0.001, 0.999);
-        return new ImpactMark(kind, caliber, surface, face, x, y, z, rotation, level.getGameTime());
+        return new ImpactMark(kind, caliber, surface, localFace, x, y, z, rotation, sparks, level.getGameTime());
     }
 
-    private static float ricochetMarkRotation(ServerLevel level, BlockPos pos, BlockHitResult hit, Vec3 incomingVelocity) {
+    private static float ricochetMarkRotation(ServerLevel level, BlockPos pos, Direction localFace, Vec3 incomingVelocity) {
         Vec3 localVelocity = SableCompat.toSubLevelVector(level, pos, incomingVelocity);
         if (localVelocity.lengthSqr() < 1.0e-8D) return 0.0F;
 
-        Direction face = hit.getDirection();
         double u;
         double v;
-        switch (face.getAxis()) {
+        switch (localFace.getAxis()) {
             case X -> {
                 u = localVelocity.z;
                 v = localVelocity.y;
@@ -329,9 +371,10 @@ public final class TBImpactService {
         return (float) angle;
     }
 
-    private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, TBCaliber caliber, ImpactSurfaceType surface) {
+    private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, Direction localHitFace,
+                                       TBCaliber caliber, ImpactSurfaceType surface) {
         Vec3 entry = localHitLocation(level, pos, hit.getLocation());
-        Direction exitFace = hit.getDirection().getOpposite();
+        Direction exitFace = localHitFace.getOpposite();
         double x = entry.x - pos.getX();
         double y = entry.y - pos.getY();
         double z = entry.z - pos.getZ();
@@ -348,7 +391,20 @@ public final class TBImpactService {
             (float) Mth.clamp(y, 0.001D, 0.999D),
             (float) Mth.clamp(z, 0.001D, 0.999D),
             0.0F,
+            false,
             level.getGameTime());
+    }
+
+    private static Direction localImpactFace(Level level, BlockPos pos, Direction fallbackFace, Vec3 worldNormal) {
+        if (!SableCompat.isInSubLevel(level, pos)) return fallbackFace;
+        Vec3 localNormal = SableCompat.toSubLevelVector(level, pos, worldNormal);
+        if (localNormal.lengthSqr() < 1.0e-8D
+                || !Double.isFinite(localNormal.x)
+                || !Double.isFinite(localNormal.y)
+                || !Double.isFinite(localNormal.z)) {
+            return fallbackFace;
+        }
+        return Direction.getNearest(localNormal.x, localNormal.y, localNormal.z);
     }
 
     private static Vec3 localHitLocation(ServerLevel level, BlockPos pos, Vec3 hitLocation) {
@@ -361,8 +417,8 @@ public final class TBImpactService {
         return SableCompat.toSubLevelCoordinates(level, pos, hitLocation);
     }
 
-    private static SpallExit spallExitOrigin(ServerLevel level, BlockPos pos, BlockHitResult hit) {
-        Direction exitFace = hit.getDirection().getOpposite();
+    private static SpallExit spallExitOrigin(ServerLevel level, BlockPos pos, BlockHitResult hit, Direction localHitFace) {
+        Direction exitFace = localHitFace.getOpposite();
         Vec3 local = localHitLocation(level, pos, hit.getLocation());
         double x = Mth.clamp(local.x - pos.getX(), 0.001D, 0.999D);
         double y = Mth.clamp(local.y - pos.getY(), 0.001D, 0.999D);
@@ -603,6 +659,15 @@ public final class TBImpactService {
     }
 
     private static boolean triggerExplosiveBlockHit(ServerLevel level, BlockPos pos, BlockState state, Direction hitFace) {
+        if (state.is(SPALL_DETONATES)) {
+            // Keep this dependency-free: the owning block receives the event and
+            // decides which detonation procedure to run. This path is shared by
+            // direct cannon hits and every server-side spall ray.
+            level.blockEvent(pos, state.getBlock(), SPALL_DETONATION_BLOCK_EVENT, hitFace.get3DDataValue());
+            clearMarks(level, pos);
+            return true;
+        }
+
         if (state.is(Blocks.TNT)) {
             Vec3 center = Vec3.atCenterOf(pos);
             level.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);

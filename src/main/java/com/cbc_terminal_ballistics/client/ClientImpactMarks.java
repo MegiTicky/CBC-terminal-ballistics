@@ -105,18 +105,18 @@ public final class ClientImpactMarks {
                     || markSet.marks().stream().allMatch(mark -> now - mark.gameTime() >= lifetime);
         });
 
-        // --- ADDED PERSISTENT FLAME LOGIC ---
+        // --- PERSISTENT IMPACT SPARK LOGIC ---
         for (Map.Entry<BlockPos, MarkSet> entry : MARKS.entrySet()) {
             BlockPos pos = entry.getKey();
             if (!hasCurrentOwner(mc.level, pos, entry.getValue())) continue;
             for (ImpactMark mark : entry.getValue().marks()) {
                 long age = now - mark.gameTime();
 
-                // Match the upstream impact-hole effect: burn for 3 seconds (60 ticks)
-                // on the entry HOLE only. Do not require material classification here;
-                // addon armor and Sable copycats may otherwise be classified as GENERAL
-                // and silently lose the original FLAME + SMOKE effect.
-                if (age < 60 && mark.kind() == ImpactMarkKind.HOLE) {
+                // The server enables sparks only for armor with toughness >= 15
+                // that survived the impact. Entry holes, stopped dents and
+                // ricochet streaks all use the upstream FLAME + SMOKE effect;
+                // penetration exit holes never create a second spark source.
+                if (age >= 0 && age < 60 && mark.sparks() && mark.kind() != ImpactMarkKind.EXIT_HOLE) {
 
                     // 1. Determine a scale multiplier based on the caliber
                     float scale = switch (mark.caliber()) {
@@ -131,48 +131,43 @@ public final class ClientImpactMarks {
                         Vec3 localNormal = Vec3.atLowerCornerOf(mark.face().getNormal());
 
                         // 3. Add random spread (jitter) across the face of the hole based on the scale
-                        double jitterX = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
-                        double jitterY = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
-                        double jitterZ = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                        double jitterA = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                        double jitterB = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                        Vec3 localJitter = switch (mark.face().getAxis()) {
+                            case X -> new Vec3(0.0D, jitterA, jitterB);
+                            case Y -> new Vec3(jitterA, 0.0D, jitterB);
+                            case Z -> new Vec3(jitterA, jitterB, 0.0D);
+                        };
 
                         // Apply the normal pushout AND the spread jitter
                         Vec3 localPos = mark.absolute(pos)
                                 .add(localNormal.scale(0.05))
-                                .add(jitterX, jitterY, jitterZ);
+                                .add(localJitter);
 
-                        // Use the same live Sable render pose as the impact decal.
-                        // Transform normals directly so pitch/roll cannot skew the
-                        // spark direction through two projected-position samples.
+                        // Use Sable's logical pose for both particle position and
+                        // direction. CBC uses this same pose for physical hits, so
+                        // the emitted spark follows the exact surface that was hit.
                         Vec3 worldPos = localPos;
                         Vec3 worldNormal = localNormal;
                         if (isSableSubLevelMark(mc.level, pos)) {
-                            SableClientCompat.RenderTransform transform =
-                                    SableClientCompat.renderTransformWithSubLevel(mc.level, pos, Vec3.ZERO);
-                            if (transform != null) {
-                                worldPos = transform.position(localPos);
-                                worldNormal = transform.normal(localNormal).normalize();
-                            } else {
-                                // Keep position compatibility if the client render
-                                // pose is temporarily unavailable. A local normal is
-                                // safer than estimating one from projected positions.
-                                worldPos = SableCompat.toWorldCoordinates(mc.level, localPos);
-                            }
+                            worldPos = SableCompat.toWorldCoordinates(mc.level, localPos);
+                            worldNormal = SableCompat.toWorldVector(mc.level, pos, localNormal).normalize();
                         }
 
-                        // 4. Scale the velocity so big flames shoot further out into the air
+                        // 4. Emit strictly along the transformed surface normal.
+                        // Adding a fixed world-Y velocity would skew the direction
+                        // whenever a Sable structure is pitched or rolled.
+                        Vec3 flameVelocity = worldNormal.scale(0.03D * scale);
                         mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.FLAME,
                                 worldPos.x, worldPos.y, worldPos.z,
-                                worldNormal.x * 0.02 * scale,
-                                worldNormal.y * 0.02 * scale + (0.01 * scale),
-                                worldNormal.z * 0.02 * scale);
+                                flameVelocity.x, flameVelocity.y, flameVelocity.z);
 
                         // Also scale the smoke!
                         if (mc.level.random.nextFloat() < 0.5f) {
+                            Vec3 smokeVelocity = worldNormal.scale(0.015D * scale);
                             mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.SMOKE,
                                     worldPos.x, worldPos.y, worldPos.z,
-                                    worldNormal.x * 0.01 * scale,
-                                    worldNormal.y * 0.04 * scale,
-                                    worldNormal.z * 0.01 * scale);
+                                    smokeVelocity.x, smokeVelocity.y, smokeVelocity.z);
                         }
                     }
                 }

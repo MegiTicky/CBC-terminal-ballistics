@@ -47,6 +47,7 @@ public record ClientboundImpactMarksPacket(BlockPos pos, UUID subLevelId, List<I
             buf.writeFloat(mark.y());
             buf.writeFloat(mark.z());
             buf.writeFloat(mark.rotation());
+            buf.writeBoolean(mark.sparks());
             buf.writeLong(mark.gameTime());
         }
     }
@@ -62,7 +63,7 @@ public record ClientboundImpactMarksPacket(BlockPos pos, UUID subLevelId, List<I
             ImpactSurfaceType surface = buf.readEnum(ImpactSurfaceType.class);
             Direction face = buf.readEnum(Direction.class);
             marks.add(new ImpactMark(kind, caliber, surface, face,
-                buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readLong()));
+                buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readBoolean(), buf.readLong()));
         }
         return new ClientboundImpactMarksPacket(pos, subLevelId, marks);
     }
