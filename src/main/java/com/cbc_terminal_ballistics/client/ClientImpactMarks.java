@@ -264,8 +264,8 @@ public final class ClientImpactMarks {
         Vec3 absolute = mark.absolute(pos);
         if (!intersectsAttachment(level, pos, mark, absolute)) return;
 
-        // 16x16 impact textures are rendered 1:1 with a Minecraft block face
-        // and strictly clipped to the struck block's collision shape.
+        // 16x16 impact textures are rendered 1:1 with a Minecraft block face.
+        // Overflow is allowed only when an adjacent cell provides a supporting face.
         List<ClippedFaceRect> rects = clippedFaceRects(level, pos, mark);
         if (rects.isEmpty()) return;
 
@@ -403,18 +403,30 @@ public final class ClientImpactMarks {
         List<ClippedFaceRect> rects = new ArrayList<>(uBands.size() * vBands.size());
         for (AxisBand u : uBands) {
             for (AxisBand v : vBands) {
-                rects.add(new ClippedFaceRect(face, centerU, centerV, u.min(), u.max(), v.min(), v.max(), plane));
+                if ((u.offset() == 0 && v.offset() == 0)
+                    || isSupportedOverflowNeighbor(level, pos, face, u.offset(), v.offset())) {
+                    rects.add(new ClippedFaceRect(face, centerU, centerV, u.min(), u.max(), v.min(), v.max(), plane));
+                }
             }
         }
         return rects;
     }
 
     private static List<AxisBand> axisBands(float baseMin, float baseMax, float desiredMin, float desiredMax) {
-        List<AxisBand> bands = new ArrayList<>(1);
+        final float epsilon = 1.0E-4F;
+        List<AxisBand> bands = new ArrayList<>(3);
 
         float localMin = Math.max(desiredMin, baseMin);
         float localMax = Math.min(desiredMax, baseMax);
         addBand(bands, 0, localMin, localMax);
+
+        // Bridge to a neighboring cell only when this shape reaches the cell edge.
+        if (desiredMin < 0.0F && baseMin <= epsilon) {
+            addBand(bands, -1, desiredMin, Math.min(0.0F, desiredMax));
+        }
+        if (desiredMax > 1.0F && baseMax >= 1.0F - epsilon) {
+            addBand(bands, 1, Math.max(1.0F, desiredMin), desiredMax);
+        }
 
         return bands;
     }
@@ -429,8 +441,9 @@ public final class ClientImpactMarks {
         BlockPos neighbor = pos.offset(neighborDx(face, du, dv), neighborDy(face, du, dv), neighborDz(face, du, dv));
         BlockState state = level.getBlockState(neighbor);
         if (state.isAir()) {
-            // Sable sub-level neighbors are valid support even if air in the main world.
-            return SableCompat.isPresent() || SableCompat.isInSubLevel(level, neighbor);
+            // Sable sub-level neighbors can appear as air in the main world, but only
+            // the specific confirmed sub-level position is valid overflow support.
+            return SableCompat.isInSubLevel(level, neighbor);
         }
         if (isCopycatOrFramedBlock(state)) {
             return true;
