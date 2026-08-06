@@ -344,7 +344,8 @@ public final class ClientImpactMarks {
 
     private static List<ClippedFaceRect> clippedFaceRects(Level level, BlockPos pos, ImpactMark mark) {
         VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
-        if (shape.isEmpty()) {
+        boolean sableFallbackShape = shape.isEmpty();
+        if (sableFallbackShape) {
             // Sable sub-level blocks have no collision shape in the main world.
             // If Sable is loaded, use a default full-cube shape.
             if (SableCompat.isPresent() || SableCompat.isInSubLevel(level, pos)) {
@@ -404,7 +405,7 @@ public final class ClientImpactMarks {
         for (AxisBand u : uBands) {
             for (AxisBand v : vBands) {
                 if ((u.offset() == 0 && v.offset() == 0)
-                    || isSupportedOverflowNeighbor(level, pos, face, u.offset(), v.offset())) {
+                    || (!sableFallbackShape && isSupportedOverflowNeighbor(level, pos, face, u.offset(), v.offset()))) {
                     rects.add(new ClippedFaceRect(face, centerU, centerV, u.min(), u.max(), v.min(), v.max(), plane));
                 }
             }
@@ -441,9 +442,7 @@ public final class ClientImpactMarks {
         BlockPos neighbor = pos.offset(neighborDx(face, du, dv), neighborDy(face, du, dv), neighborDz(face, du, dv));
         BlockState state = level.getBlockState(neighbor);
         if (state.isAir()) {
-            // Sable sub-level neighbors can appear as air in the main world, but only
-            // the specific confirmed sub-level position is valid overflow support.
-            return SableCompat.isInSubLevel(level, neighbor);
+            return false;
         }
         if (isCopycatOrFramedBlock(state)) {
             return true;
