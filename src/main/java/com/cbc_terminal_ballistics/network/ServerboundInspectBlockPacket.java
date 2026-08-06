@@ -1,10 +1,10 @@
 package com.cbc_terminal_ballistics.network;
 
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
+import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.debug.InspectionSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.codec.StreamDecoder;
@@ -18,8 +18,6 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 public record ServerboundInspectBlockPacket(BlockPos pos, Direction face, Vec3 hitLocation) implements CustomPacketPayload {
-
-    private static final ResourceLocation CBC_INSPECTION_TOOL = ResourceLocation.fromNamespaceAndPath("createbigcannons", "block_armor_inspection_tool");
 
     public static final Type<ServerboundInspectBlockPacket> TYPE =
         new Type<>(ResourceLocation.fromNamespaceAndPath(CBCTerminalBallistics.MOD_ID, "inspect_block"));
@@ -53,7 +51,8 @@ public record ServerboundInspectBlockPacket(BlockPos pos, Direction face, Vec3 h
         ctx.enqueueWork(() -> {
             ServerPlayer player = (ServerPlayer) ctx.player();
             if (player == null) return;
-            if (!isHoldingCbcInspectionTool(player)) return;
+            if (!CbcInspectionCompat.isAdvanced(player.getMainHandItem())
+                && !CbcInspectionCompat.isAdvanced(player.getOffhandItem())) return;
             if (player.distanceToSqr(Vec3.atCenterOf(packet.pos)) > 64.0D * 64.0D) return;
             if (!player.serverLevel().isLoaded(packet.pos)) return;
             BlockHitResult hit = new BlockHitResult(packet.hitLocation, packet.face, packet.pos, false);
@@ -61,10 +60,5 @@ public record ServerboundInspectBlockPacket(BlockPos pos, Direction face, Vec3 h
                 InspectionSnapshot.build(player.serverLevel(), packet.pos, hit));
             PacketDistributor.sendToPlayer(player, response);
         });
-    }
-
-    private static boolean isHoldingCbcInspectionTool(ServerPlayer player) {
-        return CBC_INSPECTION_TOOL.equals(BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem()))
-            || CBC_INSPECTION_TOOL.equals(BuiltInRegistries.ITEM.getKey(player.getOffhandItem().getItem()));
     }
 }

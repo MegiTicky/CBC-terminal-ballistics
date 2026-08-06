@@ -28,7 +28,7 @@ public final class CbcInspectionCompat {
         return player != null && (isAdvanced(player.getMainHandItem()) || isAdvanced(player.getOffhandItem()));
     }
 
-    private static boolean isAdvanced(ItemStack stack) {
+    public static boolean isAdvanced(ItemStack stack) {
         return !stack.isEmpty() && stack.is(ModItems.ADVANCED_BLOCK_ARMOR_INSPECTION_TOOL.get());
     }
 
