@@ -265,9 +265,7 @@ public final class ClientImpactMarks {
         if (!intersectsAttachment(level, pos, mark, absolute)) return;
 
         // 16x16 impact textures are rendered 1:1 with a Minecraft block face.
-        // Build the decal on the actual collision-shape face.  Pieces that
-        // cross a block-cell edge are rendered only when that neighboring cell
-        // has a solid/copycat/framed block supporting the overflow.
+        // Overflow is allowed only when an adjacent cell provides a supporting face.
         List<ClippedFaceRect> rects = clippedFaceRects(level, pos, mark);
         if (rects.isEmpty()) return;
 
@@ -346,7 +344,8 @@ public final class ClientImpactMarks {
 
     private static List<ClippedFaceRect> clippedFaceRects(Level level, BlockPos pos, ImpactMark mark) {
         VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
-        if (shape.isEmpty()) {
+        boolean sableFallbackShape = shape.isEmpty();
+        if (sableFallbackShape) {
             // Sable sub-level blocks have no collision shape in the main world.
             // If Sable is loaded, use a default full-cube shape.
             if (SableCompat.isPresent() || SableCompat.isInSubLevel(level, pos)) {
@@ -405,7 +404,8 @@ public final class ClientImpactMarks {
         List<ClippedFaceRect> rects = new ArrayList<>(uBands.size() * vBands.size());
         for (AxisBand u : uBands) {
             for (AxisBand v : vBands) {
-                if ((u.offset() == 0 && v.offset() == 0) || isSupportedOverflowNeighbor(level, pos, face, u.offset(), v.offset())) {
+                if ((u.offset() == 0 && v.offset() == 0)
+                    || (!sableFallbackShape && isSupportedOverflowNeighbor(level, pos, face, u.offset(), v.offset()))) {
                     rects.add(new ClippedFaceRect(face, centerU, centerV, u.min(), u.max(), v.min(), v.max(), plane));
                 }
             }
@@ -421,14 +421,14 @@ public final class ClientImpactMarks {
         float localMax = Math.min(desiredMax, baseMax);
         addBand(bands, 0, localMin, localMax);
 
-        // Only bridge to the neighboring cell if this shape reaches the block
-        // cell edge; otherwise keep clipping to the partial shape's own bounds.
+        // Bridge to a neighboring cell only when this shape reaches the cell edge.
         if (desiredMin < 0.0F && baseMin <= epsilon) {
             addBand(bands, -1, desiredMin, Math.min(0.0F, desiredMax));
         }
         if (desiredMax > 1.0F && baseMax >= 1.0F - epsilon) {
             addBand(bands, 1, Math.max(1.0F, desiredMin), desiredMax);
         }
+
         return bands;
     }
 
@@ -442,8 +442,7 @@ public final class ClientImpactMarks {
         BlockPos neighbor = pos.offset(neighborDx(face, du, dv), neighborDy(face, du, dv), neighborDz(face, du, dv));
         BlockState state = level.getBlockState(neighbor);
         if (state.isAir()) {
-            // Sable sub-level neighbors are valid support even if air in the main world.
-            return SableCompat.isPresent() || SableCompat.isInSubLevel(level, neighbor);
+            return false;
         }
         if (isCopycatOrFramedBlock(state)) {
             return true;

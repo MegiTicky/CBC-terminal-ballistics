@@ -4,6 +4,7 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.armor.ArmorUpgraderItem;
 import com.cbc_terminal_ballistics.armor.CopycatArmorLayerItem;
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorItem;
+import com.cbc_terminal_ballistics.debug.AdvancedBlockArmorInspectionToolItem;
 import com.cbc_terminal_ballistics.debug.BallisticTestLauncherItem;
 import net.minecraft.world.item.Item;
 import net.neoforged.neoforge.registries.DeferredItem;
@@ -24,6 +25,10 @@ public final class ModItems {
     public static final DeferredItem<ArmorUpgraderItem> ARMOR_UPGRADER =
             ITEMS.register("armor_upgrader",
                     () -> new ArmorUpgraderItem(new Item.Properties()));
+
+    public static final DeferredItem<AdvancedBlockArmorInspectionToolItem> ADVANCED_BLOCK_ARMOR_INSPECTION_TOOL =
+            ITEMS.register("advanced_block_armor_inspection_tool",
+                    () -> new AdvancedBlockArmorInspectionToolItem(new Item.Properties().stacksTo(1)));
 
     public static final DeferredItem<BallisticTestLauncherItem> BALLISTIC_TEST_LAUNCHER =
             ITEMS.register("ballistic_test_launcher",

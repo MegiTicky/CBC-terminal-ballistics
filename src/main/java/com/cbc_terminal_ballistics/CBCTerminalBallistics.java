@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics;
 import com.cbc_terminal_ballistics.ballistics.TBImpactService;
 import com.cbc_terminal_ballistics.command.TBCommands;
 import com.cbc_terminal_ballistics.compat.CbcArmorCompat;
+import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.debug.TBDebug;
@@ -54,6 +55,7 @@ public class CBCTerminalBallistics {
     private void commonSetup(FMLCommonSetupEvent event) {
         event.enqueueWork(() -> {
             CbcArmorCompat.register();
+            CbcInspectionCompat.register();
         });
     }
 

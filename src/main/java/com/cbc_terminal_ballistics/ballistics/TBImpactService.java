@@ -149,11 +149,18 @@ public final class TBImpactService {
             // physical sub-level normals exactly as CBC expects.
             double bounceChance = 0.0D;
             if (deflection >= 1e-2D && incidence <= deflection) {
-                double bounceBonus = autocannon ? 1.0D : Math.max(1.0D - hardnessPenaltyRaw, 0.0D);
-                bounceChance = Math.max(CBCReflect.baseProjectileBounceChance(), 1.0D - incidence / deflection) * bounceBonus;
+                double baseBounce = Math.max(CBCReflect.baseProjectileBounceChance(), 1.0D - incidence / deflection);
+                double minTough = TBConfig.RICOCHET_MIN_TOUGHNESS.get();
+                double scaleTough = TBConfig.RICOCHET_TOUGHNESS_SCALE.get();
+                double toughnessFactor = armorToughness <= minTough ? 0.0 : Math.min((armorToughness - minTough) / (scaleTough - minTough), 1.0);
+                double velocityFactor = Math.max(0.2, 1.0 - velMag / TBConfig.RICOCHET_VELOCITY_BASELINE.get());
+                double bounceBonus = Math.max(1.0D - hardnessPenaltyRaw, 0.0D);
+                bounceChance = baseBounce * bounceBonus * toughnessFactor * velocityFactor;
             }
             if (surfaceImpact && CBCReflect.projectilesCanBounce() && level.random.nextDouble() < bounceChance) {
                 if (!level.isClientSide) {
+                    double massLossFraction = calculateRicochetMassLoss(velMag, incidence, armorToughness);
+                    CBCReflect.setProjectileMass(projectile, Math.max(0.0, mass * (1.0 - massLossFraction)));
                     Vec3 effectNormal = curVel.subtract(normal.scale(normal.dot(curVel) * 1.7D));
                     CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), effectNormal, true);
                     if (level instanceof ServerLevel server) {
@@ -198,7 +205,7 @@ public final class TBImpactService {
             boolean temporaryPassagePending = false;
             boolean blockBreakPending = false;
             if (level instanceof ServerLevel server) {
-                if (projectile instanceof Projectile p && !shouldSkipProjectileHit(state, copiedMaterial.isPresent())) {
+                if (projectile instanceof Projectile p) {
                     state.onProjectileHit(level, state, hit, p);
                 }
                 CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), curVel.reverse(), false);
@@ -822,6 +829,16 @@ public final class TBImpactService {
                              double armorToughness, double armorHardness, double effectiveToughness,
                              double attack, double resistance, double penetrationRatio, double massLoss,
                              int spallFragments, double spallDamageModifier, String spallReason) {}
+
+    private static double calculateRicochetMassLoss(double velocity, double incidence, double toughness) {
+        double minLoss = TBConfig.RICOCHET_MASS_LOSS_MIN.get();
+        double maxLoss = TBConfig.RICOCHET_MASS_LOSS_MAX.get();
+        double velScale = TBConfig.RICOCHET_MASS_LOSS_VELOCITY_SCALE.get();
+        double velocityFactor = Math.min(velocity / velScale, 1.0);
+        double toughnessFactor = Math.min(toughness / 20.0, 1.0);
+        double combined = velocityFactor * 0.4 + incidence * 0.35 + toughnessFactor * 0.25;
+        return Mth.lerp(combined, minLoss, maxLoss);
+    }
 
     private record SpallExit(Vec3 origin, Vec3 direction) {}
 
