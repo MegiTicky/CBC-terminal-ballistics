@@ -4,31 +4,32 @@ import com.cbc_terminal_ballistics.armor.CopycatArmorLayerItem;
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorItem;
 import com.cbc_terminal_ballistics.registry.ModItems;
 import com.cbc_terminal_ballistics.registry.ModRecipeSerializers;
-import net.minecraft.core.RegistryAccess;
-import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.inventory.CraftingContainer;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.NonNullList;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.CraftingBookCategory;
+import net.minecraft.world.item.crafting.CraftingInput;
 import net.minecraft.world.item.crafting.CustomRecipe;
+import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.RecipeSerializer;
 import net.minecraft.world.level.Level;
 
 public class ArmorLayerUpgradeRecipe extends CustomRecipe {
-    public ArmorLayerUpgradeRecipe(ResourceLocation id, CraftingBookCategory category) {
-        super(id, category);
+    public ArmorLayerUpgradeRecipe(CraftingBookCategory category) {
+        super(category);
     }
 
     @Override
-    public boolean matches(CraftingContainer container, Level level) {
-        ItemStack armor = findArmorBlock(container);
-        return isArmorBlock(armor) && countUpgraders(container) == 1
-                && onlyArmorBlockAndOneUpgrader(container)
+    public boolean matches(CraftingInput input, Level level) {
+        ItemStack armor = findArmorBlock(input);
+        return isArmorBlock(armor) && countUpgraders(input) == 1
+                && onlyArmorBlockAndOneUpgrader(input)
                 && getArmorLevel(armor) < CopycatArmorLayerItem.MAX_LEVEL;
     }
 
     @Override
-    public ItemStack assemble(CraftingContainer container, RegistryAccess registryAccess) {
-        ItemStack layer = findArmorBlock(container);
+    public ItemStack assemble(CraftingInput input, HolderLookup.Provider registries) {
+        ItemStack layer = findArmorBlock(input);
         if (layer.isEmpty()) {
             return ItemStack.EMPTY;
         }
@@ -39,10 +40,10 @@ public class ArmorLayerUpgradeRecipe extends CustomRecipe {
         return result;
     }
 
-    private static ItemStack findArmorBlock(CraftingContainer container) {
+    private static ItemStack findArmorBlock(CraftingInput input) {
         ItemStack found = ItemStack.EMPTY;
-        for (int i = 0; i < container.getContainerSize(); i++) {
-            ItemStack stack = container.getItem(i);
+        for (int i = 0; i < input.size(); i++) {
+            ItemStack stack = input.getItem(i);
             if (isArmorBlock(stack)) {
                 if (!found.isEmpty()) {
                     return ItemStack.EMPTY;
@@ -53,21 +54,21 @@ public class ArmorLayerUpgradeRecipe extends CustomRecipe {
         return found;
     }
 
-    private static int countUpgraders(CraftingContainer container) {
+    private static int countUpgraders(CraftingInput input) {
         int count = 0;
-        for (int i = 0; i < container.getContainerSize(); i++) {
-            if (container.getItem(i).is(ModItems.ARMOR_UPGRADER.get())) {
+        for (int i = 0; i < input.size(); i++) {
+            if (input.getItem(i).is(ModItems.ARMOR_UPGRADER.get())) {
                 count++;
             }
         }
         return count;
     }
 
-    private static boolean onlyArmorBlockAndOneUpgrader(CraftingContainer container) {
+    private static boolean onlyArmorBlockAndOneUpgrader(CraftingInput input) {
         int layers = 0;
         int upgraders = 0;
-        for (int i = 0; i < container.getContainerSize(); i++) {
-            ItemStack stack = container.getItem(i);
+        for (int i = 0; i < input.size(); i++) {
+            ItemStack stack = input.getItem(i);
             if (stack.isEmpty()) {
                 continue;
             }
@@ -105,6 +106,20 @@ public class ArmorLayerUpgradeRecipe extends CustomRecipe {
     @Override
     public boolean canCraftInDimensions(int width, int height) {
         return width * height >= 2;
+    }
+
+    @Override
+    public NonNullList<Ingredient> getIngredients() {
+        NonNullList<Ingredient> ingredients = NonNullList.withSize(9, Ingredient.EMPTY);
+        ingredients.set(0, Ingredient.of(ModItems.COPYCAT_ARMOR_LAYER.get(),
+                ModItems.FRAMED_COLLAPSIBLE_COPYCAT_ARMOR.get()));
+        ingredients.set(4, Ingredient.of(ModItems.ARMOR_UPGRADER.get()));
+        return ingredients;
+    }
+
+    @Override
+    public ItemStack getResultItem(HolderLookup.Provider registries) {
+        return new ItemStack(ModItems.COPYCAT_ARMOR_LAYER.get());
     }
 
     @Override

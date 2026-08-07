@@ -1,8 +1,5 @@
 package com.cbc_terminal_ballistics.command;
 
-import com.cbc_terminal_ballistics.armor.ArmorCopycatItemData;
-import com.cbc_terminal_ballistics.armor.CopycatArmorLayerBlockEntity;
-import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlockEntity;
 import com.cbc_terminal_ballistics.ballistics.TBImpactService;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
@@ -11,6 +8,7 @@ import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.util.SableCompat;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.ChatFormatting;
@@ -20,17 +18,14 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
-import net.minecraftforge.fml.ModList;
+import net.neoforged.fml.ModList;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 public final class TBCommands {
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
@@ -52,19 +47,16 @@ public final class TBCommands {
                 .then(Commands.literal("reset").executes(ctx -> setProjectileSlow(ctx.getSource(), 1))))
             .then(Commands.literal("marks")
                 .then(Commands.literal("refresh").executes(ctx -> refreshImpactMarks(ctx.getSource())))
-                .then(Commands.literal("delete").executes(ctx -> deleteImpactMarks(ctx.getSource()))))
-            .then(Commands.literal("checkarmor")
-                .executes(ctx -> checkArmor(ctx.getSource(), false))
-                .then(Commands.literal("fix")
-                    .executes(ctx -> checkArmor(ctx.getSource(), true)))));
+                .then(Commands.literal("delete").executes(ctx -> deleteImpactMarks(ctx.getSource())))));
     }
 
     private static int status(CommandSourceStack source) {
         source.sendSuccess(() -> Component.literal("CBC Terminal Ballistics status").withStyle(ChatFormatting.GOLD), false);
         source.sendSuccess(() -> Component.literal(TBDebug.statusLine()), false);
         source.sendSuccess(() -> Component.literal("Projectile slow factor: " + TBProjectileSlowdown.serverFactor() + "x"), false);
-        source.sendSuccess(() -> Component.literal("Max armor level: " + TBConfig.COPYCAT_ARMOR_MAX_LEVEL.get() + " (max toughness: " + (TBConfig.COPYCAT_ARMOR_MAX_LEVEL.get() * ArmorCopycatItemData.TOUGHNESS_PER_LEVEL) + ")"), false);
+        source.sendSuccess(() -> Component.literal("Max armor level: " + TBConfig.COPYCAT_ARMOR_MAX_LEVEL.get()), false);
         source.sendSuccess(() -> Component.literal("Material mappings: blocks=" + MaterialManager.INSTANCE.blockMappingCount() + " tags=" + MaterialManager.INSTANCE.tagMappingCount()), false);
+        source.sendSuccess(() -> Component.literal("Sable: present=" + SableCompat.isPresent() + " companionWorking=" + SableCompat.isCompanionWorking()), false);
         for (String modid : new String[]{"create", "createbigcannons", "ritchiesprojectilelib", "cbcmoreshells", "cbcmodernwarfare", "rha", "s_a_b"}) {
             boolean loaded = ModList.get().isLoaded(modid);
             source.sendSuccess(() -> Component.literal("Mod " + modid + ": " + (loaded ? "loaded" : "absent")), false);
@@ -144,8 +136,8 @@ public final class TBCommands {
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
         int syncedBlocks = 0;
         int syncedMarks = 0;
-        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry : data.entriesView().entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
+        for (Map.Entry<BlockPos, ArmorIntegritySavedData.Entry> mapEntry : data.entriesView().entrySet()) {
+            BlockPos pos = mapEntry.getKey();
             ArmorIntegritySavedData.Entry entry = data.getEntry(level, pos);
             if (entry == null || entry.marks.isEmpty()) continue;
             TBImpactService.syncMarksToPlayers(level, pos, List.copyOf(entry.marks));
@@ -162,7 +154,7 @@ public final class TBCommands {
         ServerLevel level = source.getLevel();
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
         List<BlockPos> positions = data.entriesView().entrySet().stream()
-            .map(entry -> BlockPos.of(entry.getKey()))
+            .map(Map.Entry::getKey)
             .toList();
         int count = data.clearAll();
         for (BlockPos pos : positions) {
@@ -178,92 +170,6 @@ public final class TBCommands {
         source.sendSuccess(() -> Component.literal("Auto projectile: " + TBDebug.inspectClass("rbasamoyai.createbigcannons.munitions.autocannon.AbstractAutocannonProjectile")), false);
         source.sendSuccess(() -> Component.literal("RPL ServerEntityMixin: " + TBDebug.inspectClass("rbasamoyai.ritchiesprojectilelib.mixin.ServerEntityMixin")), false);
         return 1;
-    }
-
-    private static int checkArmor(CommandSourceStack source, boolean fix) {
-        int maxLevel = TBConfig.COPYCAT_ARMOR_MAX_LEVEL.get();
-        int totalChecked = 0;
-        int totalExceeded = 0;
-        int totalFixed = 0;
-        List<String> levelSummaries = new ArrayList<>();
-
-        for (ServerLevel level : source.getServer().getAllLevels()) {
-            int levelChecked = 0;
-            int levelExceeded = 0;
-            int levelFixed = 0;
-            Set<BlockEntity> checked = new HashSet<>();
-
-            for (ServerPlayer player : level.players()) {
-                int chunkX = player.chunkPosition().x;
-                int chunkZ = player.chunkPosition().z;
-                int viewDistance = 16;
-
-                for (int dx = -viewDistance; dx <= viewDistance; dx++) {
-                    for (int dz = -viewDistance; dz <= viewDistance; dz++) {
-                        if (!level.hasChunk(chunkX + dx, chunkZ + dz)) continue;
-                        for (BlockEntity be : level.getChunk(chunkX + dx, chunkZ + dz).getBlockEntities().values()) {
-                            if (!checked.add(be)) continue;
-                            if (be instanceof CopycatArmorLayerBlockEntity armor) {
-                                levelChecked++;
-                                int current = armor.getArmorLevel();
-                                if (current > maxLevel) {
-                                    levelExceeded++;
-                                    if (fix) {
-                                        armor.setArmorLevel(maxLevel);
-                                        levelFixed++;
-                                    }
-                                }
-                            } else if (be instanceof FramedCollapsibleCopycatArmorBlockEntity armor) {
-                                levelChecked++;
-                                int current = armor.getArmorLevel();
-                                if (current > maxLevel) {
-                                    levelExceeded++;
-                                    if (fix) {
-                                        armor.setArmorLevel(maxLevel);
-                                        levelFixed++;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            totalChecked += levelChecked;
-            totalExceeded += levelExceeded;
-            totalFixed += levelFixed;
-            if (levelExceeded > 0) {
-                levelSummaries.add(String.format("%s: %d/%d exceeded", level.dimension().location().toString(), levelExceeded, levelChecked));
-            }
-        }
-
-        int finalTotalChecked = totalChecked;
-        int finalTotalExceeded = totalExceeded;
-        int finalTotalFixed = totalFixed;
-        List<String> finalSummaries = new ArrayList<>(levelSummaries);
-
-        source.sendSuccess(() -> Component.literal("=== Armor Level Check ===").withStyle(ChatFormatting.GOLD), false);
-        source.sendSuccess(() -> Component.literal(String.format("Config max level: %d (toughness: %d)", maxLevel, maxLevel * ArmorCopycatItemData.TOUGHNESS_PER_LEVEL)), false);
-        source.sendSuccess(() -> Component.literal(String.format("Checked: %d armor blocks in %d loaded chunks", finalTotalChecked, finalSummaries.size())), false);
-
-        if (fix) {
-            source.sendSuccess(() -> Component.literal(String.format("Fixed: %d blocks exceeded max, clamped to %d", finalTotalFixed, maxLevel)).withStyle(ChatFormatting.GREEN), true);
-        } else {
-            source.sendSuccess(() -> Component.literal(String.format("Found: %d blocks exceed max level", finalTotalExceeded)).withStyle(finalTotalExceeded > 0 ? ChatFormatting.YELLOW : ChatFormatting.GREEN), false);
-        }
-
-        if (!finalSummaries.isEmpty()) {
-            source.sendSuccess(() -> Component.literal("Per-dimension breakdown:"), false);
-            for (String summary : finalSummaries) {
-                source.sendSuccess(() -> Component.literal("  " + summary), false);
-            }
-        }
-
-        if (!fix && totalExceeded > 0) {
-            source.sendSuccess(() -> Component.literal("Run '/cbctb checkarmor fix' to clamp exceeded levels.").withStyle(ChatFormatting.AQUA), false);
-        }
-
-        return totalExceeded;
     }
 
     private TBCommands() {}

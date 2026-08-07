@@ -10,7 +10,9 @@ import net.minecraft.client.Minecraft;
 
 public final class ClientPacketHandlers {
     public static void handleImpactMarks(ClientboundImpactMarksPacket packet) {
-        if (Minecraft.getInstance().level != null) ClientImpactMarks.accept(packet.pos(), packet.marks());
+        if (Minecraft.getInstance().level != null) {
+            ClientImpactMarks.accept(packet.pos(), packet.subLevelId(), packet.marks());
+        }
     }
 
     public static void handleSpallCone(ClientboundSpallConePacket packet) {

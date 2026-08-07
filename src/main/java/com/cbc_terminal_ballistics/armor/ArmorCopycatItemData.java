@@ -1,11 +1,14 @@
 package com.cbc_terminal_ballistics.armor;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtUtils;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.component.CustomData;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -21,8 +24,8 @@ public final class ArmorCopycatItemData {
     }
 
     public static int getArmorLevel(ItemStack stack) {
-        CompoundTag tag = stack.getTag();
-        int level = tag == null || !tag.contains(ARMOR_LEVEL_TAG) ? MIN_LEVEL : tag.getInt(ARMOR_LEVEL_TAG);
+        CustomData data = stack.get(DataComponents.CUSTOM_DATA);
+        int level = data == null || !data.contains(ARMOR_LEVEL_TAG) ? MIN_LEVEL : data.copyTag().getInt(ARMOR_LEVEL_TAG);
         return clampLevel(level);
     }
 
@@ -31,15 +34,18 @@ public final class ArmorCopycatItemData {
     }
 
     public static void setArmorLevel(ItemStack stack, int level) {
-        stack.getOrCreateTag().putInt(ARMOR_LEVEL_TAG, clampLevel(level));
+        stack.update(DataComponents.CUSTOM_DATA, CustomData.EMPTY, data ->
+                data.update(tag -> {
+                    tag.putInt(ARMOR_LEVEL_TAG, clampLevel(level));
+                }));
     }
 
     public static BlockState getStoredMaterial(ItemStack stack) {
-        CompoundTag tag = stack.getTag();
-        if (tag == null || !tag.contains(MATERIAL_TAG)) {
+        CustomData data = stack.get(DataComponents.CUSTOM_DATA);
+        if (data == null || !data.contains(MATERIAL_TAG)) {
             return defaultMaterial();
         }
-        BlockState state = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), tag.getCompound(MATERIAL_TAG));
+        BlockState state = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), data.copyTag().getCompound(MATERIAL_TAG));
         return state == null || state.isAir() ? defaultMaterial() : state;
     }
 
@@ -47,24 +53,32 @@ public final class ArmorCopycatItemData {
         if (material == null || material.isAir()) {
             material = defaultMaterial();
         }
-        stack.getOrCreateTag().put(MATERIAL_TAG, NbtUtils.writeBlockState(material));
+        BlockState finalMaterial = material;
+        stack.update(DataComponents.CUSTOM_DATA, CustomData.EMPTY, data ->
+                data.update(tag -> {
+                    tag.put(MATERIAL_TAG, NbtUtils.writeBlockState(finalMaterial));
+                }));
     }
 
     public static BlockState defaultMaterial() {
-        ResourceLocation id = ResourceLocation.tryParse("create:copycat_base");
-        if (id != null && BuiltInRegistries.BLOCK.containsKey(id)) {
-            return BuiltInRegistries.BLOCK.get(id).defaultBlockState();
+        Block copycatBase = BuiltInRegistries.BLOCK.get(ResourceLocation.fromNamespaceAndPath("create", "copycat_base"));
+        if (copycatBase != Blocks.AIR) {
+            return copycatBase.defaultBlockState();
         }
-        return Blocks.IRON_BLOCK.defaultBlockState();
+        copycatBase = BuiltInRegistries.BLOCK.get(ResourceLocation.fromNamespaceAndPath("copycats", "copycat_base"));
+        return copycatBase != Blocks.AIR ? copycatBase.defaultBlockState() : Blocks.IRON_BLOCK.defaultBlockState();
     }
 
     public static int getOffsets(ItemStack stack) {
-        CompoundTag tag = stack.getTag();
-        return tag == null || !tag.contains(OFFSETS_TAG) ? 0 : sanitizeOffsets(tag.getInt(OFFSETS_TAG));
+        CustomData data = stack.get(DataComponents.CUSTOM_DATA);
+        return data == null || !data.contains(OFFSETS_TAG) ? 0 : sanitizeOffsets(data.copyTag().getInt(OFFSETS_TAG));
     }
 
     public static void setOffsets(ItemStack stack, int packedOffsets) {
-        stack.getOrCreateTag().putInt(OFFSETS_TAG, sanitizeOffsets(packedOffsets));
+        stack.update(DataComponents.CUSTOM_DATA, CustomData.EMPTY, data ->
+                data.update(tag -> {
+                    tag.putInt(OFFSETS_TAG, sanitizeOffsets(packedOffsets));
+                }));
     }
 
     public static int clampLevel(int level) {

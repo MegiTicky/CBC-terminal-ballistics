@@ -2,7 +2,9 @@ package com.cbc_terminal_ballistics.debug;
 
 import com.cbc_terminal_ballistics.compat.TestLauncherProjectileCompat;
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
@@ -12,9 +14,9 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.item.component.CustomData;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.phys.Vec3;
@@ -35,8 +37,12 @@ public class BallisticTestLauncherItem extends Item {
     }
 
     public static int velocity(ItemStack stack) {
-        if (stack.hasTag() && stack.getTag().contains(NBT_MUZZLE_VELOCITY)) {
-            return clampVelocity(stack.getTag().getInt(NBT_MUZZLE_VELOCITY));
+        CustomData customData = stack.get(DataComponents.CUSTOM_DATA);
+        if (customData != null) {
+            CompoundTag tag = customData.copyTag();
+            if (tag.contains(NBT_MUZZLE_VELOCITY)) {
+                return clampVelocity(tag.getInt(NBT_MUZZLE_VELOCITY));
+            }
         }
         return DEFAULT_MUZZLE_VELOCITY_MPS;
     }
@@ -46,7 +52,11 @@ public class BallisticTestLauncherItem extends Item {
     }
 
     public static void setVelocity(ItemStack stack, int value) {
-        stack.getOrCreateTag().putInt(NBT_MUZZLE_VELOCITY, clampVelocity(value));
+        stack.update(DataComponents.CUSTOM_DATA, CustomData.EMPTY, data -> {
+            CompoundTag tag = data.copyTag();
+            tag.putInt(NBT_MUZZLE_VELOCITY, clampVelocity(value));
+            return CustomData.of(tag);
+        });
     }
 
     @Override
@@ -65,8 +75,7 @@ public class BallisticTestLauncherItem extends Item {
             return InteractionResultHolder.fail(launcher);
         }
 
-        ItemStack ammoCopy = deepCopyItemStack(ammo);
-        Entity projectile = createProjectile(server, ammoCopy);
+        Entity projectile = createProjectile(server, ammo);
         if (projectile == null) {
             serverPlayer.displayClientMessage(Component.translatable("message.cbc_terminal_ballistics.ballistic_test_launcher.unsupported").withStyle(ChatFormatting.RED), true);
             return InteractionResultHolder.fail(launcher);
@@ -159,15 +168,8 @@ public class BallisticTestLauncherItem extends Item {
         return null;
     }
 
-    private static ItemStack deepCopyItemStack(ItemStack original) {
-        if (original.isEmpty()) return ItemStack.EMPTY;
-        CompoundTag tag = new CompoundTag();
-        original.save(tag);
-        return ItemStack.of(tag);
-    }
-
     @Override
-    public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
+    public void appendHoverText(ItemStack stack, Item.TooltipContext context, List<Component> tooltip, TooltipFlag flag) {
         tooltip.add(Component.translatable("tooltip.cbc_terminal_ballistics.ballistic_test_launcher.velocity", velocity(stack)).withStyle(ChatFormatting.GRAY));
         tooltip.add(Component.translatable("tooltip.cbc_terminal_ballistics.ballistic_test_launcher.controls").withStyle(ChatFormatting.DARK_GRAY));
     }

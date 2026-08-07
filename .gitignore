@@ -13,16 +13,53 @@ out
 *.iml
 .idea
 
+# vscode
+.vscode/
+
 # gradle
 build
 .gradle
 mcmodsrepo
 gradle/vs23-reference-aliases
 
+# trae ai specs
+.trae/
+
+# ai assistant
+AGENTS.md
+
 # other
 eclipse
 run
 run-data
+runs/
+
+# build and compile logs
+build-log*.txt
+build_log*.txt
+build_output*.txt
+compile*.log
+compile*.txt
+compile_err*.txt
+compile_out*.txt
+compile_stdout*.txt
+compile_stderr*.txt
+compile_clean*.txt
+compile_info*.txt
+compile_errors*.txt
+compile_tee*.txt
+full_compile*.txt
+full_build_output*.txt
+dryrun*.txt
+dryrun_err*.txt
+deps.txt
+help*.txt
+help_err*.txt
+stderr.txt
+stdout.txt
+version.txt
+version_err.txt
+gradle_out.txt
 
 # Files from Forge MDK
 forge*changelog.txt

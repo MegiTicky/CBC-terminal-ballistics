@@ -9,13 +9,10 @@ displayName="${mod_name}"
 authors="${mod_authors}"
 description='''${mod_description}'''
 
-[[mixins]]
-config="cbc_terminal_ballistics.mixins.json"
-
 [[dependencies.${mod_id}]]
-    modId="forge"
+    modId="neoforge"
     mandatory=true
-    versionRange="${forge_version_range}"
+    versionRange="${neoforge_version_range}"
     ordering="NONE"
     side="BOTH"
 [[dependencies.${mod_id}]]
@@ -27,7 +24,7 @@ config="cbc_terminal_ballistics.mixins.json"
 [[dependencies.${mod_id}]]
     modId="create"
     mandatory=true
-    versionRange="[6.0.8,)"
+    versionRange="[6.0.7,6.1.0)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
@@ -39,37 +36,21 @@ config="cbc_terminal_ballistics.mixins.json"
 [[dependencies.${mod_id}]]
     modId="createbigcannons"
     mandatory=true
-    versionRange="[5.10.2,)"
+    versionRange="[5.10,5.12)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
-    modId="cbcmoreshells"
-    mandatory=false
-    versionRange="[0.2.2,)"
+    modId="sable"
+    type="optional"
+    versionRange="[1.2.2,3.0.0)"
     ordering="AFTER"
     side="BOTH"
 [[dependencies.${mod_id}]]
-    modId="cbcmodernwarfare"
-    mandatory=false
-    versionRange="[0.0.7,)"
-    ordering="AFTER"
-    side="BOTH"
-[[dependencies.${mod_id}]]
-    modId="rha"
-    mandatory=false
-    versionRange="[1.1.5,)"
-    ordering="AFTER"
-    side="BOTH"
-[[dependencies.${mod_id}]]
-    modId="s_a_b"
-    mandatory=false
-    versionRange="[1.4.3,)"
+    modId="aeronautics"
+    type="optional"
+    versionRange="[1.2.1,)"
     ordering="AFTER"
     side="BOTH"
 
-[[dependencies.${mod_id}]]
-    modId="valkyrienskies"
-    mandatory=false
-    versionRange="[2.4.7,)"
-    ordering="AFTER"
-    side="BOTH"
+[[mixins]]
+    config="cbc_terminal_ballistics.mixins.json"

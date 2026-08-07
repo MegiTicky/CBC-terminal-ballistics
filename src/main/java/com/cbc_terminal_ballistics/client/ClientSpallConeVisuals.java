@@ -10,18 +10,18 @@ import net.minecraft.client.renderer.RenderType;
 import net.minecraft.util.Mth;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.phys.Vec3;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.client.event.RenderLevelStageEvent;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
 import org.joml.Matrix4f;
 
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-@Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
+@EventBusSubscriber(modid = "cbc_terminal_ballistics", value = Dist.CLIENT)
 public final class ClientSpallConeVisuals {
     private static final int MAX_ACTIVE_STREAKS = 96;
     private static final List<Streak> STREAKS = new ArrayList<>();
@@ -62,8 +62,7 @@ public final class ClientSpallConeVisuals {
     }
 
     @SubscribeEvent
-    public static void clientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) return;
+    public static void clientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
             STREAKS.clear();
@@ -95,7 +94,7 @@ public final class ClientSpallConeVisuals {
                 iterator.remove();
                 continue;
             }
-            renderStreak(buffer, matrix, streak, camera, age + event.getPartialTick());
+            renderStreak(buffer, matrix, streak, camera, age + Minecraft.getInstance().getTimer().getGameTimeDeltaPartialTick(true));
         }
 
         buffers.endBatch(RenderType.lightning());
@@ -146,9 +145,8 @@ public final class ClientSpallConeVisuals {
     }
 
     private static void vertex(VertexConsumer buffer, Matrix4f matrix, Vec3 pos, float red, float green, float blue, float alpha) {
-        buffer.vertex(matrix, (float) pos.x, (float) pos.y, (float) pos.z)
-            .color(red, green, blue, alpha)
-            .endVertex();
+        buffer.addVertex(matrix, (float) pos.x, (float) pos.y, (float) pos.z)
+            .setColor(red, green, blue, alpha);
     }
 
     private static void trimActiveStreaks() {

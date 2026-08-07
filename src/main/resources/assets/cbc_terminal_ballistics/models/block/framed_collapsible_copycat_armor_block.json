@@ -1,6 +1,3 @@
 {
-  "parent": "minecraft:block/cube_all",
-  "textures": {
-    "all": "create:block/copycat_base"
-  }
+  "parent": "copycats:block/copycat_base/block"
 }

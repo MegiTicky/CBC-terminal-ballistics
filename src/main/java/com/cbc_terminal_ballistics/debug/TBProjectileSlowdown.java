@@ -1,12 +1,11 @@
 package com.cbc_terminal_ballistics.debug;
 
 import com.cbc_terminal_ballistics.network.ClientboundProjectileSlowdownPacket;
-import com.cbc_terminal_ballistics.network.TBNetwork;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
-import net.minecraftforge.network.NetworkDirection;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 public final class TBProjectileSlowdown {
     public static final int MIN_FACTOR = 1;
@@ -45,9 +44,8 @@ public final class TBProjectileSlowdown {
     }
 
     public static void syncTo(ServerPlayer player) {
-        if (TBNetwork.CHANNEL == null) return;
         ClientboundProjectileSlowdownPacket packet = new ClientboundProjectileSlowdownPacket(serverFactor);
-        TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+        PacketDistributor.sendToPlayer(player, packet);
     }
 
     public static void syncAll(MinecraftServer server) {
