@@ -54,7 +54,9 @@ public final class ClientToolEvents {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return false;
         return isCbcInspectionTool(mc.player.getMainHandItem())
-            || isCbcInspectionTool(mc.player.getOffhandItem());
+            || isCbcInspectionTool(mc.player.getOffhandItem())
+            || mc.player.getMainHandItem().is(ModItems.ADVANCED_BLOCK_ARMOR_INSPECTION_TOOL.get())
+            || mc.player.getOffhandItem().is(ModItems.ADVANCED_BLOCK_ARMOR_INSPECTION_TOOL.get());
     }
 
     private static boolean isCbcInspectionTool(ItemStack stack) {

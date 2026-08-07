@@ -52,12 +52,12 @@ public final class ProjectileClassifier {
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
         String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
         String text = path + " " + cls;
-        if (text.contains("apfsds")) return 0.5;
-        if (text.contains("apds")) return 0.6;
-        if (text.contains("apbc")) return 0.9;
-        if (text.contains("aphe")) return 1.0;
-        if (text.contains("ap")) return 1.0;
-        if (text.contains("shot") || text.contains("inert")) return 0.7;
+        if (text.contains("apfsds")) return 1.0;
+        if (text.contains("apds")) return 1.2;
+        if (text.contains("apbc")) return 1.8;
+        if (text.contains("aphe")) return 2.0;
+        if (text.contains("ap")) return 2.0;
+        if (text.contains("shot") || text.contains("inert")) return 1.4;
         return 0.0;
     }
 

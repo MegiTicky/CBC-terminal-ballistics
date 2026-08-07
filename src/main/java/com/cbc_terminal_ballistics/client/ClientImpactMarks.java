@@ -264,10 +264,8 @@ public final class ClientImpactMarks {
         Vec3 absolute = mark.absolute(pos);
         if (!intersectsAttachment(level, pos, mark, absolute)) return;
 
-        // 16x16 impact textures are rendered 1:1 with a Minecraft block face.
-        // Build the decal on the actual collision-shape face.  Pieces that
-        // cross a block-cell edge are rendered only when that neighboring cell
-        // has a solid/copycat/framed block supporting the overflow.
+        // 16x16 impact textures are rendered 1:1 with a Minecraft block face
+        // and strictly clipped to the struck block's collision shape.
         List<ClippedFaceRect> rects = clippedFaceRects(level, pos, mark);
         if (rects.isEmpty()) return;
 
@@ -405,30 +403,19 @@ public final class ClientImpactMarks {
         List<ClippedFaceRect> rects = new ArrayList<>(uBands.size() * vBands.size());
         for (AxisBand u : uBands) {
             for (AxisBand v : vBands) {
-                if ((u.offset() == 0 && v.offset() == 0) || isSupportedOverflowNeighbor(level, pos, face, u.offset(), v.offset())) {
-                    rects.add(new ClippedFaceRect(face, centerU, centerV, u.min(), u.max(), v.min(), v.max(), plane));
-                }
+                rects.add(new ClippedFaceRect(face, centerU, centerV, u.min(), u.max(), v.min(), v.max(), plane));
             }
         }
         return rects;
     }
 
     private static List<AxisBand> axisBands(float baseMin, float baseMax, float desiredMin, float desiredMax) {
-        final float epsilon = 1.0E-4F;
-        List<AxisBand> bands = new ArrayList<>(3);
+        List<AxisBand> bands = new ArrayList<>(1);
 
         float localMin = Math.max(desiredMin, baseMin);
         float localMax = Math.min(desiredMax, baseMax);
         addBand(bands, 0, localMin, localMax);
 
-        // Only bridge to the neighboring cell if this shape reaches the block
-        // cell edge; otherwise keep clipping to the partial shape's own bounds.
-        if (desiredMin < 0.0F && baseMin <= epsilon) {
-            addBand(bands, -1, desiredMin, Math.min(0.0F, desiredMax));
-        }
-        if (desiredMax > 1.0F && baseMax >= 1.0F - epsilon) {
-            addBand(bands, 1, Math.max(1.0F, desiredMin), desiredMax);
-        }
         return bands;
     }
 

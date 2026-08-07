@@ -24,6 +24,12 @@ public final class TBConfig {
     public static final ModConfigSpec.DoubleValue SPALL_CONE_VELOCITY_BASELINE;
     public static final ModConfigSpec.DoubleValue SPALL_CONE_MIN_ANGLE;
     public static final ModConfigSpec.DoubleValue SPALL_CONE_MAX_ANGLE;
+    public static final ModConfigSpec.DoubleValue RICOCHET_MIN_TOUGHNESS;
+    public static final ModConfigSpec.DoubleValue RICOCHET_TOUGHNESS_SCALE;
+    public static final ModConfigSpec.DoubleValue RICOCHET_VELOCITY_BASELINE;
+    public static final ModConfigSpec.DoubleValue RICOCHET_MASS_LOSS_MIN;
+    public static final ModConfigSpec.DoubleValue RICOCHET_MASS_LOSS_MAX;
+    public static final ModConfigSpec.DoubleValue RICOCHET_MASS_LOSS_VELOCITY_SCALE;
 
     public static final ModConfigSpec.ConfigValue<List<? extends String>> PROJECTILE_CLASS_OVERRIDES;
 
@@ -45,6 +51,14 @@ public final class TBConfig {
         SPALL_CONE_VELOCITY_BASELINE = server.comment("Velocity (m/s) at which spall cone is widest. Higher velocities produce narrower cones.").defineInRange("spallConeVelocityBaseline", 200.0, 50.0, 500.0);
         SPALL_CONE_MIN_ANGLE = server.comment("Minimum spall cone half-angle in degrees. Used for high-velocity focused penetrations.").defineInRange("spallConeMinAngle", 15.0, 5.0, 45.0);
         SPALL_CONE_MAX_ANGLE = server.comment("Maximum spall cone half-angle in degrees. Used for low-velocity oblique penetrations.").defineInRange("spallConeMaxAngle", 60.0, 30.0, 90.0);
+        server.push("ricochet");
+        RICOCHET_MIN_TOUGHNESS = server.comment("Blocks below this toughness cannot ricochet projectiles.").defineInRange("minToughness", 3.0, 0.0, 100.0);
+        RICOCHET_TOUGHNESS_SCALE = server.comment("Block toughness at which ricochet probability reaches full strength.").defineInRange("toughnessScale", 20.0, 1.0, 100.0);
+        RICOCHET_VELOCITY_BASELINE = server.comment("Projectile velocity (m/s) at which ricochet chance is reduced by half.").defineInRange("velocityBaseline", 200.0, 50.0, 1000.0);
+        RICOCHET_MASS_LOSS_MIN = server.comment("Minimum fraction of projectile mass lost on ricochet.").defineInRange("massLossMin", 0.15, 0.0, 1.0);
+        RICOCHET_MASS_LOSS_MAX = server.comment("Maximum fraction of projectile mass lost on ricochet.").defineInRange("massLossMax", 0.50, 0.0, 1.0);
+        RICOCHET_MASS_LOSS_VELOCITY_SCALE = server.comment("Projectile velocity (m/s) used for ricochet mass loss.").defineInRange("massLossVelocityScale", 200.0, 50.0, 1000.0);
+        server.pop();
         server.pop();
         SERVER_SPEC = server.build();
 

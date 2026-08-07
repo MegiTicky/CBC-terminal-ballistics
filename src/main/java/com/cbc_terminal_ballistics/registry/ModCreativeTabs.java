@@ -20,6 +20,7 @@ public final class ModCreativeTabs {
                         output.accept(ModItems.COPYCAT_ARMOR_LAYER.get());
                         output.accept(ModItems.FRAMED_COLLAPSIBLE_COPYCAT_ARMOR.get());
                         output.accept(ModItems.ARMOR_UPGRADER.get());
+                        output.accept(ModItems.ADVANCED_BLOCK_ARMOR_INSPECTION_TOOL.get());
                         output.accept(ModItems.BALLISTIC_TEST_LAUNCHER.get());
                     })
                     .build());
