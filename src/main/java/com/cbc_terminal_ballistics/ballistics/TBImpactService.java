@@ -316,7 +316,7 @@ public final class TBImpactService {
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
             // punching through light blocks instead of continuing into the block behind them.
-            boolean shouldRemove = launcherStop || onImpactRemove || (autocannon
+            boolean shouldRemove = onImpactRemove || (autocannon
                 ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
                 : shatter);
             if (level instanceof ServerLevel server) {
