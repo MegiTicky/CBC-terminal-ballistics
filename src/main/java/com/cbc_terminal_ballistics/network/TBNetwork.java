@@ -48,6 +48,12 @@ public final class TBNetwork {
                 ClientboundIntegrityProgressPacket::handle
             );
 
+            registrar.playToClient(
+                ClientboundImpactOutcomePacket.TYPE,
+                ClientboundImpactOutcomePacket.STREAM_CODEC,
+                ClientboundImpactOutcomePacket::handle
+            );
+
             registrar.playToServer(
                 ServerboundSetLauncherVelocityPacket.TYPE,
                 ServerboundSetLauncherVelocityPacket.STREAM_CODEC,
