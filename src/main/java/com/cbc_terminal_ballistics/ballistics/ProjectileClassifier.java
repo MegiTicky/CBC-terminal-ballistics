@@ -13,7 +13,7 @@ public final class ProjectileClassifier {
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
         String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
         String text = path + " " + cls;
-        return text.contains("heap") || text.contains("heat") || text.contains("heapburst") || cls.contains("cbcprojectileburst") && cls.contains("heap");
+        return text.contains("heap") || text.contains("heat") || text.contains("heapburst") || text.contains("mortar") || cls.contains("cbcprojectileburst") && cls.contains("heap");
     }
 
     public static TBCaliber classify(Entity projectile, boolean autocannonMixin) {
