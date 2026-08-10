@@ -44,14 +44,18 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 public final class TBImpactService {
     private static final Map<LastImpactKey, LastImpact> LAST_IMPACTS = new HashMap<>();
+    private static final Set<Entity> DEFERRED_MASS_RESETS = Collections.newSetFromMap(new WeakHashMap<>());
     private static final double MIN_SPALL_VISUAL_CLEARANCE = 0.85D;
     private static final double RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES = 40.0D;
     private static final double RICOCHET_MARK_MAX_INCIDENCE = Math.cos(Math.toRadians(RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES));
@@ -63,6 +67,16 @@ public final class TBImpactService {
     );
     /** Cross-mod block event used by tagged ammunition stores. */
     private static final int SPALL_DETONATION_BLOCK_EVENT = 19042;
+
+    public static void deferMassReset(Entity projectile) {
+        DEFERRED_MASS_RESETS.add(projectile);
+    }
+
+    public static void finalizeDeferredMassReset(Entity projectile) {
+        if (DEFERRED_MASS_RESETS.remove(projectile)) {
+            CBCReflect.setProjectileMass(projectile, 0.0D);
+        }
+    }
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
         if (!TBConfig.ENABLED.get()) return null;
@@ -261,7 +275,9 @@ public final class TBImpactService {
                         spallReason = "not_ap_style";
                     }
                 } else {
-                    CBCReflect.setProjectileMass(projectile, 0.0);
+                    // CBC applies queued entity hits after block penetration. Keep mass
+                    // available until that pass completes, then clear it from the mixin tail.
+                    deferMassReset(projectile);
                     if (integrityBreak && !unbreakable) {
                         blockBreakPending = true;
                     }

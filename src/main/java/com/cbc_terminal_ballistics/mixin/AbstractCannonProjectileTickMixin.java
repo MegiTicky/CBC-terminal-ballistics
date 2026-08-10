@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.mixin;
 
+import com.cbc_terminal_ballistics.ballistics.TBImpactService;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
@@ -14,5 +15,10 @@ public abstract class AbstractCannonProjectileTickMixin {
     @Inject(method = {"tick", "m_8119_"}, at = @At("HEAD"), cancellable = true, remap = false)
     private void ctb$slowProjectileTick(CallbackInfo ci) {
         if (TBProjectileSlowdown.shouldSkip((Entity) (Object) this)) ci.cancel();
+    }
+
+    @Inject(method = "clipAndDamage", at = @At("TAIL"), remap = false)
+    private void ctb$finalizeDeferredMassReset(CallbackInfo ci) {
+        TBImpactService.finalizeDeferredMassReset((Entity) (Object) this);
     }
 }
