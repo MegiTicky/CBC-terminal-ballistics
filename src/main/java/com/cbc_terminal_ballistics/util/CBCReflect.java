@@ -190,6 +190,34 @@ public final class CBCReflect {
         }
     }
 
+    public static void setInGround(Entity projectile, boolean inGround) {
+        tryInvoke(projectile, "setInGround", new Class<?>[]{boolean.class}, inGround);
+    }
+
+    public static void setGroundPos(Entity projectile, Vec3 groundPos) {
+        tryInvoke(projectile, "setGroundPos", new Class<?>[]{Vec3.class}, groundPos);
+    }
+
+    public static void setLastPenetratedBlock(Entity projectile, BlockState state) {
+        try {
+            Field f = findField(projectile.getClass(), "lastPenetratedBlock");
+            if (f == null) return;
+            f.setAccessible(true);
+            f.set(projectile, state);
+        } catch (Exception ignored) {
+        }
+    }
+
+    public static void setPenetrationTime(Entity projectile, int ticks) {
+        try {
+            Field f = findField(projectile.getClass(), "penetrationTime");
+            if (f == null) return;
+            f.setAccessible(true);
+            f.setInt(projectile, ticks);
+        } catch (Exception ignored) {
+        }
+    }
+
     public static double ballistic(Entity projectile, String method, double fallback) {
         Object props = tryInvoke(projectile, "getBallisticProperties", new Class<?>[]{});
         return props == null ? fallback : callDouble(props, fallback, method);

@@ -7,6 +7,7 @@ import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
+import com.cbc_terminal_ballistics.network.ClientboundImpactOutcomePacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
@@ -142,7 +143,7 @@ public final class TBImpactService {
                 double bounceBonus = Math.max(1.0D - hardnessPenaltyRaw, 0.0D);
                 bounceChance = baseBounce * bounceBonus * toughnessFactor * velocityFactor;
             }
-            if (surfaceImpact && CBCReflect.projectilesCanBounce() && level.random.nextDouble() < bounceChance) {
+            if (surfaceImpact && CBCReflect.projectilesCanBounce() && deterministicImpactRoll(projectile, pos, hit.getDirection()) < bounceChance) {
                 if (!level.isClientSide) {
                     double massLossFraction = calculateRicochetMassLoss(velMag, incidence, armorToughness);
                     CBCReflect.setProjectileMass(projectile, Math.max(0.0, mass * (1.0 - massLossFraction)));
@@ -155,6 +156,10 @@ public final class TBImpactService {
                 }
                 Object bounceResult = CBCReflect.newImpactResult("BOUNCE", false);
                 boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, bounceResult, projectileContext);
+                if (level instanceof ServerLevel server) {
+                    Vec3 authoritativeVelocity = curVel.subtract(normal.scale(normal.dot(curVel) * 1.7D));
+                    syncImpactOutcome(server, projectile, "BOUNCE", projectile.position(), authoritativeVelocity, false, pos);
+                }
                 return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
             }
 
@@ -260,6 +265,12 @@ public final class TBImpactService {
             boolean shouldRemove = onImpactRemove || (autocannon
                 ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
                 : shatter);
+            if (level instanceof ServerLevel server) {
+                Vec3 authoritativeVelocity = outcome.equals("STOP") ? Vec3.ZERO : projectile.getDeltaMovement();
+                Vec3 authoritativePosition = outcome.equals("STOP") ? hit.getLocation() : projectile.position();
+                syncImpactOutcome(server, projectile, outcome, authoritativePosition, authoritativeVelocity,
+                    outcome.equals("STOP"), pos);
+            }
             return CBCReflect.newImpactResult(outcome, shouldRemove);
         } catch (Throwable t) {
             TBDebug.fallback(t);
@@ -433,6 +444,30 @@ public final class TBImpactService {
     private static long mixSeed(long seed, long value) {
         seed ^= value;
         return seed * 0x100000001b3L;
+    }
+
+    private static double deterministicImpactRoll(Entity projectile, BlockPos pos, Direction face) {
+        long seed = 0x9E3779B97F4A7C15L;
+        seed = mixSeed(seed, projectile.getUUID().getMostSignificantBits());
+        seed = mixSeed(seed, projectile.getUUID().getLeastSignificantBits());
+        seed = mixSeed(seed, pos.asLong());
+        seed = mixSeed(seed, face.ordinal());
+        long mixed = (seed ^ (seed >>> 30)) * 0xBF58476D1CE4E5B9L;
+        mixed = (mixed ^ (mixed >>> 27)) * 0x94D049BB133111EBL;
+        mixed ^= mixed >>> 31;
+        return (mixed >>> 11) * 0x1.0p-53;
+    }
+
+    private static void syncImpactOutcome(ServerLevel level, Entity projectile, String outcome, Vec3 position,
+                                          Vec3 velocity, boolean inGround, BlockPos blockPos) {
+        if (TBNetwork.CHANNEL == null) return;
+        ClientboundImpactOutcomePacket packet = new ClientboundImpactOutcomePacket(
+            projectile.getId(), outcome, position, velocity, inGround, blockPos.immutable());
+        for (ServerPlayer player : level.players()) {
+            if (position.distanceToSqr(player.position()) <= 128 * 128) {
+                TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+            }
+        }
     }
 
     private static void playBreakSound(ServerLevel level, BlockPos pos, BlockState state) {
