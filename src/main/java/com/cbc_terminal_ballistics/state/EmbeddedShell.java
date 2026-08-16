@@ -2,13 +2,21 @@ package com.cbc_terminal_ballistics.state;
 
 import com.cbc_terminal_ballistics.ballistics.TBCaliber;
 import net.minecraft.core.Direction;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtUtils;
+import net.minecraft.nbt.Tag;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.UUID;
 
 /** A shell visual anchored to a block-local impact position. */
 public record EmbeddedShell(UUID id, TBCaliber caliber, Direction face, float x, float y, float z,
-                            float directionX, float directionY, float directionZ, long gameTime) {
+                            float directionX, float directionY, float directionZ, BlockState visualState,
+                            ItemStack visualItem,
+                            long gameTime) {
     public CompoundTag save() {
         CompoundTag tag = new CompoundTag();
         tag.putUUID("Id", id);
@@ -20,6 +28,8 @@ public record EmbeddedShell(UUID id, TBCaliber caliber, Direction face, float x,
         tag.putFloat("DX", directionX);
         tag.putFloat("DY", directionY);
         tag.putFloat("DZ", directionZ);
+        if (visualState != null) tag.put("VisualState", NbtUtils.writeBlockState(visualState));
+        if (visualItem != null && !visualItem.isEmpty()) tag.put("VisualItem", visualItem.save(new CompoundTag()));
         tag.putLong("Time", gameTime);
         return tag;
     }
@@ -37,7 +47,18 @@ public record EmbeddedShell(UUID id, TBCaliber caliber, Direction face, float x,
             tag.getFloat("DX"),
             tag.getFloat("DY"),
             tag.getFloat("DZ"),
+            tag.contains("VisualState", Tag.TAG_COMPOUND) ? readVisualState(tag.getCompound("VisualState")) : null,
+            tag.contains("VisualItem", Tag.TAG_COMPOUND) ? ItemStack.of(tag.getCompound("VisualItem")) : ItemStack.EMPTY,
             tag.getLong("Time")
         );
+    }
+
+    public static BlockState readVisualState(CompoundTag tag) {
+        try {
+            BlockState state = NbtUtils.readBlockState(BuiltInRegistries.BLOCK.asLookup(), tag);
+            return state.isAir() || state.getRenderShape() != RenderShape.MODEL ? null : state;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 }

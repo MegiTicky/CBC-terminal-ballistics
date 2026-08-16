@@ -4,11 +4,13 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4fc;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -77,6 +79,105 @@ public final class CBCReflect {
         return Vec3.atLowerCornerOf(hit.getDirection().getNormal());
     }
 
+    public static BlockState renderedProjectileState(Entity projectile) {
+        try {
+            Method method = findMethod(projectile.getClass(), "getRenderedBlockState");
+            if (method == null) return null;
+            method.setAccessible(true);
+            Object result = method.invoke(projectile);
+            if (result instanceof BlockState state && !state.isAir()
+                && state.getRenderShape() == net.minecraft.world.level.block.RenderShape.MODEL) {
+                return state;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    public static ItemStack projectileItem(Entity projectile) {
+        try {
+            Method method = findMethod(projectile.getClass(), "getItem");
+            if (method == null) return ItemStack.EMPTY;
+            method.setAccessible(true);
+            Object result = method.invoke(projectile);
+            if (result instanceof ItemStack stack && !stack.isEmpty()) return stack.copy();
+        } catch (Throwable ignored) {
+        }
+        return ItemStack.EMPTY;
+    }
+
+    public static Matrix4fc facing(Vec3 normalized) {
+        return callFacing(normalized);
+    }
+
+    public static Matrix4fc facing(Vec3 destination, Vec3 source) {
+        try {
+            Class<?> utils = Class.forName("rbasamoyai.createbigcannons.utils.CBCUtils");
+            Method method = utils.getMethod("mat4x4fFacing", Vec3.class, Vec3.class);
+            Object result = method.invoke(null, destination, source);
+            if (result instanceof Matrix4fc matrix) return matrix;
+        } catch (Throwable ignored) {
+        }
+        return new org.joml.Matrix4f();
+    }
+
+    private static Matrix4fc callFacing(Vec3 normalized) {
+        try {
+            Class<?> utils = Class.forName("rbasamoyai.createbigcannons.utils.CBCUtils");
+            Method method = utils.getMethod("mat4x4fFacing", Vec3.class);
+            Object result = method.invoke(null, normalized);
+            if (result instanceof Matrix4fc matrix) return matrix;
+        } catch (Throwable ignored) {
+        }
+        return new org.joml.Matrix4f();
+    }
+
+    /**
+     * Plays the block's break sound at the given world position. This is the
+     * exact same call CBC's AbstractBigCannonProjectile makes in its stopped
+     * branch (line 230-235 of 5.10.2 / 6.x):
+     * <pre>
+     *   level.playSound(null, x, y, z, state.getSoundType().getBreakSound(),
+     *                   SoundSource.BLOCKS, volume, pitch);
+     * </pre>
+     * With penetration CTB replaces calculateBlockPenetration, so this sound
+     * is never played by CBC anymore. We replay it here for the perforation
+     * case (the block stays intact and the projectile continues, just like the
+     * stopped case in stock CBC).
+     */
+    public static void playBlockImpactBreakSound(Level level, BlockState state, Vec3 hitLoc) {
+        if (level == null || state == null || hitLoc == null) return;
+        if (level.isClientSide) return;
+        try {
+            Object soundType = tryInvoke(state, "getSoundType", new Class<?>[]{});
+            if (soundType == null) return;
+            Object breakSound = tryInvoke(soundType, "getBreakSound", new Class<?>[]{});
+            if (breakSound == null) return;
+            float volume = callFloat(soundType, 1.0F, "getVolume");
+            float pitch = callFloat(soundType, 1.0F, "getPitch");
+            // Level.playSound(Player, double, double, double, SoundEvent, SoundSource, float, float)
+            Class<?> soundSourceCls = Class.forName("net.minecraft.sounds.SoundSource");
+            Object blocksSource = soundSourceCls.getField("BLOCKS").get(null);
+            Method playSound = Level.class.getMethod("playSound",
+                net.minecraft.world.entity.player.Player.class,
+                double.class, double.class, double.class,
+                Class.forName("net.minecraft.sounds.SoundEvent"),
+                soundSourceCls,
+                float.class, float.class);
+            playSound.invoke(level, null, hitLoc.x, hitLoc.y, hitLoc.z, breakSound, blocksSource, volume, pitch);
+        } catch (Throwable t) {
+            CBCTerminalBallistics.LOGGER.debug("Failed to play CBC block impact break sound", t);
+        }
+    }
+
+    public static float callFloat(Object target, float fallback, String... methodNames) {
+        for (String name : methodNames) {
+            Object v = tryInvoke(target, name, new Class<?>[]{});
+            if (v instanceof Number n) return n.floatValue();
+        }
+        return fallback;
+    }
+
 
     public static void addBlockHitEffect(Object projectileContext, Entity projectile, Level level, BlockState state, BlockPos pos, Vec3 hitLoc, Vec3 effectNormal, boolean bounced) {
         if (projectileContext == null || projectile == null || level == null || state == null || pos == null || hitLoc == null || effectNormal == null) return;
@@ -89,7 +190,7 @@ public final class CBCReflect {
             addPlayedEffect.setAccessible(true);
 
             for (BlockState contained : containedBlockStates(level, state, pos)) {
-                Object packet = ctor.newInstance(contained, projectile.getType(), bounced, true,
+                Object packet = ctor.newInstance(contained, projectile.getType(), bounced, false,
                     hitLoc.x, hitLoc.y, hitLoc.z, (float) effectNormal.x, (float) effectNormal.y, (float) effectNormal.z);
                 addPlayedEffect.invoke(projectileContext, packet);
             }
