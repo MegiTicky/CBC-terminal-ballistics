@@ -15,6 +15,7 @@ import com.cbc_terminal_ballistics.registry.ModCreativeTabs;
 import com.cbc_terminal_ballistics.registry.ModItems;
 import com.cbc_terminal_ballistics.registry.ModRecipeSerializers;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.cbc_terminal_ballistics.state.TemporaryBlockPassage;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.common.MinecraftForge;
@@ -75,6 +76,7 @@ public class CBCTerminalBallistics {
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             TBProjectileSlowdown.syncTo(player);
+            TBImpactService.syncAllEmbeddedShellsToPlayer(player);
         }
     }
 
@@ -84,10 +86,25 @@ public class CBCTerminalBallistics {
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
             TemporaryBlockPassage.restore(level);
         }
+        if (event.getServer().getTickCount() % 40 == 0) {
+            for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
+                for (ServerPlayer player : level.players()) {
+                    TBImpactService.syncAllEmbeddedShellsToPlayer(player);
+                }
+            }
+        }
         if (event.getServer().getTickCount() % 1200 != 0) return;
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
             for (net.minecraft.core.BlockPos pos : ArmorIntegritySavedData.get(level).cleanup(level)) {
                 TBImpactService.clearMarks(level, pos);
+            }
+            for (net.minecraft.core.BlockPos pos : EmbeddedShellSavedData.get(level).cleanup(level)) {
+                EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
+                if (entry == null || entry.shells.isEmpty()) {
+                    TBImpactService.clearEmbeddedShells(level, pos);
+                } else {
+                    TBImpactService.syncEmbeddedShellsToPlayers(level, pos, java.util.List.copyOf(entry.shells));
+                }
             }
         }
     }
@@ -97,6 +114,7 @@ public class CBCTerminalBallistics {
         ArmorIntegritySavedData.clearIfServer(event.getLevel(), event.getPos());
         if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
             TBImpactService.clearMarks(level, event.getPos());
+            TBImpactService.clearEmbeddedShells(level, event.getPos());
         }
     }
 
@@ -105,6 +123,7 @@ public class CBCTerminalBallistics {
         ArmorIntegritySavedData.clearIfServer(event.getLevel(), event.getPos());
         if (event.getLevel() instanceof net.minecraft.server.level.ServerLevel level) {
             TBImpactService.clearMarks(level, event.getPos());
+            TBImpactService.clearEmbeddedShells(level, event.getPos());
         }
     }
 }

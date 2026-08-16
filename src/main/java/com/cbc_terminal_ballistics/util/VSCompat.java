@@ -42,7 +42,6 @@ public final class VSCompat {
     private static Method getAllShipsMethod;
     private static Method isChunkInShipyardMethod;
     private static Method getByChunkPosMethod;
-    private static boolean shipWorldAccessFailed;
 
     public static boolean isLoaded() {
         if (loaded == null) {
@@ -82,9 +81,21 @@ public final class VSCompat {
      * managing {@code shipyardPos}. If the block is not on a VS ship, returns the original position.
      */
     public static Vec3 toShipCoordinates(Level level, BlockPos shipyardPos, Vec3 worldPosition) {
+        boolean likelyShipyardPosition = Math.abs(shipyardPos.getX()) > 100000 || Math.abs(shipyardPos.getZ()) > 100000;
         Object ship = getShipManagingPos(level, shipyardPos);
+        if (ship == null) {
+            if (likelyShipyardPosition && isLoaded()) {
+                LOG.debug("Unable to resolve VS ship for shipyard position {}", shipyardPos);
+                return null;
+            }
+            return worldPosition;
+        }
         Object worldToShip = worldToShip(ship);
-        return transformPosition(worldToShip, worldPosition);
+        Vec3 transformed = transformPositionStrict(worldToShip, worldPosition);
+        if (transformed == null) {
+            LOG.debug("Unable to transform VS hit position {} for shipyard position {}", worldPosition, shipyardPos);
+        }
+        return transformed;
     }
 
     /**
@@ -206,7 +217,6 @@ public final class VSCompat {
      * IShipObjectWorldClientProvider (which has ClientShipWorldCore references).
      */
     private static Object tryDirectShipWorldAccess(Level level, BlockPos pos) {
-        if (shipWorldAccessFailed) return null;
         if (!(level instanceof ServerLevel serverLevel)) return null;
 
         try {
@@ -215,52 +225,40 @@ public final class VSCompat {
 
             // Step 2: Get shipObjectWorld - use getDeclaredMethods() to avoid interface verification
             if (getShipObjectWorldMethod == null) {
-                getShipObjectWorldMethod = findMethodByName(server.getClass(), "getShipObjectWorld");
-                if (getShipObjectWorldMethod == null) {
-                    shipWorldAccessFailed = true;
-                    return null;
-                }
+                getShipObjectWorldMethod = findMethodByName(server.getClass(), "getShipObjectWorld", 0);
+                if (getShipObjectWorldMethod == null) return null;
                 getShipObjectWorldMethod.setAccessible(true);
             }
 
             Object shipWorld = getShipObjectWorldMethod.invoke(server);
-            if (shipWorld == null) {
-                shipWorldAccessFailed = true;
-                return null;
-            }
+            if (shipWorld == null) return null;
 
             // Step 3: Get dimensionId from Level
             if (getDimensionIdMethod == null) {
-                getDimensionIdMethod = findMethodByName(level.getClass(), "getDimensionId");
+                getDimensionIdMethod = findMethodByName(level.getClass(), "getDimensionId", 0);
                 if (getDimensionIdMethod == null) {
                     // Try the interface
                     Class<?> dimProviderClass = Class.forName(DIMENSION_ID_PROVIDER);
-                    getDimensionIdMethod = findMethodByName(dimProviderClass, "getDimensionId");
+                    getDimensionIdMethod = findMethodByName(dimProviderClass, "getDimensionId", 0);
                 }
                 if (getDimensionIdMethod != null) {
                     getDimensionIdMethod.setAccessible(true);
                 }
             }
 
-            if (getDimensionIdMethod == null) {
-                shipWorldAccessFailed = true;
-                return null;
-            }
+            if (getDimensionIdMethod == null) return null;
 
             Object dimensionId = getDimensionIdMethod.invoke(level);
 
             // Step 4: Get allShips
             if (getAllShipsMethod == null) {
-                getAllShipsMethod = findMethodByName(shipWorld.getClass(), "getAllShips");
+                getAllShipsMethod = findMethodByName(shipWorld.getClass(), "getAllShips", 0);
                 if (getAllShipsMethod != null) {
                     getAllShipsMethod.setAccessible(true);
                 }
             }
 
-            if (getAllShipsMethod == null) {
-                shipWorldAccessFailed = true;
-                return null;
-            }
+            if (getAllShipsMethod == null) return null;
 
             Object allShips = getAllShipsMethod.invoke(shipWorld);
 
@@ -269,7 +267,7 @@ public final class VSCompat {
             int chunkZ = pos.getZ() >> 4;
 
             if (isChunkInShipyardMethod == null) {
-                isChunkInShipyardMethod = findMethodByName(shipWorld.getClass(), "isChunkInShipyard");
+                isChunkInShipyardMethod = findMethodByName(shipWorld.getClass(), "isChunkInShipyard", 3);
                 if (isChunkInShipyardMethod != null) {
                     isChunkInShipyardMethod.setAccessible(true);
                 }
@@ -279,21 +277,20 @@ public final class VSCompat {
                 try {
                     Boolean inShipyard = (Boolean) isChunkInShipyardMethod.invoke(shipWorld, chunkX, chunkZ, dimensionId);
                     if (!inShipyard) return null;
-                } catch (Throwable ignored) {}
+                } catch (Throwable t) {
+                    LOG.debug("VS shipyard check failed for {}: {}", pos, t.getMessage());
+                }
             }
 
             // Step 6: Get ship by chunk position
             if (getByChunkPosMethod == null) {
-                getByChunkPosMethod = findMethodByName(allShips.getClass(), "getByChunkPos");
+                getByChunkPosMethod = findMethodByName(allShips.getClass(), "getByChunkPos", 3);
                 if (getByChunkPosMethod != null) {
                     getByChunkPosMethod.setAccessible(true);
                 }
             }
 
-            if (getByChunkPosMethod == null) {
-                shipWorldAccessFailed = true;
-                return null;
-            }
+            if (getByChunkPosMethod == null) return null;
 
             return getByChunkPosMethod.invoke(allShips, chunkX, chunkZ, dimensionId);
 
@@ -303,7 +300,6 @@ public final class VSCompat {
             }
         }
 
-        shipWorldAccessFailed = true;
         return null;
     }
 
@@ -311,15 +307,15 @@ public final class VSCompat {
      * Find a method by name, ignoring parameter types.
      * This avoids JVM verification issues with specific parameter type matching.
      */
-    private static Method findMethodByName(Class<?> clazz, String methodName) {
+    private static Method findMethodByName(Class<?> clazz, String methodName, int parameterCount) {
         for (Method method : clazz.getMethods()) {
-            if (method.getName().equals(methodName)) {
+            if (method.getName().equals(methodName) && method.getParameterCount() == parameterCount) {
                 return method;
             }
         }
         // Also check declared methods (for non-public)
         for (Method method : clazz.getDeclaredMethods()) {
-            if (method.getName().equals(methodName)) {
+            if (method.getName().equals(methodName) && method.getParameterCount() == parameterCount) {
                 return method;
             }
         }
@@ -375,6 +371,20 @@ public final class VSCompat {
             return new Vec3(transformed.x, transformed.y, transformed.z);
         } catch (Throwable ignored) {
             return position;
+        }
+    }
+
+    private static Vec3 transformPositionStrict(Object matrix, Vec3 position) {
+        if (matrix == null) return null;
+        try {
+            Vector3d dest = new Vector3d();
+            Method method = matrix.getClass().getMethod("transformPosition", double.class, double.class, double.class, Vector3d.class);
+            Object result = method.invoke(matrix, position.x, position.y, position.z, dest);
+            Vector3d transformed = result instanceof Vector3d vec ? vec : dest;
+            if (!Double.isFinite(transformed.x) || !Double.isFinite(transformed.y) || !Double.isFinite(transformed.z)) return null;
+            return new Vec3(transformed.x, transformed.y, transformed.z);
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 

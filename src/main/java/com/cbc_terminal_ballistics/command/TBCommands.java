@@ -11,6 +11,7 @@ import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.ChatFormatting;
@@ -53,6 +54,9 @@ public final class TBCommands {
             .then(Commands.literal("marks")
                 .then(Commands.literal("refresh").executes(ctx -> refreshImpactMarks(ctx.getSource())))
                 .then(Commands.literal("delete").executes(ctx -> deleteImpactMarks(ctx.getSource()))))
+            .then(Commands.literal("shells")
+                .then(Commands.literal("refresh").executes(ctx -> refreshEmbeddedShells(ctx.getSource())))
+                .then(Commands.literal("delete").executes(ctx -> deleteEmbeddedShells(ctx.getSource()))))
             .then(Commands.literal("checkarmor")
                 .executes(ctx -> checkArmor(ctx.getSource(), false))
                 .then(Commands.literal("fix")
@@ -131,7 +135,8 @@ public final class TBCommands {
                 return 0;
             }
             TBImpactService.clearMarks(player.serverLevel(), bhr.getBlockPos());
-            source.sendSuccess(() -> Component.literal("Cleared CBCTB integrity data at " + bhr.getBlockPos().toShortString()), false);
+            TBImpactService.clearEmbeddedShells(player.serverLevel(), bhr.getBlockPos());
+            source.sendSuccess(() -> Component.literal("Cleared CBCTB integrity data and embedded shells at " + bhr.getBlockPos().toShortString()), false);
             return 1;
         } catch (Exception ex) {
             source.sendFailure(Component.literal(ex.getMessage()));
@@ -169,6 +174,33 @@ public final class TBCommands {
             TBImpactService.clearMarks(level, pos);
         }
         source.sendSuccess(() -> Component.literal("Deleted impact/integrity data for " + count + " blocks."), true);
+        return count;
+    }
+
+    private static int refreshEmbeddedShells(CommandSourceStack source) {
+        ServerLevel level = source.getLevel();
+        int syncedBlocks = 0;
+        int syncedShells = 0;
+        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry : EmbeddedShellSavedData.get(level).entriesView().entrySet()) {
+            BlockPos pos = BlockPos.of(mapEntry.getKey());
+            EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
+            if (entry == null || entry.shells.isEmpty()) continue;
+            TBImpactService.syncEmbeddedShellsToPlayers(level, pos, List.copyOf(entry.shells));
+            syncedBlocks++;
+            syncedShells += entry.shells.size();
+        }
+        int finalBlocks = syncedBlocks;
+        int finalShells = syncedShells;
+        source.sendSuccess(() -> Component.literal("Refreshed " + finalShells + " embedded shells on " + finalBlocks + " blocks."), false);
+        return syncedBlocks;
+    }
+
+    private static int deleteEmbeddedShells(CommandSourceStack source) {
+        ServerLevel level = source.getLevel();
+        List<BlockPos> positions = EmbeddedShellSavedData.get(level).entriesView().keySet().stream().map(BlockPos::of).toList();
+        int count = EmbeddedShellSavedData.get(level).clearAll();
+        for (BlockPos pos : positions) TBImpactService.clearEmbeddedShells(level, pos);
+        source.sendSuccess(() -> Component.literal("Deleted embedded shell data for " + count + " blocks."), true);
         return count;
     }
 
