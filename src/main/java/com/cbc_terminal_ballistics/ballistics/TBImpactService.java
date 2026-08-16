@@ -9,11 +9,14 @@ import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.network.ClientboundImpactOutcomePacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
+import com.cbc_terminal_ballistics.network.ClientboundEmbeddedShellsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
 import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.state.ImpactMark;
+import com.cbc_terminal_ballistics.state.EmbeddedShell;
+import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.cbc_terminal_ballistics.state.TemporaryBlockPassage;
 import com.cbc_terminal_ballistics.util.CBCReflect;
 import com.cbc_terminal_ballistics.util.VSCompat;
@@ -40,8 +43,8 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.registries.ForgeRegistries;
 
-import java.util.HashMap;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
@@ -153,14 +156,14 @@ public final class TBImpactService {
                         playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
                         addImpactMark(server, pos, state, hit, ImpactMarkKind.STREAK, caliber, impactSurface, curVel);
                     }
-                 }
-                 Object bounceResult = CBCReflect.newImpactResult("BOUNCE", false);
-                 boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, bounceResult, projectileContext);
-                 if (level instanceof ServerLevel server) {
-                     Vec3 authoritativeVelocity = curVel.subtract(normal.scale(normal.dot(curVel) * 1.7D));
-                     syncImpactOutcome(server, projectile, "BOUNCE", projectile.position(), authoritativeVelocity, false, pos);
-                 }
-                 return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
+                }
+                Object bounceResult = CBCReflect.newImpactResult("BOUNCE", false);
+                boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, bounceResult, projectileContext);
+                if (level instanceof ServerLevel server) {
+                    Vec3 authoritativeVelocity = curVel.subtract(normal.scale(normal.dot(curVel) * 1.7D));
+                    syncImpactOutcome(server, projectile, "BOUNCE", projectile.position(), authoritativeVelocity, false, pos);
+                }
+                return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
             }
 
             boolean perforates = !unbreakable && penetrationRatio >= 1.0;
@@ -195,9 +198,12 @@ public final class TBImpactService {
                 CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), curVel.reverse(), false);
                 playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
                 ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
-                data.addMark(server, pos, state, mark(server, pos, hit, markKind, caliber, impactSurface, markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F));
+                ImpactMark impactMark = mark(server, pos, hit, markKind, caliber, impactSurface,
+                    markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F);
+                if (impactMark != null) data.addMark(server, pos, state, impactMark);
                 if (outcome.equals("PENETRATE")) {
-                    data.addMark(server, pos, state, exitMark(server, pos, hit, caliber, impactSurface));
+                    ImpactMark exitMark = exitMark(server, pos, hit, caliber, impactSurface);
+                    if (exitMark != null) data.addMark(server, pos, state, exitMark);
                 }
                 syncMarks(server, pos, data.entryFor(server, pos, state).marks);
 
@@ -259,10 +265,15 @@ public final class TBImpactService {
                     TemporaryBlockPassage.phaseForThisTick(server, pos, state);
                 }
             }
+            boolean embeddedShell = false;
+            if (outcome.equals("STOP") && !onImpactRemove && level instanceof ServerLevel server
+                && server.getBlockState(pos).equals(state)) {
+                embeddedShell = addEmbeddedShell(server, pos, state, hit, caliber, curVel);
+            }
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
             // punching through light blocks instead of continuing into the block behind them.
-            boolean shouldRemove = onImpactRemove || (autocannon
+            boolean shouldRemove = onImpactRemove || embeddedShell || (autocannon
                 ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
                 : shatter);
             if (level instanceof ServerLevel server) {
@@ -298,12 +309,53 @@ public final class TBImpactService {
         syncIntegrityProgress(level, pos, -1);
     }
 
+    public static void clearEmbeddedShells(ServerLevel level, BlockPos pos) {
+        EmbeddedShellSavedData.get(level).clear(pos);
+        syncEmbeddedShells(level, pos, java.util.List.of());
+    }
+
+    public static void syncEmbeddedShellsToPlayers(ServerLevel level, BlockPos pos, java.util.List<EmbeddedShell> shells) {
+        syncEmbeddedShells(level, pos, shells);
+    }
+
+    public static void syncAllEmbeddedShellsToPlayer(ServerPlayer player) {
+        ServerLevel level = player.serverLevel();
+        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry : EmbeddedShellSavedData.get(level).entriesView().entrySet()) {
+            BlockPos pos = BlockPos.of(mapEntry.getKey());
+            Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                sendEmbeddedShells(player, pos, mapEntry.getValue().shells);
+            }
+        }
+    }
+
+    private static boolean addEmbeddedShell(ServerLevel level, BlockPos pos, BlockState state, BlockHitResult hit,
+                                             TBCaliber caliber, Vec3 incomingVelocity) {
+        Vec3 local = localHitLocation(level, pos, hit.getLocation());
+        Vec3 direction = VSCompat.toShipVector(level, pos, incomingVelocity);
+        if (direction.lengthSqr() < 1.0E-8D) return false;
+        direction = direction.normalize();
+        EmbeddedShell shell = new EmbeddedShell(
+            java.util.UUID.randomUUID(), caliber, hit.getDirection(),
+            (float) Mth.clamp(local.x - pos.getX(), 0.001D, 0.999D),
+            (float) Mth.clamp(local.y - pos.getY(), 0.001D, 0.999D),
+            (float) Mth.clamp(local.z - pos.getZ(), 0.001D, 0.999D),
+            (float) direction.x, (float) direction.y, (float) direction.z,
+            level.getGameTime());
+        EmbeddedShellSavedData data = EmbeddedShellSavedData.get(level);
+        data.add(level, pos, state, shell);
+        syncEmbeddedShells(level, pos, data.entryFor(level, pos, state).shells);
+        return true;
+    }
+
     public static void syncMarksToPlayers(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
         syncMarks(level, pos, marks);
     }
 
     private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, Vec3 incomingVelocity) {
-        ImpactMark mark = mark(server, pos, hit, kind, caliber, surface, kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F);
+        ImpactMark mark = mark(server, pos, hit, kind, caliber, surface,
+            kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F);
+        if (mark == null) return;
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
         data.addMark(server, pos, state, mark);
         syncMarks(server, pos, data.entryFor(server, pos, state).marks);
@@ -311,6 +363,7 @@ public final class TBImpactService {
 
     private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, float rotation) {
         Vec3 loc = localHitLocation(level, pos, hit.getLocation());
+        if (loc == null) return null;
         // For VS ship raycasts the BlockHitResult direction is already the block-local/shipyard face.
         // Transforming it again by worldToShip makes marks flip/rotate incorrectly when the ship is not axis-aligned.
         Direction face = hit.getDirection();
@@ -351,6 +404,7 @@ public final class TBImpactService {
 
     private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, TBCaliber caliber, ImpactSurfaceType surface) {
         Vec3 entry = localHitLocation(level, pos, hit.getLocation());
+        if (entry == null) return null;
         Direction exitFace = hit.getDirection().getOpposite();
         double x = entry.x - pos.getX();
         double y = entry.y - pos.getY();
@@ -372,12 +426,9 @@ public final class TBImpactService {
     }
 
     private static Vec3 localHitLocation(ServerLevel level, BlockPos pos, Vec3 hitLocation) {
-        double x = hitLocation.x - pos.getX();
-        double y = hitLocation.y - pos.getY();
-        double z = hitLocation.z - pos.getZ();
-        if (x >= -0.01D && x <= 1.01D && y >= -0.01D && y <= 1.01D && z >= -0.01D && z <= 1.01D) {
-            return hitLocation;
-        }
+        // CBC receives a world-space hit location while VS supplies the impacted
+        // ship block position in shipyard coordinates. Always normalize through
+        // VS instead of guessing the coordinate space from numeric bounds.
         return VSCompat.toShipCoordinates(level, pos, hitLocation);
     }
 
@@ -391,6 +442,25 @@ public final class TBImpactService {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
             }
         }
+    }
+
+    private static void syncEmbeddedShells(ServerLevel level, BlockPos pos, java.util.List<EmbeddedShell> shells) {
+        if (TBNetwork.CHANNEL == null) return;
+        ClientboundEmbeddedShellsPacket packet = new ClientboundEmbeddedShellsPacket(pos.immutable(), java.util.List.copyOf(shells));
+        Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+        for (ServerPlayer player : level.players()) {
+            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                sendEmbeddedShells(player, packet);
+            }
+        }
+    }
+
+    private static void sendEmbeddedShells(ServerPlayer player, BlockPos pos, java.util.List<EmbeddedShell> shells) {
+        sendEmbeddedShells(player, new ClientboundEmbeddedShellsPacket(pos.immutable(), java.util.List.copyOf(shells)));
+    }
+
+    private static void sendEmbeddedShells(ServerPlayer player, ClientboundEmbeddedShellsPacket packet) {
+        TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
     }
 
     private static void syncIntegrityProgress(ServerLevel level, BlockPos pos, double damage, double threshold) {
@@ -463,9 +533,8 @@ public final class TBImpactService {
         if (TBNetwork.CHANNEL == null) return;
         ClientboundImpactOutcomePacket packet = new ClientboundImpactOutcomePacket(
             projectile.getId(), outcome, position, velocity, inGround, blockPos.immutable());
-        Vec3 center = position;
         for (ServerPlayer player : level.players()) {
-            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+            if (position.distanceToSqr(player.position()) <= 128 * 128) {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
             }
         }
