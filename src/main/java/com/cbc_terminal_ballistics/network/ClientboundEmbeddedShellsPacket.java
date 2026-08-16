@@ -5,6 +5,9 @@ import com.cbc_terminal_ballistics.state.EmbeddedShell;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.NbtUtils;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkEvent;
@@ -28,6 +31,10 @@ public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> 
             buf.writeFloat(shell.directionX());
             buf.writeFloat(shell.directionY());
             buf.writeFloat(shell.directionZ());
+            buf.writeBoolean(shell.visualState() != null);
+            if (shell.visualState() != null) buf.writeNbt(NbtUtils.writeBlockState(shell.visualState()));
+            buf.writeBoolean(shell.visualItem() != null && !shell.visualItem().isEmpty());
+            if (shell.visualItem() != null && !shell.visualItem().isEmpty()) buf.writeNbt(shell.visualItem().save(new CompoundTag()));
             buf.writeLong(shell.gameTime());
         }
     }
@@ -41,9 +48,21 @@ public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> 
             TBCaliber caliber = buf.readEnum(TBCaliber.class);
             Direction face = buf.readEnum(Direction.class);
             shells.add(new EmbeddedShell(id, caliber, face, buf.readFloat(), buf.readFloat(), buf.readFloat(),
-                buf.readFloat(), buf.readFloat(), buf.readFloat(), buf.readLong()));
+                buf.readFloat(), buf.readFloat(), buf.readFloat(), readVisualState(buf), readVisualItem(buf), buf.readLong()));
         }
         return new ClientboundEmbeddedShellsPacket(pos, shells);
+    }
+
+    private static net.minecraft.world.level.block.state.BlockState readVisualState(FriendlyByteBuf buf) {
+        if (!buf.readBoolean()) return null;
+        CompoundTag tag = buf.readNbt();
+        return tag == null ? null : EmbeddedShell.readVisualState(tag);
+    }
+
+    private static ItemStack readVisualItem(FriendlyByteBuf buf) {
+        if (!buf.readBoolean()) return ItemStack.EMPTY;
+        CompoundTag tag = buf.readNbt();
+        return tag == null ? ItemStack.EMPTY : ItemStack.of(tag);
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

@@ -4,11 +4,13 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4fc;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -75,6 +77,59 @@ public final class CBCReflect {
         } catch (Throwable ignored) {
         }
         return Vec3.atLowerCornerOf(hit.getDirection().getNormal());
+    }
+
+    public static BlockState renderedProjectileState(Entity projectile) {
+        try {
+            Method method = findMethod(projectile.getClass(), "getRenderedBlockState");
+            if (method == null) return null;
+            method.setAccessible(true);
+            Object result = method.invoke(projectile);
+            if (result instanceof BlockState state && !state.isAir()
+                && state.getRenderShape() == net.minecraft.world.level.block.RenderShape.MODEL) {
+                return state;
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    public static ItemStack projectileItem(Entity projectile) {
+        try {
+            Method method = findMethod(projectile.getClass(), "getItem");
+            if (method == null) return ItemStack.EMPTY;
+            method.setAccessible(true);
+            Object result = method.invoke(projectile);
+            if (result instanceof ItemStack stack && !stack.isEmpty()) return stack.copy();
+        } catch (Throwable ignored) {
+        }
+        return ItemStack.EMPTY;
+    }
+
+    public static Matrix4fc facing(Vec3 normalized) {
+        return callFacing(normalized);
+    }
+
+    public static Matrix4fc facing(Vec3 destination, Vec3 source) {
+        try {
+            Class<?> utils = Class.forName("rbasamoyai.createbigcannons.utils.CBCUtils");
+            Method method = utils.getMethod("mat4x4fFacing", Vec3.class, Vec3.class);
+            Object result = method.invoke(null, destination, source);
+            if (result instanceof Matrix4fc matrix) return matrix;
+        } catch (Throwable ignored) {
+        }
+        return new org.joml.Matrix4f();
+    }
+
+    private static Matrix4fc callFacing(Vec3 normalized) {
+        try {
+            Class<?> utils = Class.forName("rbasamoyai.createbigcannons.utils.CBCUtils");
+            Method method = utils.getMethod("mat4x4fFacing", Vec3.class);
+            Object result = method.invoke(null, normalized);
+            if (result instanceof Matrix4fc matrix) return matrix;
+        } catch (Throwable ignored) {
+        }
+        return new org.joml.Matrix4f();
     }
 
     /**

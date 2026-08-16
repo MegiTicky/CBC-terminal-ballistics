@@ -31,6 +31,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
@@ -252,6 +253,9 @@ public final class TBImpactService {
                 projectile.setDeltaMovement(Vec3.ZERO);
             }
             Object impactResult = CBCReflect.newImpactResult(outcome, shatter);
+            BlockState renderedProjectileState = outcome.equals("STOP") ? renderedProjectileState(projectile) : null;
+            ItemStack renderedProjectileItem = renderedProjectileState == null && outcome.equals("STOP")
+                ? CBCReflect.projectileItem(projectile) : ItemStack.EMPTY;
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
             if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)) {
                 clearMarks(server, pos);
@@ -268,7 +272,8 @@ public final class TBImpactService {
             boolean embeddedShell = false;
             if (outcome.equals("STOP") && !onImpactRemove && level instanceof ServerLevel server
                 && server.getBlockState(pos).equals(state)) {
-                embeddedShell = addEmbeddedShell(server, pos, state, hit, caliber, curVel);
+                embeddedShell = addEmbeddedShell(server, pos, state, hit, caliber, curVel,
+                    renderedProjectileState, renderedProjectileItem);
             }
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
@@ -330,7 +335,8 @@ public final class TBImpactService {
     }
 
     private static boolean addEmbeddedShell(ServerLevel level, BlockPos pos, BlockState state, BlockHitResult hit,
-                                             TBCaliber caliber, Vec3 incomingVelocity) {
+                                             TBCaliber caliber, Vec3 incomingVelocity, BlockState visualState,
+                                             ItemStack visualItem) {
         Vec3 local = localHitLocation(level, pos, hit.getLocation());
         Vec3 direction = VSCompat.toShipVector(level, pos, incomingVelocity);
         if (direction.lengthSqr() < 1.0E-8D) return false;
@@ -341,11 +347,17 @@ public final class TBImpactService {
             (float) Mth.clamp(local.y - pos.getY(), 0.001D, 0.999D),
             (float) Mth.clamp(local.z - pos.getZ(), 0.001D, 0.999D),
             (float) direction.x, (float) direction.y, (float) direction.z,
+            visualState,
+            visualItem,
             level.getGameTime());
         EmbeddedShellSavedData data = EmbeddedShellSavedData.get(level);
         data.add(level, pos, state, shell);
         syncEmbeddedShells(level, pos, data.entryFor(level, pos, state).shells);
         return true;
+    }
+
+    private static BlockState renderedProjectileState(Entity projectile) {
+        return CBCReflect.renderedProjectileState(projectile);
     }
 
     public static void syncMarksToPlayers(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
