@@ -35,6 +35,7 @@ public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> 
             if (shell.visualState() != null) buf.writeNbt(NbtUtils.writeBlockState(shell.visualState()));
             buf.writeBoolean(shell.visualItem() != null && !shell.visualItem().isEmpty());
             if (shell.visualItem() != null && !shell.visualItem().isEmpty()) buf.writeNbt(shell.visualItem().save(new CompoundTag()));
+            buf.writeFloat(shell.depth());
             buf.writeLong(shell.gameTime());
         }
     }
@@ -48,7 +49,7 @@ public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> 
             TBCaliber caliber = buf.readEnum(TBCaliber.class);
             Direction face = buf.readEnum(Direction.class);
             shells.add(new EmbeddedShell(id, caliber, face, buf.readFloat(), buf.readFloat(), buf.readFloat(),
-                buf.readFloat(), buf.readFloat(), buf.readFloat(), readVisualState(buf), readVisualItem(buf), buf.readLong()));
+                buf.readFloat(), buf.readFloat(), buf.readFloat(), readVisualState(buf), readVisualItem(buf), buf.readFloat(), buf.readLong()));
         }
         return new ClientboundEmbeddedShellsPacket(pos, shells);
     }

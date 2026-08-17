@@ -15,7 +15,7 @@ import java.util.UUID;
 /** A shell visual anchored to a block-local impact position. */
 public record EmbeddedShell(UUID id, TBCaliber caliber, Direction face, float x, float y, float z,
                             float directionX, float directionY, float directionZ, BlockState visualState,
-                            ItemStack visualItem,
+                            ItemStack visualItem, float depth,
                             long gameTime) {
     public CompoundTag save() {
         CompoundTag tag = new CompoundTag();
@@ -30,6 +30,7 @@ public record EmbeddedShell(UUID id, TBCaliber caliber, Direction face, float x,
         tag.putFloat("DZ", directionZ);
         if (visualState != null) tag.put("VisualState", NbtUtils.writeBlockState(visualState));
         if (visualItem != null && !visualItem.isEmpty()) tag.put("VisualItem", visualItem.save(new CompoundTag()));
+        tag.putFloat("Depth", depth);
         tag.putLong("Time", gameTime);
         return tag;
     }
@@ -49,6 +50,7 @@ public record EmbeddedShell(UUID id, TBCaliber caliber, Direction face, float x,
             tag.getFloat("DZ"),
             tag.contains("VisualState", Tag.TAG_COMPOUND) ? readVisualState(tag.getCompound("VisualState")) : null,
             tag.contains("VisualItem", Tag.TAG_COMPOUND) ? ItemStack.of(tag.getCompound("VisualItem")) : ItemStack.EMPTY,
+            tag.contains("Depth") ? tag.getFloat("Depth") : 0.5F,
             tag.getLong("Time")
         );
     }

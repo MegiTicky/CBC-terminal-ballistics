@@ -37,6 +37,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.IntValue OVERLAY_MARKS_PER_BLOCK;
     public static final ForgeConfigSpec.IntValue EMBEDDED_SHELLS_PER_BLOCK;
     public static final ForgeConfigSpec.IntValue EMBEDDED_SHELL_LIFETIME_TICKS;
+    public static final ForgeConfigSpec.IntValue MAX_RENDERED_EMBEDDED_SHELLS;
     public static final ForgeConfigSpec.IntValue COPYCAT_ARMOR_MAX_LEVEL;
 
     static {
@@ -82,6 +83,7 @@ public final class TBConfig {
         OVERLAY_MARKS_PER_BLOCK = server.comment("Maximum stored impact marks per block.").defineInRange("impactOverlayMarksPerBlock", 5, 1, 16);
         EMBEDDED_SHELLS_PER_BLOCK = server.comment("Maximum permanent embedded shell visuals stored on one block.").defineInRange("embeddedShellsPerBlock", 8, 1, 64);
         EMBEDDED_SHELL_LIFETIME_TICKS = server.comment("Embedded shell visual lifetime in ticks. Set to 0 for permanent shell visuals.").defineInRange("embeddedShellLifetimeTicks", 0, 0, 20 * 60 * 60 * 24);
+        MAX_RENDERED_EMBEDDED_SHELLS = server.comment("Maximum embedded shell models rendered by each client at once.").defineInRange("maxRenderedEmbeddedShells", 256, 0, 4096);
         server.pop();
 
         server.push("copycat_armor");
