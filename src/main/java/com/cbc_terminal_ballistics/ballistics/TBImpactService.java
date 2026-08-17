@@ -187,6 +187,8 @@ public final class TBImpactService {
             if (!perforates && incidence < RICOCHET_MARK_MAX_INCIDENCE) {
                 markKind = ImpactMarkKind.STREAK;
             }
+            ShatterDecision shatterDecision = projectileShatterDecision(projectile, velMag, incidence, penetrationRatio, markKind);
+            boolean projectileShatter = shatterDecision.shattered();
 
             double massLoss = 0.0;
             int spallFragments = 0;
@@ -241,10 +243,18 @@ public final class TBImpactService {
                     if (integrityBreak && !unbreakable) {
                         blockBreakPending = true;
                     }
-                    spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
+                    if (projectileShatter && ProjectileClassifier.canSpall(projectile)) {
+                        double massAfter = Math.max(0.0, mass * 0.20);
+                        spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
+                        spallFragments = spawnSpall(server, projectile, hit.getLocation().add(velDir.scale(0.08)),
+                            velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness);
+                        spallReason = spallFragments > 0 ? "shattered" : "shattered_no_fragments";
+                    } else {
+                        spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
+                    }
                 }
                 LAST_IMPACTS.put(server.dimension().location().hashCode() * 31L + pos.asLong(),
-                    new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason));
+                    new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason, shatterDecision.chance(), projectileShatter));
             }
 
             TBDebug.serviceOutcome(outcome, appliedDamage, threshold);
@@ -252,7 +262,10 @@ public final class TBImpactService {
             if (launcherStop) {
                 projectile.setDeltaMovement(Vec3.ZERO);
             }
-            Object impactResult = CBCReflect.newImpactResult(outcome, shatter);
+            boolean hasFuze = CBCReflect.hasFuze(projectile);
+            // CBC impact fuzes refuse an impact result marked for removal. Let every loaded
+            // fuze receive a non-removing result so delayed and timed fuzes can keep ticking.
+            Object impactResult = CBCReflect.newImpactResult(outcome, hasFuze ? false : shatter || projectileShatter);
             BlockState renderedProjectileState = outcome.equals("STOP") ? renderedProjectileState(projectile) : null;
             ItemStack renderedProjectileItem = renderedProjectileState == null && outcome.equals("STOP")
                 ? CBCReflect.projectileItem(projectile) : ItemStack.EMPTY;
@@ -270,17 +283,18 @@ public final class TBImpactService {
                 }
             }
             boolean embeddedShell = false;
-            if (outcome.equals("STOP") && !onImpactRemove && level instanceof ServerLevel server
+            boolean fuzeLinger = outcome.equals("STOP") && CBCReflect.canLingerInGround(projectile);
+            if (outcome.equals("STOP") && !hasFuze && !onImpactRemove && !fuzeLinger && !projectileShatter && level instanceof ServerLevel server
                 && server.getBlockState(pos).equals(state)) {
                 embeddedShell = addEmbeddedShell(server, pos, state, hit, caliber, curVel,
-                    renderedProjectileState, renderedProjectileItem);
+                    renderedProjectileState, renderedProjectileItem, embeddedDepth(penetrationRatio));
             }
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
             // punching through light blocks instead of continuing into the block behind them.
-            boolean shouldRemove = onImpactRemove || embeddedShell || (autocannon
+            boolean shouldRemove = onImpactRemove || (!hasFuze && (embeddedShell || projectileShatter || (autocannon
                 ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
-                : shatter);
+                : shatter)));
             if (level instanceof ServerLevel server) {
                 Vec3 authoritativeVelocity = outcome.equals("STOP") ? Vec3.ZERO : projectile.getDeltaMovement();
                 Vec3 authoritativePosition = outcome.equals("STOP") ? hit.getLocation() : projectile.position();
@@ -336,7 +350,7 @@ public final class TBImpactService {
 
     private static boolean addEmbeddedShell(ServerLevel level, BlockPos pos, BlockState state, BlockHitResult hit,
                                              TBCaliber caliber, Vec3 incomingVelocity, BlockState visualState,
-                                             ItemStack visualItem) {
+                                             ItemStack visualItem, float depth) {
         Vec3 local = localHitLocation(level, pos, hit.getLocation());
         Vec3 direction = VSCompat.toShipVector(level, pos, incomingVelocity);
         if (direction.lengthSqr() < 1.0E-8D) return false;
@@ -349,6 +363,7 @@ public final class TBImpactService {
             (float) direction.x, (float) direction.y, (float) direction.z,
             visualState,
             visualItem,
+            depth,
             level.getGameTime());
         EmbeddedShellSavedData data = EmbeddedShellSavedData.get(level);
         data.add(level, pos, state, shell);
@@ -358,6 +373,28 @@ public final class TBImpactService {
 
     private static BlockState renderedProjectileState(Entity projectile) {
         return CBCReflect.renderedProjectileState(projectile);
+    }
+
+    private static float embeddedDepth(double penetrationRatio) {
+        return (float) Mth.clamp(0.10D + penetrationRatio * 0.70D, 0.10D, 0.90D);
+    }
+
+    private static ShatterDecision projectileShatterDecision(Entity projectile, double velocity, double incidence,
+                                                              double penetrationRatio, ImpactMarkKind markKind) {
+        if (ProjectileClassifier.shouldBypassTB(projectile) || penetrationRatio >= 1.0D) {
+            return new ShatterDecision(0.0D, false);
+        }
+        double velocityMps = velocity * 20.0D;
+        double velocityFactor = Mth.clamp((velocityMps - 60.0D) / 140.0D, 0.0D, 1.0D);
+        double energy = Mth.clamp((penetrationRatio - 0.35D) / 0.65D, 0.0D, 1.0D);
+        double shallow = markKind == ImpactMarkKind.STREAK
+            ? Mth.clamp((RICOCHET_MARK_MAX_INCIDENCE - incidence) / RICOCHET_MARK_MAX_INCIDENCE, 0.0D, 1.0D)
+            : 0.0D;
+        double chance = Mth.clamp((energy * 0.75D + velocityFactor * 0.45D + shallow * 0.35D)
+            * ProjectileClassifier.projectileShatterScale(projectile), 0.0D, 0.98D);
+        boolean shattered = chance > 0.0D
+            && deterministicImpactRoll(projectile, projectile.blockPosition(), Direction.UP) < chance;
+        return new ShatterDecision(chance, shattered);
     }
 
     public static void syncMarksToPlayers(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
@@ -764,10 +801,13 @@ public final class TBImpactService {
     }
 
     public record LastImpact(String outcome, double damage, double threshold, TBCaliber caliber, MaterialStats material,
-                             double massBefore, double massAfter, double velocity, double incidence,
-                             double armorToughness, double armorHardness, double effectiveToughness,
-                             double attack, double resistance, double penetrationRatio, double massLoss,
-                             int spallFragments, double spallDamageModifier, String spallReason) {}
+                              double massBefore, double massAfter, double velocity, double incidence,
+                              double armorToughness, double armorHardness, double effectiveToughness,
+                              double attack, double resistance, double penetrationRatio, double massLoss,
+                              int spallFragments, double spallDamageModifier, String spallReason,
+                              double shatterChance, boolean shattered) {}
+
+    private record ShatterDecision(double chance, boolean shattered) {}
 
     private static double calculateRicochetMassLoss(double velocity, double incidence, double toughness) {
         double minLoss = TBConfig.RICOCHET_MASS_LOSS_MIN.get();

@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.client;
 
+import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.state.EmbeddedShell;
 import com.cbc_terminal_ballistics.util.CBCReflect;
 import com.cbc_terminal_ballistics.util.VSCompat;
@@ -21,6 +22,8 @@ import net.minecraftforge.event.TickEvent;
 import org.joml.Matrix4f;
 
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -49,13 +52,24 @@ public final class ClientEmbeddedShells {
         PoseStack poseStack = event.getPoseStack();
         Vec3 camera = event.getCamera().getPosition();
         MultiBufferSource.BufferSource buffers = mc.renderBuffers().bufferSource();
+        List<ShellRender> candidates = new ArrayList<>();
         for (Map.Entry<BlockPos, List<EmbeddedShell>> entry : SHELLS.entrySet()) {
             BlockPos pos = entry.getKey();
             if (mc.level.getBlockState(pos).getCollisionShape(mc.level, pos).isEmpty()) continue;
             if (VSCompat.squaredDistanceBetweenInclShips(mc.level, Vec3.atCenterOf(pos), mc.player.position()) > 128 * 128) {
                 continue;
             }
-            renderBlockShells(mc.level, pos, entry.getValue(), poseStack, camera, buffers);
+            for (EmbeddedShell shell : entry.getValue()) {
+                if (shell.visualState() != null || (shell.visualItem() != null && !shell.visualItem().isEmpty())) {
+                    candidates.add(new ShellRender(pos, shell));
+                }
+            }
+        }
+        candidates.sort(Comparator.comparingLong((ShellRender shell) -> shell.shell().gameTime()).reversed());
+        int limit = Math.max(0, TBConfig.MAX_RENDERED_EMBEDDED_SHELLS.get());
+        for (int i = 0; i < Math.min(limit, candidates.size()); i++) {
+            ShellRender candidate = candidates.get(i);
+            renderBlockShells(mc.level, candidate.pos(), List.of(candidate.shell()), poseStack, camera, buffers);
         }
         buffers.endBatch();
     }
@@ -89,7 +103,10 @@ public final class ClientEmbeddedShells {
 
         Vec3 horizontal = new Vec3(axis.x, 0.0D, axis.z);
         poseStack.pushPose();
-        poseStack.translate(shell.x(), shell.y(), shell.z());
+        double depthOffset = shell.depth() - 0.5D;
+        poseStack.translate(shell.x() + axis.x * depthOffset,
+            shell.y() + axis.y * depthOffset,
+            shell.z() + axis.z * depthOffset);
         if (axis.horizontalDistanceSqr() > 1.0E-4D && Math.abs(axis.y) > 1.0E-2D) {
             poseStack.mulPoseMatrix(new Matrix4f(CBCReflect.facing(axis.reverse(), horizontal.normalize())));
             poseStack.mulPoseMatrix(new Matrix4f(CBCReflect.facing(horizontal.normalize())));
@@ -109,4 +126,6 @@ public final class ClientEmbeddedShells {
     }
 
     private ClientEmbeddedShells() {}
+
+    private record ShellRender(BlockPos pos, EmbeddedShell shell) {}
 }

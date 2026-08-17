@@ -106,6 +106,17 @@ public final class CBCReflect {
         return ItemStack.EMPTY;
     }
 
+    public static boolean canLingerInGround(Entity projectile) {
+        Object result = tryInvoke(projectile, "canLingerInGround", new Class<?>[]{});
+        return result instanceof Boolean value && value;
+    }
+
+    /** Returns true when the projectile carries a non-empty CBC fuze stack. */
+    public static boolean hasFuze(Entity projectile) {
+        Object value = field(projectile, "fuze");
+        return value instanceof ItemStack stack && !stack.isEmpty();
+    }
+
     public static Matrix4fc facing(Vec3 normalized) {
         return callFacing(normalized);
     }
