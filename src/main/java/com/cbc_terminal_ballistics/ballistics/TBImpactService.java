@@ -13,7 +13,10 @@ import com.cbc_terminal_ballistics.network.ClientboundImpactOutcomePacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
+import com.cbc_terminal_ballistics.network.ClientboundEmbeddedShellsPacket;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.state.EmbeddedShell;
+import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.cbc_terminal_ballistics.state.ImpactMark;
 import com.cbc_terminal_ballistics.state.TemporaryBlockPassage;
 import com.cbc_terminal_ballistics.util.CBCReflect;
@@ -31,6 +34,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.Projectile;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
@@ -216,6 +220,8 @@ public final class TBImpactService {
             if (!perforates && incidence < RICOCHET_MARK_MAX_INCIDENCE) {
                 markKind = ImpactMarkKind.STREAK;
             }
+            ShatterDecision shatterDecision = projectileShatterDecision(projectile, velMag, incidence, penetrationRatio, markKind);
+            boolean projectileShatter = shatterDecision.shattered();
 
             double massLoss = 0.0;
             int spallFragments = 0;
@@ -286,7 +292,15 @@ public final class TBImpactService {
                     if (integrityBreak && !unbreakable) {
                         blockBreakPending = true;
                     }
-                    spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
+                    if (projectileShatter && ProjectileClassifier.canSpall(projectile)) {
+                        double massAfter = Math.max(0.0, mass * 0.20);
+                        spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
+                        spallFragments = spawnSpall(server, projectile, hit.getLocation().add(velDir.scale(0.08)),
+                            velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness);
+                        spallReason = spallFragments > 0 ? "shattered" : "shattered_no_fragments";
+                    } else {
+                        spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
+                    }
                 }
                 LAST_IMPACTS.put(new LastImpactKey(server.dimension().location(), pos),
                     new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason));
@@ -297,7 +311,11 @@ public final class TBImpactService {
             if (launcherStop) {
                 projectile.setDeltaMovement(Vec3.ZERO);
             }
-            Object impactResult = CBCReflect.newImpactResult(outcome, shatter);
+            boolean hasFuze = CBCReflect.hasFuze(projectile);
+            Object impactResult = CBCReflect.newImpactResult(outcome, hasFuze ? false : shatter || projectileShatter);
+            BlockState renderedProjectileState = outcome.equals("STOP") ? CBCReflect.renderedProjectileState(projectile) : null;
+            ItemStack renderedProjectileItem = renderedProjectileState == null && outcome.equals("STOP")
+                ? CBCReflect.projectileItem(projectile) : ItemStack.EMPTY;
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
             if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)) {
                 // Native fuze/block impact handling replaced or removed the block.
@@ -316,9 +334,16 @@ public final class TBImpactService {
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
             // punching through light blocks instead of continuing into the block behind them.
-            boolean shouldRemove = onImpactRemove || (autocannon
+            boolean embeddedShell = false;
+            boolean fuzeLinger = outcome.equals("STOP") && CBCReflect.canLingerInGround(projectile);
+            if (outcome.equals("STOP") && !hasFuze && !onImpactRemove && !fuzeLinger && !projectileShatter
+                && level instanceof ServerLevel server && server.getBlockState(pos).equals(state)) {
+                embeddedShell = addEmbeddedShell(server, pos, state, hit, localHitFace, caliber, curVel,
+                    renderedProjectileState, renderedProjectileItem, embeddedDepth(penetrationRatio));
+            }
+            boolean shouldRemove = onImpactRemove || (!hasFuze && (embeddedShell || projectileShatter || (autocannon
                 ? (!level.isClientSide && (shatter || outcome.equals("STOP")))
-                : shatter);
+                : shatter)));
             if (level instanceof ServerLevel server) {
                 Vec3 authoritativeVelocity = outcome.equals("STOP") ? Vec3.ZERO : projectile.getDeltaMovement();
                 Vec3 authoritativePosition = outcome.equals("STOP") ? hit.getLocation() : projectile.position();
@@ -352,8 +377,96 @@ public final class TBImpactService {
         syncIntegrityProgress(level, pos, -1);
     }
 
+    public static void clearEmbeddedShells(ServerLevel level, BlockPos pos) {
+        EmbeddedShellSavedData.get(level).clear(pos);
+        syncEmbeddedShells(level, pos, java.util.List.of());
+    }
+
+    public static boolean clearBlockImpactData(ServerLevel level, BlockPos pos) {
+        boolean hadIntegrity = ArmorIntegritySavedData.get(level).getEntry(level, pos) != null;
+        boolean hadShells = EmbeddedShellSavedData.get(level).getEntry(level, pos) != null;
+        if (!hadIntegrity && !hadShells) return false;
+        clearMarks(level, pos);
+        clearEmbeddedShells(level, pos);
+        return true;
+    }
+
+    public static void syncEmbeddedShellsToPlayers(ServerLevel level, BlockPos pos, List<EmbeddedShell> shells) {
+        syncEmbeddedShells(level, pos, shells);
+    }
+
+    public static void syncAllEmbeddedShellsToPlayer(ServerPlayer player) {
+        ServerLevel level = player.serverLevel();
+        for (Map.Entry<BlockPos, EmbeddedShellSavedData.Entry> mapEntry : new ArrayList<>(EmbeddedShellSavedData.get(level).entriesView().entrySet())) {
+            BlockPos pos = mapEntry.getKey();
+            Vec3 center = SableCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                sendEmbeddedShells(player, pos, mapEntry.getValue().shells);
+            }
+        }
+    }
+
+    public static void syncAllImpactMarksToPlayer(ServerPlayer player) {
+        ServerLevel level = player.serverLevel();
+        for (Map.Entry<BlockPos, ArmorIntegritySavedData.Entry> mapEntry : new ArrayList<>(ArmorIntegritySavedData.get(level).entriesView().entrySet())) {
+            BlockPos pos = mapEntry.getKey();
+            ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
+            if (entry == null || entry.marks.isEmpty()) continue;
+            Vec3 center = SableCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                sendImpactMarks(player, pos, List.copyOf(entry.marks));
+            }
+        }
+    }
+
     public static void syncMarksToPlayers(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
         syncMarks(level, pos, marks);
+    }
+
+    private static boolean addEmbeddedShell(ServerLevel level, BlockPos pos, BlockState state, BlockHitResult hit,
+                                             Direction localFace, TBCaliber caliber, Vec3 incomingVelocity,
+                                             BlockState visualState, ItemStack visualItem, float depth) {
+        Vec3 local = localHitLocation(level, pos, hit.getLocation());
+        Vec3 direction = SableCompat.toSubLevelVector(level, pos, incomingVelocity);
+        if (direction.lengthSqr() < 1.0E-8D) return false;
+        direction = direction.normalize();
+        EmbeddedShell shell = new EmbeddedShell(
+            java.util.UUID.randomUUID(), caliber, localFace,
+            (float) Mth.clamp(local.x - pos.getX(), 0.001D, 0.999D),
+            (float) Mth.clamp(local.y - pos.getY(), 0.001D, 0.999D),
+            (float) Mth.clamp(local.z - pos.getZ(), 0.001D, 0.999D),
+            (float) direction.x, (float) direction.y, (float) direction.z,
+            visualState, visualItem, depth, level.getGameTime());
+        EmbeddedShellSavedData data = EmbeddedShellSavedData.get(level);
+        data.add(level, pos, state, shell);
+        syncEmbeddedShells(level, pos, data.entryFor(level, pos, state).shells);
+        return true;
+    }
+
+    private static BlockState renderedProjectileState(Entity projectile) {
+        return CBCReflect.renderedProjectileState(projectile);
+    }
+
+    private static float embeddedDepth(double penetrationRatio) {
+        return (float) Mth.clamp(0.10D + penetrationRatio * 0.70D, 0.10D, 0.90D);
+    }
+
+    private static ShatterDecision projectileShatterDecision(Entity projectile, double velocity, double incidence,
+                                                               double penetrationRatio, ImpactMarkKind markKind) {
+        if (ProjectileClassifier.shouldBypassTB(projectile) || penetrationRatio >= 1.0D) {
+            return new ShatterDecision(0.0D, false);
+        }
+        double velocityMps = velocity * 20.0D;
+        double velocityFactor = Mth.clamp((velocityMps - 60.0D) / 140.0D, 0.0D, 1.0D);
+        double energy = Mth.clamp((penetrationRatio - 0.35D) / 0.65D, 0.0D, 1.0D);
+        double shallow = markKind == ImpactMarkKind.STREAK
+            ? Mth.clamp((RICOCHET_MARK_MAX_INCIDENCE - incidence) / RICOCHET_MARK_MAX_INCIDENCE, 0.0D, 1.0D)
+            : 0.0D;
+        double chance = Mth.clamp((energy * 0.75D + velocityFactor * 0.45D + shallow * 0.35D)
+            * ProjectileClassifier.projectileShatterScale(projectile), 0.0D, 0.98D);
+        boolean shattered = chance > 0.0D
+            && deterministicImpactRoll(projectile, projectile.blockPosition(), Direction.UP) < chance;
+        return new ShatterDecision(chance, shattered);
     }
 
     private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit,
@@ -489,6 +602,24 @@ public final class TBImpactService {
                 net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(player, packet);
             }
         }
+    }
+
+    private static void syncEmbeddedShells(ServerLevel level, BlockPos pos, List<EmbeddedShell> shells) {
+        ClientboundEmbeddedShellsPacket packet = new ClientboundEmbeddedShellsPacket(pos.immutable(), SableCompat.subLevelId(level, pos), List.copyOf(shells));
+        Vec3 center = SableCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+        for (ServerPlayer player : getRelevantPlayers(level, pos)) {
+            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                PacketDistributor.sendToPlayer(player, packet);
+            }
+        }
+    }
+
+    private static void sendImpactMarks(ServerPlayer player, BlockPos pos, List<ImpactMark> marks) {
+        PacketDistributor.sendToPlayer(player, new ClientboundImpactMarksPacket(pos.immutable(), SableCompat.subLevelId(player.serverLevel(), pos), List.copyOf(marks)));
+    }
+
+    private static void sendEmbeddedShells(ServerPlayer player, BlockPos pos, List<EmbeddedShell> shells) {
+        PacketDistributor.sendToPlayer(player, new ClientboundEmbeddedShellsPacket(pos.immutable(), SableCompat.subLevelId(player.serverLevel(), pos), List.copyOf(shells)));
     }
 
     private static void syncIntegrityProgress(ServerLevel level, BlockPos pos, double damage, double threshold) {
@@ -892,6 +1023,8 @@ public final class TBImpactService {
     }
 
     private record SpallExit(Vec3 origin, Vec3 direction) {}
+
+    private record ShatterDecision(double chance, boolean shattered) {}
 
     private record LastImpactKey(net.minecraft.resources.ResourceLocation dimension, net.minecraft.core.BlockPos pos) {}
 

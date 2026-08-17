@@ -5,7 +5,9 @@ import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundInspectionSnapshotPacket;
 import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactOutcomePacket;
+import com.cbc_terminal_ballistics.network.ClientboundEmbeddedShellsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundProjectileSlowdownPacket;
+import com.cbc_terminal_ballistics.network.ClientboundShellDebugTogglePacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
 import com.cbc_terminal_ballistics.util.CBCReflect;
 import net.minecraft.client.Minecraft;
@@ -16,6 +18,14 @@ public final class ClientPacketHandlers {
         if (Minecraft.getInstance().level != null) {
             ClientImpactMarks.accept(packet.pos(), packet.subLevelId(), packet.marks());
         }
+    }
+
+    public static void handleEmbeddedShells(ClientboundEmbeddedShellsPacket packet) {
+        if (Minecraft.getInstance().level != null) ClientEmbeddedShells.accept(packet.pos(), packet.subLevelId(), packet.shells());
+    }
+
+    public static void handleShellDebugToggle(ClientboundShellDebugTogglePacket packet) {
+        ClientEmbeddedShells.setDebugEnabled(packet.enabled());
     }
 
     public static void handleSpallCone(ClientboundSpallConePacket packet) {

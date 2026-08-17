@@ -54,6 +54,18 @@ public final class TBNetwork {
                 ClientboundImpactOutcomePacket::handle
             );
 
+            registrar.playToClient(
+                ClientboundEmbeddedShellsPacket.TYPE,
+                ClientboundEmbeddedShellsPacket.STREAM_CODEC,
+                ClientboundEmbeddedShellsPacket::handle
+            );
+
+            registrar.playToClient(
+                ClientboundShellDebugTogglePacket.TYPE,
+                ClientboundShellDebugTogglePacket.STREAM_CODEC,
+                ClientboundShellDebugTogglePacket::handle
+            );
+
             registrar.playToServer(
                 ServerboundSetLauncherVelocityPacket.TYPE,
                 ServerboundSetLauncherVelocityPacket.STREAM_CODEC,

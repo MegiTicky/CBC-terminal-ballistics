@@ -11,6 +11,7 @@ import org.joml.Quaterniondc;
 import org.joml.Quaternionf;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
+import org.joml.Vector3f;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +33,7 @@ public final class SableClientCompat {
     private static Method posePositionMethod;
     private static Method poseOrientationMethod;
     private static Method poseRotationPointMethod;
+    private static Method poseScaleMethod;
     private static Method poseTransformPositionMethod;
     private static Method poseTransformNormalMethod;
     private static boolean lookupFailed;
@@ -230,6 +232,14 @@ public final class SableClientCompat {
         return result instanceof Quaterniondc quat ? quat : null;
     }
 
+    private static Vector3dc poseScale(Object renderPose) throws Throwable {
+        if (poseScaleMethod == null) {
+            poseScaleMethod = renderPose.getClass().getMethod("scale");
+        }
+        Object result = poseScaleMethod.invoke(renderPose);
+        return result instanceof Vector3dc scale ? scale : null;
+    }
+
     private static Vector3dc poseRotationPoint(Object renderPose) throws Throwable {
         if (poseRotationPointMethod == null) {
             poseRotationPointMethod = renderPose.getClass().getMethod("rotationPoint");
@@ -255,12 +265,21 @@ public final class SableClientCompat {
     }
 
     public record RenderTransform(Object renderPose, Vec3 camera) {
-        public Vec3 position(Vec3 subLevelPosition) {
+        /**
+         * Returns a camera-relative ship position, or null when Sable's render
+         * pose cannot transform the local coordinate this frame.
+         */
+        public Vec3 positionOrNull(Vec3 subLevelPosition) {
             try {
                 return transformPosition(renderPose, subLevelPosition).subtract(camera);
             } catch (Throwable ignored) {
-                return subLevelPosition.subtract(camera);
+                return null;
             }
+        }
+
+        public Vec3 position(Vec3 subLevelPosition) {
+            Vec3 transformed = positionOrNull(subLevelPosition);
+            return transformed == null ? subLevelPosition.subtract(camera) : transformed;
         }
 
         public Vec3 normal(Vec3 subLevelNormal) {
@@ -268,6 +287,25 @@ public final class SableClientCompat {
                 return transformNormal(renderPose, subLevelNormal);
             } catch (Throwable ignored) {
                 return subLevelNormal;
+            }
+        }
+
+        public Quaternionf orientation() {
+            try {
+                Quaterniondc orientation = poseOrientation(renderPose);
+                return orientation == null ? new Quaternionf() : new Quaternionf(orientation);
+            } catch (Throwable ignored) {
+                return new Quaternionf();
+            }
+        }
+
+        public Vector3f scale() {
+            try {
+                Vector3dc scale = poseScale(renderPose);
+                return scale == null ? new Vector3f(1.0F)
+                    : new Vector3f((float) scale.x(), (float) scale.y(), (float) scale.z());
+            } catch (Throwable ignored) {
+                return new Vector3f(1.0F);
             }
         }
     }

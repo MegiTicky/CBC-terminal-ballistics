@@ -93,6 +93,20 @@ public final class ProjectileClassifier {
         return shellSpallCountModifier(projectile) > 0;
     }
 
+    public static double projectileShatterScale(Entity projectile) {
+        ResourceLocation id = BuiltInRegistries.ENTITY_TYPE.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        if (text.contains("apfsds")) return 1.8;
+        if (text.contains("apds")) return 1.5;
+        if (text.contains("apbc")) return 1.0;
+        if (text.contains("aphe")) return 0.65;
+        if (text.contains("ap")) return 0.9;
+        if (text.contains("shot") || text.contains("inert")) return 1.2;
+        return 0.35;
+    }
+
     private static TBCaliber parse(String raw, TBCaliber fallback) {
         try { return TBCaliber.valueOf(raw.trim().toUpperCase(Locale.ROOT)); } catch (Exception ignored) { return fallback; }
     }

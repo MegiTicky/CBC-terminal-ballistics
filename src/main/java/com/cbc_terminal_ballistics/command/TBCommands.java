@@ -7,6 +7,7 @@ import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.network.ClientboundShellDebugTogglePacket;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.util.SableCompat;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -22,6 +23,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.neoforged.fml.ModList;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,9 +47,13 @@ public final class TBCommands {
                 .then(Commands.argument("factor", IntegerArgumentType.integer(TBProjectileSlowdown.MIN_FACTOR, TBProjectileSlowdown.MAX_FACTOR))
                     .executes(ctx -> setProjectileSlow(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "factor"))))
                 .then(Commands.literal("reset").executes(ctx -> setProjectileSlow(ctx.getSource(), 1))))
-            .then(Commands.literal("marks")
-                .then(Commands.literal("refresh").executes(ctx -> refreshImpactMarks(ctx.getSource())))
-                .then(Commands.literal("delete").executes(ctx -> deleteImpactMarks(ctx.getSource())))));
+             .then(Commands.literal("marks")
+                 .then(Commands.literal("refresh").executes(ctx -> refreshImpactMarks(ctx.getSource())))
+                 .then(Commands.literal("delete").executes(ctx -> deleteImpactMarks(ctx.getSource()))))
+             .then(Commands.literal("shell_debug")
+                 .executes(ctx -> setShellDebug(ctx.getSource(), true))
+                 .then(Commands.literal("on").executes(ctx -> setShellDebug(ctx.getSource(), true)))
+                 .then(Commands.literal("off").executes(ctx -> setShellDebug(ctx.getSource(), false)))));
     }
 
     private static int status(CommandSourceStack source) {
@@ -162,6 +168,18 @@ public final class TBCommands {
         }
         source.sendSuccess(() -> Component.literal("Deleted impact/integrity data for " + count + " blocks."), true);
         return count;
+    }
+
+    private static int setShellDebug(CommandSourceStack source, boolean enabled) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            PacketDistributor.sendToPlayer(player, new ClientboundShellDebugTogglePacket(enabled));
+            source.sendSuccess(() -> Component.literal("Embedded shell debug overlay " + (enabled ? "enabled" : "disabled") + "."), false);
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal(ex.getMessage()));
+            return 0;
+        }
     }
 
     private static int classes(CommandSourceStack source) {

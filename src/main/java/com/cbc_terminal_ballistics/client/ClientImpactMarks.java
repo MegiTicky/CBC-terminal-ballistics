@@ -86,6 +86,22 @@ public final class ClientImpactMarks {
         }
     }
 
+    static Vec3 debugAnchorNear(BlockPos pos, Vec3 reference) {
+        MarkSet markSet = MARKS.get(pos);
+        if (markSet == null || markSet.marks().isEmpty()) return null;
+        ImpactMark nearest = null;
+        double nearestDistance = Double.POSITIVE_INFINITY;
+        for (ImpactMark mark : markSet.marks()) {
+            Vec3 anchor = mark.absolute(pos);
+            double distance = anchor.distanceToSqr(reference);
+            if (distance < nearestDistance) {
+                nearest = mark;
+                nearestDistance = distance;
+            }
+        }
+        return nearest == null ? null : nearest.absolute(pos);
+    }
+
     @SubscribeEvent
     public static void clientTick(ClientTickEvent.Post event) {
         Minecraft mc = Minecraft.getInstance();
@@ -231,7 +247,12 @@ public final class ClientImpactMarks {
     }
 
     private static int overlayLifetime() {
-        return Math.max(1, TBConfig.OVERLAY_LIFETIME_TICKS.get());
+        try {
+            return Math.max(1, TBConfig.OVERLAY_LIFETIME_TICKS.get());
+        } catch (IllegalStateException ignored) {
+            // Client rendering can start before the server config is synchronized.
+            return 20 * 60 * 15;
+        }
     }
 
     private static boolean isSableSubLevelMark(Level level, BlockPos pos) {
