@@ -333,6 +333,15 @@ public final class TBImpactService {
         syncEmbeddedShells(level, pos, java.util.List.of());
     }
 
+    public static boolean clearBlockImpactData(ServerLevel level, BlockPos pos) {
+        boolean hadIntegrityData = ArmorIntegritySavedData.get(level).getEntry(level, pos) != null;
+        boolean hadShells = EmbeddedShellSavedData.get(level).getEntry(level, pos) != null;
+        if (!hadIntegrityData && !hadShells) return false;
+        clearMarks(level, pos);
+        clearEmbeddedShells(level, pos);
+        return true;
+    }
+
     public static void syncEmbeddedShellsToPlayers(ServerLevel level, BlockPos pos, java.util.List<EmbeddedShell> shells) {
         syncEmbeddedShells(level, pos, shells);
     }
@@ -344,6 +353,19 @@ public final class TBImpactService {
             Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
             if (center.distanceToSqr(player.position()) <= 128 * 128) {
                 sendEmbeddedShells(player, pos, mapEntry.getValue().shells);
+            }
+        }
+    }
+
+    public static void syncAllImpactMarksToPlayer(ServerPlayer player) {
+        ServerLevel level = player.serverLevel();
+        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry : ArmorIntegritySavedData.get(level).entriesView().entrySet()) {
+            BlockPos pos = BlockPos.of(mapEntry.getKey());
+            ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
+            if (entry == null || entry.marks.isEmpty()) continue;
+            Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+            if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                sendImpactMarks(player, pos, entry.marks);
             }
         }
     }
@@ -491,6 +513,11 @@ public final class TBImpactService {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
             }
         }
+    }
+
+    private static void sendImpactMarks(ServerPlayer player, BlockPos pos, java.util.List<ImpactMark> marks) {
+        TBNetwork.CHANNEL.sendTo(new ClientboundImpactMarksPacket(pos.immutable(), java.util.List.copyOf(marks)),
+            player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
     }
 
     private static void syncEmbeddedShells(ServerLevel level, BlockPos pos, java.util.List<EmbeddedShell> shells) {

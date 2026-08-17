@@ -76,6 +76,7 @@ public class CBCTerminalBallistics {
     public void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
         if (event.getEntity() instanceof ServerPlayer player) {
             TBProjectileSlowdown.syncTo(player);
+            TBImpactService.syncAllImpactMarksToPlayer(player);
             TBImpactService.syncAllEmbeddedShellsToPlayer(player);
         }
     }
