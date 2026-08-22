@@ -1,4 +1,5 @@
 {
+  "block": "minecraft:iron_block",
   "surface": "metallic",
   "brittleness": 0.10,
   "ductility": 4.0,
