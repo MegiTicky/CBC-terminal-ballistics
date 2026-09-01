@@ -40,11 +40,15 @@ public final class CommonForgeEvents {
     @SubscribeEvent
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
         if (!(event.getLevel() instanceof ServerLevel level) || !isCannonWelder(event.getItemStack())) return;
-        if (!TBImpactService.clearBlockImpactData(level, event.getPos())) return;
+        boolean shift = event.getEntity().isShiftKeyDown();
+        boolean changed = shift ? TBImpactService.clearEmbeddedShellsOnly(level, event.getPos())
+            : TBImpactService.clearBlockImpactData(level, event.getPos());
+        if (!changed) return;
 
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.SUCCESS);
-        event.getEntity().displayClientMessage(Component.literal("Repaired ballistic damage and removed impact debris."), true);
+        event.getEntity().displayClientMessage(Component.literal(
+            shift ? "Removed embedded shells." : "Repaired ballistic damage and removed impact debris."), true);
     }
 
     private static boolean isCannonWelder(ItemStack stack) {

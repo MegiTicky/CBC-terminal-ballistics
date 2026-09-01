@@ -328,6 +328,12 @@ public final class TBImpactService {
         syncIntegrityProgress(level, pos, -1);
     }
 
+    public static boolean clearEmbeddedShellsOnly(ServerLevel level, BlockPos pos) {
+        if (EmbeddedShellSavedData.get(level).getEntry(level, pos) == null) return false;
+        clearEmbeddedShells(level, pos);
+        return true;
+    }
+
     public static void clearEmbeddedShells(ServerLevel level, BlockPos pos) {
         EmbeddedShellSavedData.get(level).clear(pos);
         syncEmbeddedShells(level, pos, java.util.List.of());
