@@ -19,6 +19,7 @@ import com.cbc_terminal_ballistics.state.EmbeddedShell;
 import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.cbc_terminal_ballistics.state.TemporaryBlockPassage;
 import com.cbc_terminal_ballistics.util.CBCReflect;
+import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import com.cbc_terminal_ballistics.util.VSCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -270,7 +271,8 @@ public final class TBImpactService {
             ItemStack renderedProjectileItem = renderedProjectileState == null && outcome.equals("STOP")
                 ? CBCReflect.projectileItem(projectile) : ItemStack.EMPTY;
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
-            if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)) {
+            if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)
+                && ContraptionCompat.blockStateAt(level, pos) == null) {
                 clearMarks(server, pos);
             }
             if (!onImpactRemove && level instanceof ServerLevel server && server.getBlockState(pos).equals(state)) {

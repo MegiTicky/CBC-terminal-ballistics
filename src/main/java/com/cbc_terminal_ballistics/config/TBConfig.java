@@ -10,6 +10,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec COMMON_SPEC;
 
     public static final ForgeConfigSpec.BooleanValue ENABLED;
+    public static final ForgeConfigSpec.BooleanValue HIT_CREATE_CONTRAPTIONS;
 
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> PROJECTILE_CLASS_OVERRIDES;
 
@@ -45,6 +46,7 @@ public final class TBConfig {
 
         server.push("general");
         ENABLED = server.comment("Enable CBC terminal ballistics penetration override.").define("enabled", true);
+        HIT_CREATE_CONTRAPTIONS = server.comment("Enable CBC projectile collision with Create contraption blocks (mechanical bearings, pistons, gantries, etc.). Projectiles will hit moving contraption blocks with full CBCTB ballistics.").define("hitCreateContraptions", false);
         server.pop();
 
         server.push("projectiles");
