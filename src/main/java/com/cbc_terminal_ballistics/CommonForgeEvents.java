@@ -2,6 +2,7 @@ package com.cbc_terminal_ballistics;
 
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlock;
 import com.cbc_terminal_ballistics.ballistics.TBImpactService;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.server.level.ServerLevel;
@@ -41,14 +42,24 @@ public final class CommonForgeEvents {
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
         if (!(event.getLevel() instanceof ServerLevel level) || !isCannonWelder(event.getItemStack())) return;
         boolean shift = event.getEntity().isShiftKeyDown();
-        boolean changed = shift ? TBImpactService.clearEmbeddedShellsOnly(level, event.getPos())
-            : TBImpactService.clearBlockImpactData(level, event.getPos());
+        BlockPos targetPos = event.getPos();
+        boolean changed = clearWelderData(level, targetPos, shift);
+        if (!changed && event.getFace() != null) {
+            // A thin outer layer can receive the click while the shell is stored on the block behind it.
+            targetPos = targetPos.relative(event.getFace().getOpposite());
+            changed = clearWelderData(level, targetPos, shift);
+        }
         if (!changed) return;
 
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.SUCCESS);
         event.getEntity().displayClientMessage(Component.literal(
             shift ? "Removed embedded shells." : "Repaired ballistic damage and removed impact debris."), true);
+    }
+
+    private static boolean clearWelderData(ServerLevel level, BlockPos pos, boolean shellsOnly) {
+        return shellsOnly ? TBImpactService.clearEmbeddedShellsOnly(level, pos)
+            : TBImpactService.clearBlockImpactData(level, pos);
     }
 
     private static boolean isCannonWelder(ItemStack stack) {

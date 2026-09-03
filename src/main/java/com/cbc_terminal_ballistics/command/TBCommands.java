@@ -14,6 +14,9 @@ import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
+import com.cbc_terminal_ballistics.network.ClientboundTestRayPacket;
+import com.cbc_terminal_ballistics.network.TBNetwork;
+import net.minecraftforge.network.PacketDistributor;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -23,8 +26,10 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.fml.ModList;
 
 import java.util.ArrayList;
@@ -60,7 +65,11 @@ public final class TBCommands {
             .then(Commands.literal("checkarmor")
                 .executes(ctx -> checkArmor(ctx.getSource(), false))
                 .then(Commands.literal("fix")
-                    .executes(ctx -> checkArmor(ctx.getSource(), true)))));
+                    .executes(ctx -> checkArmor(ctx.getSource(), true))))
+            .then(Commands.literal("testray")
+                .executes(ctx -> testRay(ctx.getSource()))
+                .then(Commands.argument("distance", IntegerArgumentType.integer(1, 200))
+                    .executes(ctx -> testRay(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "distance"))))));
     }
 
     private static int status(CommandSourceStack source) {
@@ -297,6 +306,88 @@ public final class TBCommands {
         }
 
         return totalExceeded;
+    }
+
+    private static int testRay(CommandSourceStack source) {
+        return testRay(source, 50);
+    }
+
+    private static int testRay(CommandSourceStack source, int distance) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            Vec3 eyePos = player.getEyePosition();
+            Vec3 lookVec = player.getLookAngle();
+            Vec3 from = eyePos;
+            Vec3 to = eyePos.add(lookVec.scale(distance));
+
+            source.sendSuccess(() -> Component.literal("=== Contraption Ray Test ===").withStyle(ChatFormatting.GOLD), false);
+            source.sendSuccess(() -> Component.literal(String.format("From: %.2f, %.2f, %.2f", from.x, from.y, from.z)), false);
+            source.sendSuccess(() -> Component.literal(String.format("To:   %.2f, %.2f, %.2f", to.x, to.y, to.z)), false);
+
+            if (!com.cbc_terminal_ballistics.util.ContraptionCompat.isLoaded()) {
+                source.sendSuccess(() -> Component.literal("Create is not loaded!").withStyle(ChatFormatting.RED), false);
+                return 0;
+            }
+
+            long startMs = System.nanoTime();
+            com.cbc_terminal_ballistics.util.ContraptionCompat.ContraptionHit hit =
+                com.cbc_terminal_ballistics.util.ContraptionCompat.raycastDebug(source.getLevel(), from, to, source);
+            long elapsedUs = (System.nanoTime() - startMs) / 1000;
+
+            source.sendSuccess(() -> Component.literal("Raycast completed in " + elapsedUs + " us"), false);
+
+            if (hit == null) {
+                source.sendSuccess(() -> Component.literal("No contraption hit.").withStyle(ChatFormatting.YELLOW), false);
+            } else {
+                source.sendSuccess(() -> Component.literal("HIT!").withStyle(ChatFormatting.GREEN), false);
+                source.sendSuccess(() -> Component.literal(String.format("  World pos: %s", hit.worldPos())), false);
+                source.sendSuccess(() -> Component.literal(String.format("  Hit loc: %.2f, %.2f, %.2f", hit.hitLocation().x, hit.hitLocation().y, hit.hitLocation().z)), false);
+                source.sendSuccess(() -> Component.literal(String.format("  Face: %s", hit.direction())), false);
+                source.sendSuccess(() -> Component.literal(String.format("  State: %s", hit.state())), false);
+            }
+
+            // Collect block AABB data for client-side debug rendering
+            List<double[]> blockDataList = new ArrayList<>();
+            try {
+                List<net.minecraft.world.entity.Entity> entities =
+                    com.cbc_terminal_ballistics.util.ContraptionCompat.findNearbyContraptionEntities(source.getLevel(), from, to);
+                for (net.minecraft.world.entity.Entity entity : entities) {
+                    Object contraption = com.cbc_terminal_ballistics.util.ContraptionCompat.getContraptionObject(entity);
+                    if (contraption == null) continue;
+                    java.util.Map<BlockPos, ?> blocks = com.cbc_terminal_ballistics.util.ContraptionCompat.getBlocksObject(contraption);
+                    if (blocks == null) continue;
+                    for (BlockPos localPos : blocks.keySet()) {
+                        Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.toGlobalVector(entity, Vec3.atCenterOf(localPos), 0f);
+                        if (worldCenter == null) continue;
+                        blockDataList.add(new double[]{
+                            worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
+                            worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5,
+                            worldCenter.x, worldCenter.y, worldCenter.z
+                        });
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            double[] blockData = new double[blockDataList.size() * 9];
+            for (int i = 0; i < blockDataList.size(); i++) {
+                System.arraycopy(blockDataList.get(i), 0, blockData, i * 9, 9);
+            }
+
+            ClientboundTestRayPacket packet = new ClientboundTestRayPacket(
+                from, to,
+                hit != null ? hit.hitLocation() : null,
+                hit != null ? hit.worldPos() : null,
+                hit != null,
+                blockData,
+                blockDataList.size()
+            );
+            TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal("Error: " + ex.getMessage()));
+            return 0;
+        }
     }
 
     private TBCommands() {}

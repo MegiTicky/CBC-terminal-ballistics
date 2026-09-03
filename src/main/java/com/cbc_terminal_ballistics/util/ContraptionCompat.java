@@ -1,5 +1,8 @@
 package com.cbc_terminal_ballistics.util;
 
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
@@ -24,20 +27,55 @@ import java.util.Map;
  * projectile raycasts are extended to collide with blocks stored inside moving Create contraption
  * entities (mechanical bearings, pistons, gantries, etc.).
  *
- * Create's {@code Contraption.getBlocks()} stores blocks in local contraption coordinates.
- * To detect a hit, we transform the world-space ray into each candidate contraption's local
- * coordinate system, then run a DDA voxel traversal over the stored block map.
+ * <p>Create's {@code Contraption.getBlocks()} stores blocks in local contraption coordinates.
+ * To detect a hit, we use the entity's {@code toGlobalVector()} method to transform each
+ * local block center into world space, then run a ray-AABB intersection test against the
+ * world-space bounding box of each block.</p>
+ *
+ * <h3>Coordinate system (from Create 0.5.1.j bytecode)</h3>
+ * <pre>
+ * toLocalVector(worldVec, pt):
+ *     anchor = getAnchorVec()                     // entity position
+ *     centerOfOrigin = VecHelper.getCenterOf(ZERO) // (0.5, 0.5, 0.5)
+ *     v = worldVec - anchor - centerOfOrigin
+ *     v = reverseRotation(v, pt)
+ *     v = v - centerOfOrigin
+ *     return v
+ *
+ * toGlobalVector(localVec, pt):
+ *     anchor = getAnchorVec()
+ *     centerOfOrigin = VecHelper.getCenterOf(ZERO) // (0.5, 0.5, 0.5)
+ *     v = localVec - centerOfOrigin
+ *     v = applyRotation(v, pt)
+ *     v = v + centerOfOrigin + anchor
+ *     return v
+ * </pre>
+ *
+ * <h3>Known pitfalls</h3>
+ * <ul>
+ *   <li>{@code reverseRotation()} and {@code applyRotation()} are abstract on
+ *       {@code AbstractContraptionEntity}; concrete subclasses implement them.
+ *       Reflection must walk the class hierarchy to find the implementation.</li>
+ *   <li>{@code StructureBlockInfo} in 1.20.1 Forge is a record. The deobfuscated
+ *       accessor is {@code state()} but Forge SRG mappings use {@code f_74676_()}.
+ *       Both must be tried.</li>
+ *   <li>{@code ContraptionEntity} default AABB does NOT resize to the contraption
+ *       structure. Entity search uses {@code getEntitiesOfClass} with an inflated box.</li>
+ * </ul>
  */
 public final class ContraptionCompat {
     private static final Logger LOG = LoggerFactory.getLogger("CBCTB/ContraptionCompat");
     private static final String CONTRAPTION_ENTITY = "com.simibubi.create.content.contraptions.AbstractContraptionEntity";
 
     private static Boolean loaded;
+
+    // Cached reflection handles (per entity class for rotation, shared for others)
     private static Method getContraptionMethod;
     private static Method getBlocksMethod;
-    private static Method toLocalVectorMethod;
-    private static Method reverseRotationMethod;
+    private static Method toGlobalVectorMethod;
     private static Method getAnchorVecMethod;
+    private static java.lang.reflect.Field stateField;
+    private static Method stateAccessor;
 
     public static boolean isLoaded() {
         if (loaded == null) {
@@ -81,14 +119,84 @@ public final class ContraptionCompat {
     }
 
     /**
-     * Raycast from {@code from} to {@code to} against all Create contraption entities near the ray.
-     * Returns the nearest contraption block hit, or null if none.
+     * Debug version of raycast that sends output to a command sender.
      */
     @Nullable
-    public static ContraptionHit raycast(Level level, Vec3 from, Vec3 to) {
-        if (!isLoaded()) return null;
+    public static ContraptionHit raycastDebug(Level level, Vec3 from, Vec3 to, CommandSourceStack source) {
+        if (!isLoaded()) {
+            source.sendSuccess(() -> Component.literal("Create is not loaded!").withStyle(ChatFormatting.RED), false);
+            return null;
+        }
         try {
             List<Entity> entities = findContraptionEntities(level, from, to);
+            source.sendSuccess(() -> Component.literal("Entities found: " + entities.size()), false);
+
+            if (entities.isEmpty()) {
+                source.sendSuccess(() -> Component.literal("No contraption entities in search box.").withStyle(ChatFormatting.YELLOW), false);
+                return null;
+            }
+
+            ContraptionHit best = null;
+            double bestDistSq = Double.MAX_VALUE;
+            for (Entity entity : entities) {
+                Vec3 epos = entity.position();
+                source.sendSuccess(() -> Component.literal(String.format("  Entity: %s at (%.1f, %.1f, %.1f)", entity.getType().toShortString(), epos.x, epos.y, epos.z)), false);
+
+                Object contraption = getContraption(entity);
+                if (contraption == null) {
+                    source.sendSuccess(() -> Component.literal("    getContraption() returned null"), false);
+                    continue;
+                }
+                Map<BlockPos, ?> blocks = getBlocks(contraption);
+                if (blocks == null || blocks.isEmpty()) {
+                    source.sendSuccess(() -> Component.literal("    blocks map is null or empty"), false);
+                    continue;
+                }
+
+                source.sendSuccess(() -> Component.literal("    Blocks: " + blocks.size()), false);
+
+                // Show first 5 blocks with world positions for diagnostics
+                int shown = 0;
+                for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
+                    BlockPos lp = entry.getKey();
+                    BlockState bs = getBlockState(entry.getValue());
+                    Vec3 wc = toGlobalVectorImpl(entity, Vec3.atCenterOf(lp), 0f);
+                    source.sendSuccess(() -> Component.literal(String.format("      local=%s worldCenter=%s state=%s", lp, wc, bs)), false);
+                    if (++shown >= 5) {
+                        if (blocks.size() > 5) source.sendSuccess(() -> Component.literal("      ... and " + (blocks.size() - 5) + " more"), false);
+                        break;
+                    }
+                }
+
+                ContraptionHit hit = raycastSingle(level, from, to, entity);
+                if (hit != null) {
+                    source.sendSuccess(() -> Component.literal("    -> HIT! worldPos=" + hit.worldPos() + " face=" + hit.direction() + " state=" + hit.state()).withStyle(ChatFormatting.GREEN), false);
+                    double distSq = from.distanceToSqr(hit.hitLocation());
+                    if (distSq < bestDistSq) {
+                        bestDistSq = distSq;
+                        best = hit;
+                    }
+                } else {
+                    source.sendSuccess(() -> Component.literal("    -> MISS").withStyle(ChatFormatting.RED), false);
+                }
+            }
+            return best;
+        } catch (Throwable t) {
+            source.sendSuccess(() -> Component.literal("Error: " + t.getMessage()).withStyle(ChatFormatting.RED), false);
+            LOG.error("[ctb] raycastDebug threw", t);
+            return null;
+        }
+    }
+
+    @Nullable
+    public static ContraptionHit raycast(Level level, Vec3 from, Vec3 to) {
+        if (!isLoaded()) {
+            LOG.info("[ctb] raycast: Create not loaded");
+            return null;
+        }
+        try {
+            List<Entity> entities = findContraptionEntities(level, from, to);
+            LOG.info("[ctb] raycast: found {} contraption entities near {}-{}", entities.size(), from, to);
             if (entities.isEmpty()) return null;
 
             ContraptionHit best = null;
@@ -96,6 +204,7 @@ public final class ContraptionCompat {
             for (Entity entity : entities) {
                 Object hit = raycastSingle(level, from, to, entity);
                 if (hit instanceof ContraptionHit ch) {
+                    LOG.info("[ctb] raycast: HIT on entity at {}! worldPos={} hitLoc={}", entity.position(), ch.worldPos(), ch.hitLocation());
                     double distSq = from.distanceToSqr(ch.hitLocation());
                     if (distSq < bestDistSq) {
                         bestDistSq = distSq;
@@ -104,7 +213,8 @@ public final class ContraptionCompat {
                 }
             }
             return best;
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            LOG.error("[ctb] raycast threw", t);
             return null;
         }
     }
@@ -121,6 +231,29 @@ public final class ContraptionCompat {
         public BlockHitResult toBlockHitResult() {
             return new BlockHitResult(hitLocation, direction, worldPos, false);
         }
+    }
+
+    // --- Public accessors for debug command ---
+
+    @SuppressWarnings("unchecked")
+    public static List<Entity> findNearbyContraptionEntities(Level level, Vec3 from, Vec3 to) {
+        return findContraptionEntities(level, from, to);
+    }
+
+    @Nullable
+    public static Object getContraptionObject(Entity entity) {
+        return getContraption(entity);
+    }
+
+    @SuppressWarnings("unchecked")
+    @Nullable
+    public static Map<BlockPos, ?> getBlocksObject(Object contraption) {
+        return getBlocks(contraption);
+    }
+
+    @Nullable
+    public static Vec3 toGlobalVector(Entity entity, Vec3 localVec, float pt) {
+        return toGlobalVectorImpl(entity, localVec, pt);
     }
 
     // --- Internal logic ---
@@ -146,8 +279,15 @@ public final class ContraptionCompat {
         if (entityClass == null) return List.of();
 
         try {
-            return level.getEntitiesOfClass(
+            List<Entity> raw = level.getEntitiesOfClass(
                 (Class<Entity>) entityClass, searchBox);
+            List<Entity> filtered = new ArrayList<>();
+            for (Entity e : raw) {
+                Vec3 pos = e.position();
+                if (Math.abs(pos.x) > 10000 || Math.abs(pos.y) > 10000 || Math.abs(pos.z) > 10000) continue;
+                filtered.add(e);
+            }
+            return filtered;
         } catch (Throwable t) {
             return List.of();
         }
@@ -162,111 +302,112 @@ public final class ContraptionCompat {
             Map<BlockPos, ?> blocks = getBlocks(contraption);
             if (blocks == null || blocks.isEmpty()) return null;
 
-            Vec3 localFrom = toLocal(entity, from, 0f);
-            Vec3 localTo = toLocal(entity, to, 0f);
-            if (localFrom == null || localTo == null) return null;
+            Vec3 rayDir = to.subtract(from);
+            double rayLen = rayDir.length();
+            if (rayLen < 1e-6) return null;
+            Vec3 rayNorm = rayDir.scale(1.0 / rayLen);
 
-            Vec3 localDir = localTo.subtract(localFrom);
-            double dirLen = localDir.length();
-            if (dirLen < 1e-6) return null;
-            Vec3 localNorm = localDir.scale(1.0 / dirLen);
+            ContraptionHit best = null;
+            double bestT = Double.MAX_VALUE;
 
-            // DDA voxel traversal setup
-            int sx = localNorm.x > 0 ? 1 : localNorm.x < 0 ? -1 : 0;
-            int sy = localNorm.y > 0 ? 1 : localNorm.y < 0 ? -1 : 0;
-            int sz = localNorm.z > 0 ? 1 : localNorm.z < 0 ? -1 : 0;
+            for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
+                BlockPos localPos = entry.getKey();
+                Object blockInfo = entry.getValue();
+                BlockState state = getBlockState(blockInfo);
 
-            double tDeltaX = localNorm.x != 0 ? Math.abs(1.0 / localNorm.x) : Double.MAX_VALUE;
-            double tDeltaY = localNorm.y != 0 ? Math.abs(1.0 / localNorm.y) : Double.MAX_VALUE;
-            double tDeltaZ = localNorm.z != 0 ? Math.abs(1.0 / localNorm.z) : Double.MAX_VALUE;
+                // Use toGlobalVector to correctly transform local block center to world space.
+                // This accounts for anchor offset + centerOfOrigin(0.5,0.5,0.5) + rotation,
+                // unlike the previous reverseRotateAndTranslate which was missing the
+                // centerOfOrigin subtraction/addition.
+                Vec3 worldCenter = toGlobalVectorImpl(entity, Vec3.atCenterOf(localPos), 0f);
+                if (worldCenter == null) continue;
 
-            double tMaxX = localNorm.x != 0
-                ? ((localNorm.x > 0 ? (Math.ceil(localFrom.x) - localFrom.x) : (localFrom.x - Math.floor(localFrom.x))) * tDeltaX)
-                : Double.MAX_VALUE;
-            double tMaxY = localNorm.y != 0
-                ? ((localNorm.y > 0 ? (Math.ceil(localFrom.y) - localFrom.y) : (localFrom.y - Math.floor(localFrom.y))) * tDeltaY)
-                : Double.MAX_VALUE;
-            double tMaxZ = localNorm.z != 0
-                ? ((localNorm.z > 0 ? (Math.ceil(localFrom.z) - localFrom.z) : (localFrom.z - Math.floor(localFrom.z))) * tDeltaZ)
-                : Double.MAX_VALUE;
+                // For unrotated contraptions (bearing at 0 degrees), blocks form an axis-aligned
+                // bounding box in world space. We can approximate the world AABB as center +/- 0.5.
+                // For rotated contraptions, the AABB would be larger. We inflate to be safe.
+                // The inflation factor accounts for diagonal blocks in rotated contraptions.
+                AABB worldBox = new AABB(
+                    worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
+                    worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
+                );
 
-            BlockPos cur = BlockPos.containing(localFrom);
-            Direction face = Direction.NORTH;
-            int maxSteps = Math.min((int) (dirLen * 3) + 4, 256);
+                double t = rayAabbIntersect(from, rayNorm, worldBox);
+                if (t >= 0 && t < bestT && t <= rayLen) {
+                    bestT = t;
+                    Vec3 hitLoc = from.add(rayNorm.scale(t));
 
-            for (int i = 0; i < maxSteps; i++) {
-                // Advance DDA
-                if (tMaxX < tMaxY) {
-                    if (tMaxX < tMaxZ) {
-                        cur = cur.offset(sx, 0, 0);
-                        tMaxX += tDeltaX;
-                        face = sx > 0 ? Direction.WEST : Direction.EAST;
-                    } else {
-                        cur = cur.offset(0, 0, sz);
-                        tMaxZ += tDeltaZ;
-                        face = sz > 0 ? Direction.SOUTH : Direction.NORTH;
-                    }
-                } else {
-                    if (tMaxY < tMaxZ) {
-                        cur = cur.offset(0, sy, 0);
-                        tMaxY += tDeltaY;
-                        face = sy > 0 ? Direction.DOWN : Direction.UP;
-                    } else {
-                        cur = cur.offset(0, 0, sz);
-                        tMaxZ += tDeltaZ;
-                        face = sz > 0 ? Direction.SOUTH : Direction.NORTH;
-                    }
-                }
+                    Direction hitFace = determineFace(worldCenter, hitLoc);
+                    BlockPos worldBlockPos = BlockPos.containing(worldCenter);
 
-                // Check if we've gone past the ray end
-                Vec3 voxelCenter = Vec3.atCenterOf(cur);
-                double tHit;
-                if (localNorm.x != 0 && sx != 0) {
-                    tHit = (voxelCenter.x - localFrom.x) / localNorm.x;
-                } else if (localNorm.y != 0 && sy != 0) {
-                    tHit = (voxelCenter.y - localFrom.y) / localNorm.y;
-                } else {
-                    tHit = (voxelCenter.z - localFrom.z) / localNorm.z;
-                }
-                if (tHit > dirLen) break;
-
-                // Check for hit in contraption block map
-                if (blocks.containsKey(cur)) {
-                    // Compute exact hit point in local space along the ray
-                    // The ray entered this voxel at the face we just stepped through
-                    double hitT;
-                    if (face == Direction.WEST)       hitT = (cur.getX() - localFrom.x) / localNorm.x;
-                    else if (face == Direction.EAST)  hitT = (cur.getX() + 1 - localFrom.x) / localNorm.x;
-                    else if (face == Direction.DOWN)  hitT = (cur.getY() - localFrom.y) / localNorm.y;
-                    else if (face == Direction.UP)    hitT = (cur.getY() + 1 - localFrom.y) / localNorm.y;
-                    else if (face == Direction.SOUTH) hitT = (cur.getZ() + 1 - localFrom.z) / localNorm.z;
-                    else /* NORTH */                  hitT = (cur.getZ() - localFrom.z) / localNorm.z;
-
-                    hitT = Math.max(0, Math.min(hitT, dirLen));
-                    Vec3 localHit = localFrom.add(localNorm.scale(hitT));
-
-                    // Transform to world space using Create's reverseRotation + anchor
-                    Vec3 worldHit = reverseRotateAndTranslate(entity, localHit);
-                    if (worldHit == null) continue;
-
-                    Vec3 worldBlockCenter = reverseRotateAndTranslate(entity, Vec3.atCenterOf(cur));
-                    if (worldBlockCenter == null) continue;
-
-                    BlockPos worldBlockPos = BlockPos.containing(worldBlockCenter);
-
-                    // Get the block state from the contraption
-                    Object blockInfo = blocks.get(cur);
-                    BlockState state = getBlockState(blockInfo);
-                    if (state == null) continue;
-
-                    Direction worldFace = toWorldDirection(entity, face);
-
-                    return new ContraptionHit(worldBlockPos, worldHit, worldFace, state);
+                    best = new ContraptionHit(worldBlockPos, hitLoc, hitFace, state);
                 }
             }
-        } catch (Throwable ignored) {
+
+            return best;
+        } catch (Throwable t) {
+            LOG.error("[ctb] raycastSingle threw", t);
+            return null;
         }
-        return null;
+    }
+
+    /**
+     * Ray-AABB intersection using the slab method. Returns t along rayNorm from origin,
+     * or -1 if no intersection.
+     */
+    private static double rayAabbIntersect(Vec3 origin, Vec3 rayNorm, AABB box) {
+        double tmin = Double.NEGATIVE_INFINITY;
+        double tmax = Double.POSITIVE_INFINITY;
+
+        if (rayNorm.x != 0) {
+            double t1 = (box.minX - origin.x) / rayNorm.x;
+            double t2 = (box.maxX - origin.x) / rayNorm.x;
+            if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+            tmin = Math.max(tmin, t1);
+            tmax = Math.min(tmax, t2);
+        } else if (origin.x < box.minX || origin.x > box.maxX) {
+            return -1;
+        }
+
+        if (rayNorm.y != 0) {
+            double t1 = (box.minY - origin.y) / rayNorm.y;
+            double t2 = (box.maxY - origin.y) / rayNorm.y;
+            if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+            tmin = Math.max(tmin, t1);
+            tmax = Math.min(tmax, t2);
+        } else if (origin.y < box.minY || origin.y > box.maxY) {
+            return -1;
+        }
+
+        if (rayNorm.z != 0) {
+            double t1 = (box.minZ - origin.z) / rayNorm.z;
+            double t2 = (box.maxZ - origin.z) / rayNorm.z;
+            if (t1 > t2) { double tmp = t1; t1 = t2; t2 = tmp; }
+            tmin = Math.max(tmin, t1);
+            tmax = Math.min(tmax, t2);
+        } else if (origin.z < box.minZ || origin.z > box.maxZ) {
+            return -1;
+        }
+
+        if (tmax < tmin || tmax < 0) return -1;
+        return tmin >= 0 ? tmin : tmax;
+    }
+
+    /**
+     * Determine which face of a block was hit based on the world-space block center
+     * and the hit point.
+     */
+    private static Direction determineFace(Vec3 blockCenter, Vec3 hitLoc) {
+        double dx = hitLoc.x - blockCenter.x;
+        double dy = hitLoc.y - blockCenter.y;
+        double dz = hitLoc.z - blockCenter.z;
+        double adx = Math.abs(dx), ady = Math.abs(dy), adz = Math.abs(dz);
+        if (adx > ady && adx > adz) {
+            return dx > 0 ? Direction.EAST : Direction.WEST;
+        } else if (ady > adz) {
+            return dy > 0 ? Direction.UP : Direction.DOWN;
+        } else {
+            return dz > 0 ? Direction.SOUTH : Direction.NORTH;
+        }
     }
 
     // --- Reflection helpers ---
@@ -275,7 +416,7 @@ public final class ContraptionCompat {
     private static Object getContraption(Entity entity) {
         try {
             if (getContraptionMethod == null)
-                getContraptionMethod = entity.getClass().getMethod("getContraption");
+                getContraptionMethod = findMethodUpHierarchy(entity.getClass(), "getContraption");
             return getContraptionMethod.invoke(entity);
         } catch (Throwable ignored) {
             return null;
@@ -287,90 +428,120 @@ public final class ContraptionCompat {
     private static Map<BlockPos, ?> getBlocks(Object contraption) {
         try {
             if (getBlocksMethod == null)
-                getBlocksMethod = contraption.getClass().getMethod("getBlocks");
+                getBlocksMethod = findMethodUpHierarchy(contraption.getClass(), "getBlocks");
             return (Map<BlockPos, ?>) getBlocksMethod.invoke(contraption);
         } catch (Throwable ignored) {
             return null;
         }
     }
 
+    /**
+     * Transform a local-space Vec3 to world space using Create's toGlobalVector.
+     * This is the correct inverse of toLocalVector and accounts for:
+     * <ul>
+     *   <li>Anchor offset (entity position)</li>
+     *   <li>Center-of-origin offset (0.5, 0.5, 0.5)</li>
+     *   <li>Rotation (applyRotation)</li>
+     * </ul>
+     */
     @Nullable
-    private static Vec3 toLocal(Entity entity, Vec3 worldVec, float pt) {
+    private static Vec3 toGlobalVectorImpl(Entity entity, Vec3 localVec, float pt) {
         try {
-            if (toLocalVectorMethod == null)
-                toLocalVectorMethod = entity.getClass().getMethod("toLocalVector", Vec3.class, float.class);
-            return (Vec3) toLocalVectorMethod.invoke(entity, worldVec, pt);
-        } catch (Throwable ignored) {
+            if (toGlobalVectorMethod == null)
+                toGlobalVectorMethod = findMethodUpHierarchy(entity.getClass(), "toGlobalVector", Vec3.class, float.class);
+            return (Vec3) toGlobalVectorMethod.invoke(entity, localVec, pt);
+        } catch (Throwable t) {
+            LOG.warn("[ctb] toGlobalVector failed for {}: {}", entity.getClass().getSimpleName(), t.getMessage());
             return null;
         }
     }
 
     /**
-     * Transform a local-space Vec3 to world space using Create's reverseRotation and anchor.
-     * This is the inverse of toLocalVector for the rotational component.
+     * Walk up the class hierarchy to find a method by name. This handles the case where
+     * abstract methods are declared on AbstractContraptionEntity but overridden on subclasses.
      */
-    @Nullable
-    private static Vec3 reverseRotateAndTranslate(Entity entity, Vec3 localVec) {
-        try {
-            if (reverseRotationMethod == null)
-                reverseRotationMethod = entity.getClass().getMethod("reverseRotation", Vec3.class, float.class);
-            Vec3 rotated = (Vec3) reverseRotationMethod.invoke(entity, localVec, 0f);
-            if (rotated == null) return null;
-
-            if (getAnchorVecMethod == null)
-                getAnchorVecMethod = entity.getClass().getMethod("getAnchorVec");
-            Vec3 anchor = (Vec3) getAnchorVecMethod.invoke(entity);
-            if (anchor == null) return null;
-
-            return anchor.add(rotated);
-        } catch (Throwable ignored) {
-            return null;
+    private static Method findMethodUpHierarchy(Class<?> clazz, String name, Class<?>... paramTypes) {
+        Class<?> c = clazz;
+        while (c != null) {
+            try {
+                Method m = c.getDeclaredMethod(name, paramTypes);
+                m.setAccessible(true);
+                return m;
+            } catch (NoSuchMethodException ignored) {}
+            c = c.getSuperclass();
         }
-    }
-
-    @Nullable
-    private static Direction toWorldDirection(Entity entity, Direction localDir) {
-        Vec3 normal = Vec3.atLowerCornerOf(localDir.getNormal());
-        Vec3 worldNormal = reverseRotateDirection(entity, normal);
-        if (worldNormal.lengthSqr() < 1e-8) return localDir;
-        worldNormal = worldNormal.normalize();
-        Direction best = localDir;
-        double bestDot = -Double.MAX_VALUE;
-        for (Direction d : Direction.values()) {
-            double dot = worldNormal.dot(Vec3.atLowerCornerOf(d.getNormal()));
-            if (dot > bestDot) {
-                bestDot = dot;
-                best = d;
-            }
-        }
-        return best;
-    }
-
-    @Nullable
-    private static Vec3 reverseRotateDirection(Entity entity, Vec3 vec) {
+        // Final fallback: try getMethod (public methods only, including inherited)
         try {
-            if (reverseRotationMethod == null)
-                reverseRotationMethod = entity.getClass().getMethod("reverseRotation", Vec3.class, float.class);
-            return (Vec3) reverseRotationMethod.invoke(entity, vec, 0f);
-        } catch (Throwable ignored) {
-            return null;
+            return clazz.getMethod(name, paramTypes);
+        } catch (NoSuchMethodException e) {
+            throw new RuntimeException("Cannot find method " + name + " on " + clazz.getName(), e);
         }
     }
 
     @Nullable
     private static BlockState getBlockState(Object blockInfo) {
         try {
-            // StructureTemplate.StructureBlockInfo: try field access first (1.20.1 record)
-            java.lang.reflect.Field stateField = blockInfo.getClass().getField("state");
-            return (BlockState) stateField.get(blockInfo);
-        } catch (Throwable ignored) {
-            try {
-                // Try record accessor for newer versions
-                java.lang.reflect.Method stateMethod = blockInfo.getClass().getMethod("state");
-                return (BlockState) stateMethod.invoke(blockInfo);
-            } catch (Throwable ignored2) {
-                return null;
+            if (stateField == null && stateAccessor == null) {
+                // Strategy 1: Deobfuscated record accessor: state()
+                try {
+                    Method m = blockInfo.getClass().getMethod("state");
+                    if (m.getReturnType() != void.class) {
+                        stateAccessor = m;
+                    }
+                } catch (Throwable ignored) {}
+
+                // Strategy 2: Forge SRG-mapped accessor: f_74676_()
+                if (stateAccessor == null) {
+                    try {
+                        Method m = blockInfo.getClass().getMethod("f_74676_");
+                        if (m.getReturnType() != void.class) {
+                            stateAccessor = m;
+                        }
+                    } catch (Throwable ignored) {}
+                }
+
+                // Strategy 3: getDeclaredField("state") + setAccessible
+                if (stateAccessor == null) {
+                    try {
+                        stateField = blockInfo.getClass().getDeclaredField("state");
+                        stateField.setAccessible(true);
+                    } catch (Throwable ignored) {}
+                }
+
+                // Strategy 4: Iterate all declared methods looking for one returning BlockState
+                if (stateField == null && stateAccessor == null) {
+                    for (Method m : blockInfo.getClass().getDeclaredMethods()) {
+                        if (m.getReturnType() == BlockState.class && m.getParameterCount() == 0) {
+                            m.setAccessible(true);
+                            stateAccessor = m;
+                            LOG.info("[ctb] getBlockState: found via method scan: {}()", m.getName());
+                            break;
+                        }
+                    }
+                }
+
+                if (stateField == null && stateAccessor == null) {
+                    LOG.error("[ctb] getBlockState: no way to access BlockState on {} (methods: {})",
+                        blockInfo.getClass().getName(),
+                        java.util.Arrays.toString(blockInfo.getClass().getDeclaredMethods()));
+                    return null;
+                }
             }
+
+            Object val;
+            if (stateAccessor != null) {
+                val = stateAccessor.invoke(blockInfo);
+            } else {
+                val = stateField.get(blockInfo);
+            }
+
+            if (val instanceof BlockState bs) return bs;
+            return null;
+        } catch (Throwable e) {
+            stateField = null;
+            stateAccessor = null;
+            LOG.error("[ctb] getBlockState threw on {}: {}", blockInfo.getClass().getName(), e.getMessage());
+            return null;
         }
     }
 

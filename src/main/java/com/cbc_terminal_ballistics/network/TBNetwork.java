@@ -57,6 +57,11 @@ public final class TBNetwork {
             .decoder(ServerboundSetLauncherVelocityPacket::decode)
             .consumerMainThread(ServerboundSetLauncherVelocityPacket::handle)
             .add();
+        CHANNEL.messageBuilder(ClientboundTestRayPacket.class, id++)
+            .encoder(ClientboundTestRayPacket::encode)
+            .decoder(ClientboundTestRayPacket::decode)
+            .consumerMainThread(ClientboundTestRayPacket::handle)
+            .add();
     }
 
     private TBNetwork() {}
