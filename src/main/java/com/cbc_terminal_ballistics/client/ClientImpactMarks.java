@@ -32,6 +32,7 @@ import net.minecraftforge.client.event.RenderLevelStageEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 
@@ -170,6 +171,7 @@ public final class ClientImpactMarks {
             BlockPos renderPos = pos;
             BlockState state = mc.level.getBlockState(renderPos);
             if (state.isAir() && mc.level instanceof net.minecraft.client.multiplayer.ClientLevel) {
+                // Try VS shipyard coordinates first
                 net.minecraft.client.multiplayer.ClientLevel clientLevel = (net.minecraft.client.multiplayer.ClientLevel) mc.level;
                 BlockPos shipyardPos = VSClientCompat.toShipyardCoordinates(clientLevel, pos);
                 if (!shipyardPos.equals(pos)) {
@@ -177,6 +179,13 @@ public final class ClientImpactMarks {
                     if (!shipState.isAir()) {
                         renderPos = shipyardPos;
                         state = shipState;
+                    }
+                }
+                // Try Create contraption blocks
+                if (state.isAir()) {
+                    BlockState contraptionState = ContraptionCompat.blockStateAt(mc.level, pos);
+                    if (contraptionState != null) {
+                        state = contraptionState;
                     }
                 }
             }
@@ -190,7 +199,7 @@ public final class ClientImpactMarks {
                 if (age < 0 || age >= lifetime) {
                     continue;
                 }
-                renderMark(buffers, poseStack, mc.level, renderPos, mark, camera, age, lifetime);
+                renderMark(buffers, poseStack, mc.level, renderPos, state, mark, camera, age, lifetime);
             }
         }
 
@@ -207,15 +216,15 @@ public final class ClientImpactMarks {
         return !shape.isEmpty();
     }
 
-    private static void renderMark(MultiBufferSource buffers, PoseStack poseStack, Level level, BlockPos pos, ImpactMark mark, Vec3 camera, long age, int lifetime) {
+    private static void renderMark(MultiBufferSource buffers, PoseStack poseStack, Level level, BlockPos pos, BlockState resolvedState, ImpactMark mark, Vec3 camera, long age, int lifetime) {
         Vec3 absolute = mark.absolute(pos);
-        if (!intersectsAttachment(level, pos, mark, absolute)) return;
+        if (!intersectsAttachment(level, pos, resolvedState, mark, absolute)) return;
 
         // 16x16 impact textures are rendered 1:1 with a Minecraft block face.
         // Build the decal on the actual collision-shape face.  Pieces that
         // cross a block-cell edge are rendered only when that neighboring cell
         // has a solid/copycat/framed block supporting the overflow.
-        List<ClippedFaceRect> rects = clippedFaceRects(level, pos, mark);
+        List<ClippedFaceRect> rects = clippedFaceRects(level, pos, resolvedState, mark);
         if (rects.isEmpty()) return;
 
         float alpha = switch (mark.kind()) {
@@ -273,8 +282,8 @@ public final class ClientImpactMarks {
         poseStack.popPose();
     }
 
-    private static List<ClippedFaceRect> clippedFaceRects(Level level, BlockPos pos, ImpactMark mark) {
-        VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
+    private static List<ClippedFaceRect> clippedFaceRects(Level level, BlockPos pos, BlockState resolvedState, ImpactMark mark) {
+        VoxelShape shape = resolvedState.getCollisionShape(level, pos);
         if (shape.isEmpty()) return List.of();
         AABB bounds = shape.bounds();
 
@@ -491,8 +500,8 @@ public final class ClientImpactMarks {
         }
     }
 
-    private static boolean intersectsAttachment(Level level, BlockPos pos, ImpactMark mark, Vec3 absolute) {
-        VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
+    private static boolean intersectsAttachment(Level level, BlockPos pos, BlockState resolvedState, ImpactMark mark, Vec3 absolute) {
+        VoxelShape shape = resolvedState.getCollisionShape(level, pos);
         if (shape.isEmpty()) return false;
         AABB box = shape.bounds().move(pos);
         Vec3 p = absolute.add(Vec3.atLowerCornerOf(mark.face().getNormal()).scale(0.003D));

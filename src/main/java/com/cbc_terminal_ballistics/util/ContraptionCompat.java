@@ -92,19 +92,22 @@ public final class ContraptionCompat {
      * Check if a world block position belongs to a Create contraption.
      */
     public static boolean isContraptionPos(Level level, BlockPos worldPos) {
-        if (!isLoaded()) return false;
-        Vec3 center = Vec3.atCenterOf(worldPos);
-        List<Entity> entities = findContraptionEntities(level, center);
-        for (Entity entity : entities) {
-            Object hit = raycastSingle(level, center, center, entity);
-            if (hit != null) return true;
-        }
-        return false;
+        return blockStateAt(level, worldPos) != null;
+    }
+
+    /**
+     * Returns true if the world position contains a contraption block (even though
+     * the world chunk has air there).
+     */
+    public static boolean isContraptionBlock(Level level, BlockPos worldPos) {
+        return blockStateAt(level, worldPos) != null;
     }
 
     /**
      * Get the contraption block state at a world position, or null if the position
-     * is not part of a contraption.
+     * is not part of a contraption.  Uses point-in-AABB containment rather than
+     * raycasting so this works for single-point lookups (unlike raycastSingle which
+     * requires from != to).
      */
     @Nullable
     public static BlockState blockStateAt(Level level, BlockPos worldPos) {
@@ -112,8 +115,8 @@ public final class ContraptionCompat {
         Vec3 center = Vec3.atCenterOf(worldPos);
         List<Entity> entities = findContraptionEntities(level, center);
         for (Entity entity : entities) {
-            Object hit = raycastSingle(level, center, center, entity);
-            if (hit instanceof ContraptionHit ch) return ch.state();
+            BlockState state = pointInContraptionBlock(center, entity);
+            if (state != null) return state;
         }
         return null;
     }
@@ -291,6 +294,37 @@ public final class ContraptionCompat {
         } catch (Throwable t) {
             return List.of();
         }
+    }
+
+    /**
+     * Check if a world-space point falls inside any contraption block's 1×1×1 AABB.
+     * Returns the block state if found, null otherwise.
+     */
+    @Nullable
+    private static BlockState pointInContraptionBlock(Vec3 point, Entity entity) {
+        try {
+            Object contraption = getContraption(entity);
+            if (contraption == null) return null;
+
+            Map<BlockPos, ?> blocks = getBlocks(contraption);
+            if (blocks == null || blocks.isEmpty()) return null;
+
+            for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
+                BlockPos localPos = entry.getKey();
+                Vec3 worldCenter = toGlobalVectorImpl(entity, Vec3.atCenterOf(localPos), 0f);
+                if (worldCenter == null) continue;
+                AABB worldBox = new AABB(
+                    worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
+                    worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
+                );
+                if (worldBox.contains(point)) {
+                    return getBlockState(entry.getValue());
+                }
+            }
+        } catch (Throwable t) {
+            LOG.debug("[ctb] pointInContraptionBlock failed: {}", t.getMessage());
+        }
+        return null;
     }
 
     @Nullable

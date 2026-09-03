@@ -52,6 +52,7 @@ import java.util.Set;
 import java.util.WeakHashMap;
 
 public final class TBImpactService {
+    private static final org.slf4j.Logger CTB_LOG = org.slf4j.LoggerFactory.getLogger("CBCTB/ImpactService");
     private static final Map<Long, LastImpact> LAST_IMPACTS = new HashMap<>();
     private static final Set<Entity> DEFERRED_MASS_RESETS = Collections.newSetFromMap(new WeakHashMap<>());
     private static final double MIN_SPALL_VISUAL_CLEARANCE = 0.85D;
@@ -76,11 +77,18 @@ public final class TBImpactService {
         try {
             Level level = projectile.level();
             BlockPos pos = hit.getBlockPos();
+            boolean isContraption = ContraptionCompat.isContraptionBlock(level, pos);
             Vec3 accel = CBCReflect.forces(projectile, projectile.position(), projectile.getDeltaMovement());
             Vec3 curVel = projectile.getDeltaMovement().add(accel);
             double velMag = Math.max(curVel.length(), 1e-4d);
             Vec3 velDir = curVel.normalize();
-            Vec3 normal = CBCReflect.surfaceNormal(level, hit).normalize();
+            Vec3 rawNormal = CBCReflect.surfaceNormal(level, hit);
+            if (rawNormal == null || rawNormal.lengthSqr() < 1e-8) {
+                // Fallback: derive normal from hit direction (works for contraption blocks
+                // where CBCUtils.getSurfaceNormalVector may not resolve world block data)
+                rawNormal = Vec3.atLowerCornerOf(hit.getDirection().getNormal());
+            }
+            Vec3 normal = rawNormal.normalize();
             double incidence = Math.max(0.0, velDir.dot(normal.reverse()));
             double incidentVel = velMag * incidence;
             double mass = Math.max(0.0, CBCReflect.projectileMass(projectile));
@@ -169,6 +177,12 @@ public final class TBImpactService {
             }
 
             boolean perforates = !unbreakable && penetrationRatio >= 1.0;
+            if (isContraption) {
+                CTB_LOG.info("[ctb] contraption impact: state={} pos={} velMag={} mass={} attack={} toughness={} ratio={} outcome={} perforates={}",
+                    state, pos, String.format("%.2f", velMag), String.format("%.2f", mass),
+                    String.format("%.2f", attack), String.format("%.2f", baseArmorToughness),
+                    String.format("%.2f", penetrationRatio), perforates ? "PENETRATE" : "STOP", perforates);
+            }
             if (!level.isClientSide && level instanceof ServerLevel server && !unbreakable) {
                 ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
                 if (appliedDamage > 0) data.addDamage(server, pos, state, appliedDamage);
@@ -271,23 +285,45 @@ public final class TBImpactService {
             ItemStack renderedProjectileItem = renderedProjectileState == null && outcome.equals("STOP")
                 ? CBCReflect.projectileItem(projectile) : ItemStack.EMPTY;
             boolean onImpactRemove = CBCReflect.callOnImpact(projectile, hit, impactResult, projectileContext);
-            if (level instanceof ServerLevel server && !server.getBlockState(pos).equals(state)
-                && ContraptionCompat.blockStateAt(level, pos) == null) {
+
+            // For contraption blocks the world has AIR at the position, so the normal
+            // "worldBlock.equals(state)" check fails. Use ContraptionCompat to detect
+            // whether the block still exists in the contraption at this position.
+            boolean worldBlockMatchesState;
+            if (isContraption) {
+                worldBlockMatchesState = ContraptionCompat.blockStateAt(level, pos) != null;
+            } else if (level instanceof ServerLevel srv) {
+                worldBlockMatchesState = srv.getBlockState(pos).equals(state);
+            } else {
+                worldBlockMatchesState = false;
+            }
+
+            if (level instanceof ServerLevel server && !worldBlockMatchesState && !isContraption) {
                 clearMarks(server, pos);
             }
-            if (!onImpactRemove && level instanceof ServerLevel server && server.getBlockState(pos).equals(state)) {
+            if (!onImpactRemove && level instanceof ServerLevel server && worldBlockMatchesState) {
                 if (blockBreakPending) {
-                    server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
-                    playBreakSound(server, pos, state);
-                    clearMarks(server, pos);
-                } else if (temporaryPassagePending) {
+                    if (isContraption) {
+                        // Cannot set world block to air for contraption blocks; the block lives
+                        // inside the contraption entity. Clear marks only — the block will be
+                        // removed by CBC's own block-break handling or left as damage metadata.
+                        clearMarks(server, pos);
+                    } else {
+                        server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
+                        playBreakSound(server, pos, state);
+                        clearMarks(server, pos);
+                    }
+                } else if (temporaryPassagePending && !isContraption) {
+                    // Contraption blocks already have air in the world — no phasing needed.
                     TemporaryBlockPassage.phaseForThisTick(server, pos, state);
                 }
             }
             boolean embeddedShell = false;
             boolean fuzeLinger = outcome.equals("STOP") && CBCReflect.canLingerInGround(projectile);
+            // For contraption blocks, allow embedded shell placement even though the world block
+            // is air — the visual and collision are handled by the contraption entity.
             if (outcome.equals("STOP") && !hasFuze && !onImpactRemove && !fuzeLinger && !projectileShatter && level instanceof ServerLevel server
-                && server.getBlockState(pos).equals(state)) {
+                && worldBlockMatchesState) {
                 embeddedShell = addEmbeddedShell(server, pos, state, hit, caliber, curVel,
                     renderedProjectileState, renderedProjectileItem, embeddedDepth(penetrationRatio));
             }
@@ -356,7 +392,8 @@ public final class TBImpactService {
 
     public static void syncAllEmbeddedShellsToPlayer(ServerPlayer player) {
         ServerLevel level = player.serverLevel();
-        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry : EmbeddedShellSavedData.get(level).entriesView().entrySet()) {
+        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry
+             : new HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).entrySet()) {
             BlockPos pos = BlockPos.of(mapEntry.getKey());
             Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
             if (center.distanceToSqr(player.position()) <= 128 * 128) {
@@ -367,7 +404,8 @@ public final class TBImpactService {
 
     public static void syncAllImpactMarksToPlayer(ServerPlayer player) {
         ServerLevel level = player.serverLevel();
-        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry : ArmorIntegritySavedData.get(level).entriesView().entrySet()) {
+        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry
+             : new HashMap<>(ArmorIntegritySavedData.get(level).entriesView()).entrySet()) {
             BlockPos pos = BlockPos.of(mapEntry.getKey());
             ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
             if (entry == null || entry.marks.isEmpty()) continue;
@@ -652,6 +690,14 @@ public final class TBImpactService {
         double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
         double range = Mth.clamp(5.0 + massRatio * 12.0 + caliber.ordinal() * 1.5, 5.0, 24.0);
 
+        // For contraption blocks, limit spall range to prevent fragments from
+        // flying through air behind the contraption into the open world.
+        BlockPos originBlockPos = BlockPos.containing(origin);
+        boolean isContraptionOrigin = ContraptionCompat.isContraptionBlock(level, originBlockPos);
+        if (isContraptionOrigin) {
+            range = Math.min(range, 4.0);
+        }
+
         double baselineVel = TBConfig.SPALL_CONE_VELOCITY_BASELINE.get();
         double minAngle = TBConfig.SPALL_CONE_MIN_ANGLE.get();
         double maxAngle = TBConfig.SPALL_CONE_MAX_ANGLE.get();
@@ -698,7 +744,12 @@ public final class TBImpactService {
             if (blockRay instanceof BlockHitResult bhr && blockRay.getType() == HitResult.Type.BLOCK) {
                 BlockPos bp = bhr.getBlockPos();
                 BlockState st = level.getBlockState(bp);
-                if (st.isAir()) continue;
+                // For contraption blocks, the world has air — check the contraption
+                if (st.isAir()) {
+                    BlockState contraState = ContraptionCompat.blockStateAt(level, bp);
+                    if (contraState != null) st = contraState;
+                    else continue;
+                }
                 float speed = st.getDestroySpeed(level, bp);
                 if (speed < 0) continue;
                 double localArmor = localEffectiveToughness(level, st, bp);
@@ -715,7 +766,9 @@ public final class TBImpactService {
                     double currentDamage = data.damage(level, bp, st);
                     syncIntegrityProgress(level, bp, currentDamage, threshold);
                     if (currentDamage >= threshold) {
-                        level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
+                        if (!ContraptionCompat.isContraptionBlock(level, bp)) {
+                            level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
+                        }
                         playBreakSound(level, bp, st);
                         clearMarks(level, bp);
                     }

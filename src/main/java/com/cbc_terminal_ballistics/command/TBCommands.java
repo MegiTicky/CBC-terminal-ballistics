@@ -159,7 +159,8 @@ public final class TBCommands {
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
         int syncedBlocks = 0;
         int syncedMarks = 0;
-        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry : data.entriesView().entrySet()) {
+        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry
+             : new java.util.HashMap<>(data.entriesView()).entrySet()) {
             BlockPos pos = BlockPos.of(mapEntry.getKey());
             ArmorIntegritySavedData.Entry entry = data.getEntry(level, pos);
             if (entry == null || entry.marks.isEmpty()) continue;
@@ -191,7 +192,8 @@ public final class TBCommands {
         ServerLevel level = source.getLevel();
         int syncedBlocks = 0;
         int syncedShells = 0;
-        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry : EmbeddedShellSavedData.get(level).entriesView().entrySet()) {
+        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry
+             : new java.util.HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).entrySet()) {
             BlockPos pos = BlockPos.of(mapEntry.getKey());
             EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
             if (entry == null || entry.shells.isEmpty()) continue;

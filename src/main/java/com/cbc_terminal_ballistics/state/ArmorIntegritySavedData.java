@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.state;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
+import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -43,7 +44,7 @@ public class ArmorIntegritySavedData extends SavedData {
     public Entry getEntry(ServerLevel level, BlockPos pos) {
         Entry e = entries.get(pos.asLong());
         if (e == null) return null;
-        if (!e.fingerprint.equals(fingerprint(level.getBlockState(pos)))) {
+        if (!e.fingerprint.equals(fingerprint(currentBlockState(level, pos)))) {
             entries.remove(pos.asLong());
             setDirty();
             return null;
@@ -116,7 +117,9 @@ public class ArmorIntegritySavedData extends SavedData {
             Map.Entry<Long, Entry> mapEntry = it.next();
             BlockPos pos = BlockPos.of(mapEntry.getKey());
             Entry e = mapEntry.getValue();
-            if (level.isEmptyBlock(pos) || !e.fingerprint.equals(fingerprint(level.getBlockState(pos))) || now - e.lastTouched > ttl * 4L) {
+            if (level.isEmptyBlock(pos) && ContraptionCompat.blockStateAt(level, pos) == null
+                || !e.fingerprint.equals(fingerprint(currentBlockState(level, pos)))
+                || now - e.lastTouched > ttl * 4L) {
                 it.remove();
                 removed.add(pos);
                 dirty = true;
@@ -163,6 +166,15 @@ public class ArmorIntegritySavedData extends SavedData {
 
     public static String fingerprint(BlockState state) {
         return state.toString();
+    }
+
+    private static BlockState currentBlockState(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir()) {
+            BlockState contraptionState = ContraptionCompat.blockStateAt(level, pos);
+            if (contraptionState != null) return contraptionState;
+        }
+        return state;
     }
 
     public static class Entry {

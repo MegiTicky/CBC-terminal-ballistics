@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.state;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
+import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -26,7 +27,7 @@ public final class EmbeddedShellSavedData extends SavedData {
     public Entry getEntry(ServerLevel level, BlockPos pos) {
         Entry entry = entries.get(pos.asLong());
         if (entry == null) return null;
-        if (!entry.fingerprint.equals(ArmorIntegritySavedData.fingerprint(level.getBlockState(pos)))) {
+        if (!entry.fingerprint.equals(ArmorIntegritySavedData.fingerprint(currentBlockState(level, pos)))) {
             entries.remove(pos.asLong());
             setDirty();
             return null;
@@ -81,7 +82,8 @@ public final class EmbeddedShellSavedData extends SavedData {
             Map.Entry<Long, Entry> mapEntry = iterator.next();
             BlockPos pos = BlockPos.of(mapEntry.getKey());
             Entry entry = mapEntry.getValue();
-            if (level.isEmptyBlock(pos) || !entry.fingerprint.equals(ArmorIntegritySavedData.fingerprint(level.getBlockState(pos)))) {
+            if (level.isEmptyBlock(pos) && ContraptionCompat.blockStateAt(level, pos) == null
+                || !entry.fingerprint.equals(ArmorIntegritySavedData.fingerprint(currentBlockState(level, pos)))) {
                 iterator.remove();
                 changed.add(pos);
                 dirty = true;
@@ -129,6 +131,15 @@ public final class EmbeddedShellSavedData extends SavedData {
             data.entries.put(entryTag.getLong("Pos"), new Entry(entryTag.getString("Fp"), shells));
         }
         return data;
+    }
+
+    private static BlockState currentBlockState(ServerLevel level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir()) {
+            BlockState contraptionState = ContraptionCompat.blockStateAt(level, pos);
+            if (contraptionState != null) return contraptionState;
+        }
+        return state;
     }
 
     public static final class Entry {
