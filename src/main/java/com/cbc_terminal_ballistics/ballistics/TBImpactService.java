@@ -78,6 +78,17 @@ public final class TBImpactService {
             Level level = projectile.level();
             BlockPos pos = hit.getBlockPos();
             boolean isContraption = ContraptionCompat.isContraptionBlock(level, pos);
+            // Resolve the owning contraption entity + local block position once per impact.
+            // The entity drives spall blocking (snapshot raycasts); the local position anchors
+            // marks and embedded shells so they follow the contraption when it moves.
+            Entity contraptionEntity = null;
+            BlockPos contraptionLocalPos = null;
+            if (isContraption) {
+                contraptionEntity = ContraptionCompat.contraptionEntityAt(level, pos);
+                if (contraptionEntity != null) {
+                    contraptionLocalPos = ContraptionCompat.localPosAt(contraptionEntity, Vec3.atCenterOf(pos));
+                }
+            }
             Vec3 accel = CBCReflect.forces(projectile, projectile.position(), projectile.getDeltaMovement());
             Vec3 curVel = projectile.getDeltaMovement().add(accel);
             double velMag = Math.max(curVel.length(), 1e-4d);
@@ -164,7 +175,7 @@ public final class TBImpactService {
                     CBCReflect.addBlockHitEffect(projectileContext, projectile, level, state, pos, hit.getLocation(), effectNormal, true);
                     if (level instanceof ServerLevel server) {
                         playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
-                        addImpactMark(server, pos, state, hit, ImpactMarkKind.STREAK, caliber, impactSurface, curVel);
+                        addImpactMark(server, pos, state, hit, ImpactMarkKind.STREAK, caliber, impactSurface, curVel, contraptionEntity, contraptionLocalPos);
                     }
                 }
                 Object bounceResult = CBCReflect.newImpactResult("BOUNCE", false);
@@ -217,13 +228,14 @@ public final class TBImpactService {
                 playHardBlockImpactSound(server, pos, armorToughness, caliber, velMag);
                 ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
                 ImpactMark impactMark = mark(server, pos, hit, markKind, caliber, impactSurface,
-                    markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F);
-                if (impactMark != null) data.addMark(server, pos, state, impactMark);
+                    markKind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, curVel) : 0.0F,
+                    contraptionEntity, contraptionLocalPos);
+                ArmorIntegritySavedData.Entry markEntry = addMarkEntry(server, data, pos, state, contraptionEntity, contraptionLocalPos, impactMark);
                 if (outcome.equals("PENETRATE")) {
-                    ImpactMark exitMark = exitMark(server, pos, hit, caliber, impactSurface);
-                    if (exitMark != null) data.addMark(server, pos, state, exitMark);
+                    ImpactMark exit = exitMark(server, pos, hit, caliber, impactSurface, contraptionEntity, contraptionLocalPos);
+                    if (exit != null) markEntry = addMarkEntry(server, data, pos, state, contraptionEntity, contraptionLocalPos, exit);
                 }
-                syncMarks(server, pos, data.entryFor(server, pos, state).marks);
+                syncMarksForEntry(server, markEntry, pos, contraptionEntity);
 
                 if (outcome.equals("PENETRATE") && !unbreakable) {
                     if (integrityBreak || shatter) {
@@ -246,7 +258,7 @@ public final class TBImpactService {
                         Vec3 spallOrigin = hit.getLocation().add(velDir.scale(1.05));
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
                         double massAfter = Math.max(0.0, mass - massLoss);
-                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness);
+                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness, contraptionEntity);
                         spallReason = spallFragments > 0 ? "spawned" : "zero_fragments";
                     } else {
                         spallReason = "not_ap_style";
@@ -262,7 +274,7 @@ public final class TBImpactService {
                         double massAfter = Math.max(0.0, mass * 0.20);
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
                         spallFragments = spawnSpall(server, projectile, hit.getLocation().add(velDir.scale(0.08)),
-                            velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness);
+                            velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness, contraptionEntity);
                         spallReason = spallFragments > 0 ? "shattered" : "shattered_no_fragments";
                     } else {
                         spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
@@ -325,7 +337,8 @@ public final class TBImpactService {
             if (outcome.equals("STOP") && !hasFuze && !onImpactRemove && !fuzeLinger && !projectileShatter && level instanceof ServerLevel server
                 && worldBlockMatchesState) {
                 embeddedShell = addEmbeddedShell(server, pos, state, hit, caliber, curVel,
-                    renderedProjectileState, renderedProjectileItem, embeddedDepth(penetrationRatio));
+                    renderedProjectileState, renderedProjectileItem, embeddedDepth(penetrationRatio),
+                    contraptionEntity, contraptionLocalPos);
             }
             // Autocannon projectiles must keep flying on a successful perforation.  The previous debug build
             // treated every non-bounce autocannon result as removable, which made AP rounds disappear after
@@ -377,6 +390,32 @@ public final class TBImpactService {
         syncEmbeddedShells(level, pos, java.util.List.of());
     }
 
+    /**
+     * Clear a removed cleanup entry client-side: contraption-anchored entries are
+     * identified to clients by entity UUID + local position, world entries by position.
+     */
+    public static void clearMarksForEntry(ServerLevel level, ArmorIntegritySavedData.Entry entry) {
+        if (entry.contraptionUuid != null && entry.localPos != null) {
+            Entity contraption = level.getEntity(entry.contraptionUuid);
+            Vec3 cull = contraption != null ? ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f) : null;
+            sendMarksToNearby(level, new ClientboundImpactMarksPacket(entry.localPos, entry.contraptionUuid,
+                entry.localPos, java.util.List.of()), cull != null ? cull : Vec3.atCenterOf(entry.localPos));
+        } else {
+            clearMarks(level, entry.keyPos());
+        }
+    }
+
+    public static void clearShellsForEntry(ServerLevel level, EmbeddedShellSavedData.Entry entry) {
+        if (entry.contraptionUuid != null && entry.localPos != null) {
+            Entity contraption = level.getEntity(entry.contraptionUuid);
+            Vec3 cull = contraption != null ? ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f) : null;
+            syncEmbeddedShellsPacket(level, new ClientboundEmbeddedShellsPacket(entry.localPos, entry.contraptionUuid,
+                entry.localPos, java.util.List.of()), cull != null ? cull : Vec3.atCenterOf(entry.localPos));
+        } else {
+            clearEmbeddedShells(level, entry.keyPos());
+        }
+    }
+
     public static boolean clearBlockImpactData(ServerLevel level, BlockPos pos) {
         boolean hadIntegrityData = ArmorIntegritySavedData.get(level).getEntry(level, pos) != null;
         boolean hadShells = EmbeddedShellSavedData.get(level).getEntry(level, pos) != null;
@@ -390,52 +429,98 @@ public final class TBImpactService {
         syncEmbeddedShells(level, pos, shells);
     }
 
+    public static void syncEmbeddedShellsToPlayers(ServerLevel level, BlockPos pos, java.util.UUID contraptionUuid, BlockPos localPos, java.util.List<EmbeddedShell> shells) {
+        syncEmbeddedShellsPacket(level, new ClientboundEmbeddedShellsPacket(pos, contraptionUuid, localPos, java.util.List.copyOf(shells)),
+            Vec3.atCenterOf(localPos));
+    }
+
     public static void syncAllEmbeddedShellsToPlayer(ServerPlayer player) {
         ServerLevel level = player.serverLevel();
-        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry
-             : new HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
-            Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
-            if (center.distanceToSqr(player.position()) <= 128 * 128) {
-                sendEmbeddedShells(player, pos, mapEntry.getValue().shells);
+        for (EmbeddedShellSavedData.Entry entry
+             : new HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).values()) {
+            if (entry.contraptionUuid != null && entry.localPos != null) {
+                Entity contraption = level.getEntity(entry.contraptionUuid);
+                if (contraption == null || entry.shells.isEmpty()) continue;
+                Vec3 center = ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f);
+                if (center == null || center.distanceToSqr(player.position()) > 128 * 128) continue;
+                sendEmbeddedShells(player, new ClientboundEmbeddedShellsPacket(entry.localPos,
+                    entry.contraptionUuid, entry.localPos, java.util.List.copyOf(entry.shells)));
+            } else {
+                BlockPos pos = entry.keyPos();
+                Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+                if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                    sendEmbeddedShells(player, new ClientboundEmbeddedShellsPacket(pos, null, null, java.util.List.copyOf(entry.shells)));
+                }
             }
         }
     }
 
     public static void syncAllImpactMarksToPlayer(ServerPlayer player) {
         ServerLevel level = player.serverLevel();
-        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry
-             : new HashMap<>(ArmorIntegritySavedData.get(level).entriesView()).entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
-            ArmorIntegritySavedData.Entry entry = ArmorIntegritySavedData.get(level).getEntry(level, pos);
-            if (entry == null || entry.marks.isEmpty()) continue;
-            Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
-            if (center.distanceToSqr(player.position()) <= 128 * 128) {
-                sendImpactMarks(player, pos, entry.marks);
+        for (ArmorIntegritySavedData.Entry entry
+             : new HashMap<>(ArmorIntegritySavedData.get(level).entriesView()).values()) {
+            if (entry.marks.isEmpty()) continue;
+            if (entry.contraptionUuid != null && entry.localPos != null) {
+                Entity contraption = level.getEntity(entry.contraptionUuid);
+                if (contraption == null) continue;
+                Vec3 center = ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f);
+                if (center == null || center.distanceToSqr(player.position()) > 128 * 128) continue;
+                sendImpactMarks(player, new ClientboundImpactMarksPacket(entry.localPos,
+                    entry.contraptionUuid, entry.localPos, java.util.List.copyOf(entry.marks)));
+            } else {
+                BlockPos pos = entry.keyPos();
+                if (ArmorIntegritySavedData.get(level).getEntry(level, pos) == null) continue;
+                Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+                if (center.distanceToSqr(player.position()) <= 128 * 128) {
+                    sendImpactMarks(player, new ClientboundImpactMarksPacket(pos, null, null, java.util.List.copyOf(entry.marks)));
+                }
             }
         }
     }
 
     private static boolean addEmbeddedShell(ServerLevel level, BlockPos pos, BlockState state, BlockHitResult hit,
                                              TBCaliber caliber, Vec3 incomingVelocity, BlockState visualState,
-                                             ItemStack visualItem, float depth) {
-        Vec3 local = localHitLocation(level, pos, hit.getLocation());
-        Vec3 direction = VSCompat.toShipVector(level, pos, incomingVelocity);
-        if (direction.lengthSqr() < 1.0E-8D) return false;
+                                             ItemStack visualItem, float depth, Entity contraptionEntity, BlockPos contraptionLocalPos) {
+        boolean contraptionAnchored = contraptionEntity != null && contraptionLocalPos != null;
+        Vec3 local;
+        Vec3 direction;
+        Direction face = hit.getDirection();
+        if (contraptionAnchored) {
+            local = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f);
+            Vec3 dirA = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation().add(incomingVelocity.scale(0.5)), 0f);
+            Vec3 dirB = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation().subtract(incomingVelocity.scale(0.5)), 0f);
+            direction = dirA != null && dirB != null ? dirA.subtract(dirB) : Vec3.ZERO;
+            Direction localFace = ContraptionCompat.localFaceAt(contraptionEntity, hit.getLocation(), face);
+            if (localFace != null) face = localFace;
+        } else {
+            local = localHitLocation(level, pos, hit.getLocation());
+            direction = VSCompat.toShipVector(level, pos, incomingVelocity);
+        }
+        if (local == null || direction.lengthSqr() < 1.0E-8D) return false;
         direction = direction.normalize();
+
+        BlockPos base = contraptionAnchored ? contraptionLocalPos : pos;
         EmbeddedShell shell = new EmbeddedShell(
-            java.util.UUID.randomUUID(), caliber, hit.getDirection(),
-            (float) Mth.clamp(local.x - pos.getX(), 0.001D, 0.999D),
-            (float) Mth.clamp(local.y - pos.getY(), 0.001D, 0.999D),
-            (float) Mth.clamp(local.z - pos.getZ(), 0.001D, 0.999D),
+            java.util.UUID.randomUUID(), caliber, face,
+            (float) Mth.clamp(local.x - base.getX(), 0.001D, 0.999D),
+            (float) Mth.clamp(local.y - base.getY(), 0.001D, 0.999D),
+            (float) Mth.clamp(local.z - base.getZ(), 0.001D, 0.999D),
             (float) direction.x, (float) direction.y, (float) direction.z,
             visualState,
             visualItem,
             depth,
             level.getGameTime());
         EmbeddedShellSavedData data = EmbeddedShellSavedData.get(level);
-        data.add(level, pos, state, shell);
-        syncEmbeddedShells(level, pos, data.entryFor(level, pos, state).shells);
+        if (contraptionAnchored) {
+            EmbeddedShellSavedData.Entry entry = data.addContraption(level, contraptionEntity.getUUID(), contraptionLocalPos, state, shell);
+            Vec3 cull = ContraptionCompat.worldCenterForLocal(contraptionEntity, contraptionLocalPos, 0f);
+            syncEmbeddedShellsPacket(level, new ClientboundEmbeddedShellsPacket(contraptionLocalPos,
+                contraptionEntity.getUUID(), contraptionLocalPos, java.util.List.copyOf(entry.shells)),
+                cull != null ? cull : Vec3.atCenterOf(contraptionLocalPos));
+        } else {
+            data.add(level, pos, state, shell);
+            syncEmbeddedShells(level, pos, data.entryFor(level, pos, state).shells);
+        }
         return true;
     }
 
@@ -469,24 +554,55 @@ public final class TBImpactService {
         syncMarks(level, pos, marks);
     }
 
-    private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, Vec3 incomingVelocity) {
-        ImpactMark mark = mark(server, pos, hit, kind, caliber, surface,
-            kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F);
-        if (mark == null) return;
-        ArmorIntegritySavedData data = ArmorIntegritySavedData.get(server);
-        data.addMark(server, pos, state, mark);
-        syncMarks(server, pos, data.entryFor(server, pos, state).marks);
+    public static void syncMarksToPlayers(ServerLevel level, BlockPos pos, java.util.UUID contraptionUuid, BlockPos localPos, java.util.List<ImpactMark> marks) {
+        sendMarksToNearby(level, new ClientboundImpactMarksPacket(pos, contraptionUuid, localPos, java.util.List.copyOf(marks)),
+            Vec3.atCenterOf(localPos));
     }
 
-    private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, float rotation) {
-        Vec3 loc = localHitLocation(level, pos, hit.getLocation());
-        if (loc == null) return null;
-        // For VS ship raycasts the BlockHitResult direction is already the block-local/shipyard face.
-        // Transforming it again by worldToShip makes marks flip/rotate incorrectly when the ship is not axis-aligned.
+    private static void addImpactMark(ServerLevel server, BlockPos pos, BlockState state, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, Vec3 incomingVelocity, Entity contraptionEntity, BlockPos contraptionLocalPos) {
+        ImpactMark mark = mark(server, pos, hit, kind, caliber, surface,
+            kind == ImpactMarkKind.STREAK ? ricochetMarkRotation(server, pos, hit, incomingVelocity) : 0.0F,
+            contraptionEntity, contraptionLocalPos);
+        ArmorIntegritySavedData.Entry entry = addMarkEntry(server, ArmorIntegritySavedData.get(server), pos, state, contraptionEntity, contraptionLocalPos, mark);
+        syncMarksForEntry(server, entry, pos, contraptionEntity);
+    }
+
+    /** Store a mark under the right entry (world position or contraption anchor) and return the entry for syncing. */
+    private static ArmorIntegritySavedData.Entry addMarkEntry(ServerLevel server, ArmorIntegritySavedData data, BlockPos pos, BlockState state,
+                                                              Entity contraptionEntity, BlockPos contraptionLocalPos, ImpactMark mark) {
+        if (mark == null) return null;
+        if (contraptionEntity != null && contraptionLocalPos != null) {
+            return data.addContraptionMark(server, contraptionEntity.getUUID(), contraptionLocalPos, state, mark);
+        }
+        data.addMark(server, pos, state, mark);
+        return data.entryFor(server, pos, state);
+    }
+
+    private static ImpactMark mark(ServerLevel level, BlockPos pos, BlockHitResult hit, ImpactMarkKind kind, TBCaliber caliber, ImpactSurfaceType surface, float rotation,
+                                   Entity contraptionEntity, BlockPos contraptionLocalPos) {
+        boolean contraptionAnchored = contraptionEntity != null && contraptionLocalPos != null;
+        Vec3 loc;
         Direction face = hit.getDirection();
-        float x = (float) Mth.clamp(loc.x - pos.getX(), 0.001, 0.999);
-        float y = (float) Mth.clamp(loc.y - pos.getY(), 0.001, 0.999);
-        float z = (float) Mth.clamp(loc.z - pos.getZ(), 0.001, 0.999);
+        if (contraptionAnchored) {
+            loc = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f);
+            if (loc != null) {
+                Direction localFace = ContraptionCompat.localFaceAt(contraptionEntity, hit.getLocation(), face);
+                if (localFace != null) face = localFace;
+            }
+        } else {
+            loc = null;
+        }
+        if (loc == null) {
+            // For VS ship raycasts the BlockHitResult direction is already the block-local/shipyard face.
+            // Transforming it again by worldToShip makes marks flip/rotate incorrectly when the ship is not axis-aligned.
+            loc = localHitLocation(level, pos, hit.getLocation());
+            if (loc == null) return null;
+        }
+        BlockPos base = contraptionAnchored && ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f) != null
+            ? contraptionLocalPos : pos;
+        float x = (float) Mth.clamp(loc.x - base.getX(), 0.001, 0.999);
+        float y = (float) Mth.clamp(loc.y - base.getY(), 0.001, 0.999);
+        float z = (float) Mth.clamp(loc.z - base.getZ(), 0.001, 0.999);
         return new ImpactMark(kind, caliber, surface, face, x, y, z, rotation, level.getGameTime());
     }
 
@@ -519,13 +635,25 @@ public final class TBImpactService {
         return (float) angle;
     }
 
-    private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, TBCaliber caliber, ImpactSurfaceType surface) {
-        Vec3 entry = localHitLocation(level, pos, hit.getLocation());
-        if (entry == null) return null;
+    private static ImpactMark exitMark(ServerLevel level, BlockPos pos, BlockHitResult hit, TBCaliber caliber, ImpactSurfaceType surface,
+                                       Entity contraptionEntity, BlockPos contraptionLocalPos) {
+        boolean contraptionAnchored = contraptionEntity != null && contraptionLocalPos != null;
+        Vec3 entryLoc;
         Direction exitFace = hit.getDirection().getOpposite();
-        double x = entry.x - pos.getX();
-        double y = entry.y - pos.getY();
-        double z = entry.z - pos.getZ();
+        if (contraptionAnchored) {
+            entryLoc = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f);
+            Direction entryFace = ContraptionCompat.localFaceAt(contraptionEntity, hit.getLocation(), hit.getDirection());
+            if (entryFace != null) exitFace = entryFace.getOpposite();
+        } else {
+            entryLoc = null;
+        }
+        if (entryLoc == null) entryLoc = localHitLocation(level, pos, hit.getLocation());
+        if (entryLoc == null) return null;
+        BlockPos base = contraptionAnchored && ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f) != null
+            ? contraptionLocalPos : pos;
+        double x = entryLoc.x - base.getX();
+        double y = entryLoc.y - base.getY();
+        double z = entryLoc.z - base.getZ();
         switch (exitFace) {
             case DOWN -> y = 0.001D;
             case UP -> y = 0.999D;
@@ -550,10 +678,24 @@ public final class TBImpactService {
     }
 
     private static void syncMarks(ServerLevel level, BlockPos pos, java.util.List<ImpactMark> marks) {
+        sendMarksToNearby(level, new ClientboundImpactMarksPacket(pos, null, null, java.util.List.copyOf(marks)), Vec3.atCenterOf(pos));
+    }
+
+    private static void syncMarksForEntry(ServerLevel level, ArmorIntegritySavedData.Entry entry, BlockPos pos, Entity contraptionEntity) {
+        if (entry == null || entry.marks.isEmpty()) return;
+        if (entry.contraptionUuid != null && entry.localPos != null) {
+            ClientboundImpactMarksPacket packet = new ClientboundImpactMarksPacket(pos, entry.contraptionUuid, entry.localPos,
+                java.util.List.copyOf(entry.marks));
+            Vec3 cull = contraptionEntity != null ? ContraptionCompat.worldCenterForLocal(contraptionEntity, entry.localPos, 0f) : null;
+            sendMarksToNearby(level, packet, cull != null ? cull : Vec3.atCenterOf(entry.localPos));
+        } else {
+            syncMarks(level, pos, entry.marks);
+        }
+    }
+
+    private static void sendMarksToNearby(ServerLevel level, ClientboundImpactMarksPacket packet, Vec3 cullCenter) {
         if (TBNetwork.CHANNEL == null) return;
-        ClientboundImpactMarksPacket packet = new ClientboundImpactMarksPacket(pos, java.util.List.copyOf(marks));
-        Vec3 markCenterShipyard = Vec3.atCenterOf(pos);
-        Vec3 markCenterWorld = VSCompat.toWorldCoordinates(level, markCenterShipyard);
+        Vec3 markCenterWorld = VSCompat.toWorldCoordinates(level, cullCenter);
         for (ServerPlayer player : level.players()) {
             if (markCenterWorld.distanceToSqr(player.position()) <= 128 * 128) {
                 TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
@@ -561,15 +703,18 @@ public final class TBImpactService {
         }
     }
 
-    private static void sendImpactMarks(ServerPlayer player, BlockPos pos, java.util.List<ImpactMark> marks) {
-        TBNetwork.CHANNEL.sendTo(new ClientboundImpactMarksPacket(pos.immutable(), java.util.List.copyOf(marks)),
-            player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+    private static void sendImpactMarks(ServerPlayer player, ClientboundImpactMarksPacket packet) {
+        TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
     }
 
     private static void syncEmbeddedShells(ServerLevel level, BlockPos pos, java.util.List<EmbeddedShell> shells) {
+        syncEmbeddedShellsPacket(level, new ClientboundEmbeddedShellsPacket(pos.immutable(), null, null, java.util.List.copyOf(shells)),
+            Vec3.atCenterOf(pos));
+    }
+
+    private static void syncEmbeddedShellsPacket(ServerLevel level, ClientboundEmbeddedShellsPacket packet, Vec3 cullCenter) {
         if (TBNetwork.CHANNEL == null) return;
-        ClientboundEmbeddedShellsPacket packet = new ClientboundEmbeddedShellsPacket(pos.immutable(), java.util.List.copyOf(shells));
-        Vec3 center = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(pos));
+        Vec3 center = VSCompat.toWorldCoordinates(level, cullCenter);
         for (ServerPlayer player : level.players()) {
             if (center.distanceToSqr(player.position()) <= 128 * 128) {
                 sendEmbeddedShells(player, packet);
@@ -578,7 +723,7 @@ public final class TBImpactService {
     }
 
     private static void sendEmbeddedShells(ServerPlayer player, BlockPos pos, java.util.List<EmbeddedShell> shells) {
-        sendEmbeddedShells(player, new ClientboundEmbeddedShellsPacket(pos.immutable(), java.util.List.copyOf(shells)));
+        sendEmbeddedShells(player, new ClientboundEmbeddedShellsPacket(pos.immutable(), null, null, java.util.List.copyOf(shells)));
     }
 
     private static void sendEmbeddedShells(ServerPlayer player, ClientboundEmbeddedShellsPacket packet) {
@@ -683,17 +828,20 @@ public final class TBImpactService {
         //level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
     }
 
-    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness) {
+    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness, Entity contraptionEntity) {
         double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
         int fragments = Mth.clamp((int) Math.round(armorToughness * countMultiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
         if (fragments <= 0) return 0;
         double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
         double range = Mth.clamp(5.0 + massRatio * 12.0 + caliber.ordinal() * 1.5, 5.0, 24.0);
 
-        // For contraption blocks, limit spall range to prevent fragments from
-        // flying through air behind the contraption into the open world.
-        BlockPos originBlockPos = BlockPos.containing(origin);
-        boolean isContraptionOrigin = ContraptionCompat.isContraptionBlock(level, originBlockPos);
+        // For contraption impacts, build a world-space snapshot of the hull once so every
+        // fragment ray can be blocked by contraption blocks (vanilla level.clip cannot see
+        // them). Detection uses the impact-resolved entity, NOT the origin block: the
+        // origin is deliberately advanced past the impact point and often lands outside
+        // the hull, which made the old BlockPos-based detection miss.
+        ContraptionCompat.ContraptionSnapshot contraption = contraptionEntity != null ? ContraptionCompat.snapshot(contraptionEntity) : null;
+        boolean isContraptionOrigin = contraption != null;
         if (isContraptionOrigin) {
             range = Math.min(range, 4.0);
         }
@@ -726,8 +874,13 @@ public final class TBImpactService {
             Vec3 end = origin.add(fragDir.scale(range));
             HitResult blockRay = level.clip(new ClipContext(origin, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, projectile));
             double blockDistSqr = blockRay.getType() == HitResult.Type.MISS ? Double.POSITIVE_INFINITY : blockRay.getLocation().distanceToSqr(origin);
+            // Contraption hulls are invisible to vanilla clip; find the nearest hull block
+            // along the fragment ray so it can stop the fragment like a real block would.
+            ContraptionCompat.ContraptionSnapshot.Hit contraptionHit = contraption != null ? contraption.raycast(origin, end) : null;
+            double contraptionDistSqr = contraptionHit == null ? Double.POSITIVE_INFINITY : contraptionHit.distance() * contraptionHit.distance();
+            double stopDistSqr = Math.min(blockDistSqr, contraptionDistSqr);
             if (!visualOriginInsideArmor) {
-                double visualClearance = blockRay.getType() == HitResult.Type.MISS ? range : Math.sqrt(blockDistSqr);
+                double visualClearance = stopDistSqr == Double.POSITIVE_INFINITY ? range : Math.sqrt(stopDistSqr);
                 if (visualClearance >= MIN_SPALL_VISUAL_CLEARANCE) {
                     visualClearRays++;
                     visualRange = Math.max(visualRange, Math.min(range, visualClearance));
@@ -736,12 +889,17 @@ public final class TBImpactService {
 
             for (LivingEntity entity : candidates) {
                 java.util.Optional<Vec3> hitPoint = entity.getBoundingBox().inflate(0.18).clip(origin, end);
-                if (hitPoint.isPresent() && hitPoint.get().distanceToSqr(origin) + 0.04 < blockDistSqr) {
+                if (hitPoint.isPresent() && hitPoint.get().distanceToSqr(origin) + 0.04 < stopDistSqr) {
                     rayHits.merge(entity, 1, Integer::sum);
                 }
             }
 
-            if (blockRay instanceof BlockHitResult bhr && blockRay.getType() == HitResult.Type.BLOCK) {
+            if (contraptionHit != null && contraptionDistSqr <= blockDistSqr) {
+                // Fragment stopped by a contraption hull block: integrity damage accumulates,
+                // but the block itself is never removed (it lives inside the entity).
+                applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
+                    contraptionHit.worldPos(), contraptionHit.state(), spallToughnessThreshold, spallDamageScale);
+            } else if (blockRay instanceof BlockHitResult bhr && blockRay.getType() == HitResult.Type.BLOCK) {
                 BlockPos bp = bhr.getBlockPos();
                 BlockState st = level.getBlockState(bp);
                 // For contraption blocks, the world has air — check the contraption
@@ -750,29 +908,8 @@ public final class TBImpactService {
                     if (contraState != null) st = contraState;
                     else continue;
                 }
-                float speed = st.getDestroySpeed(level, bp);
-                if (speed < 0) continue;
-                double localArmor = localEffectiveToughness(level, st, bp);
-                if (localArmor > spallToughnessThreshold) continue;
-                if (spallDamageScale > 0.0 && localArmor > 0.0) {
-                    double baseDamage = localArmor * caliberIntegrityWear(caliber) * spallDamageScale * damageModifier;
-                    double fragmentShare = Math.max(1.0, fragments / 8.0);
-                    double fragmentDamage = baseDamage * massRatio / fragmentShare;
-                    ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
-                    data.addDamage(level, bp, st, fragmentDamage);
-                    BlockState materialState = CopycatMaterialResolver.resolve(level, bp, st, null).orElse(st);
-                    MaterialStats blockMaterial = MaterialManager.INSTANCE.get(materialState, localArmor);
-                    double threshold = integrityThreshold(materialState, blockMaterial, localArmor);
-                    double currentDamage = data.damage(level, bp, st);
-                    syncIntegrityProgress(level, bp, currentDamage, threshold);
-                    if (currentDamage >= threshold) {
-                        if (!ContraptionCompat.isContraptionBlock(level, bp)) {
-                            level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
-                        }
-                        playBreakSound(level, bp, st);
-                        clearMarks(level, bp);
-                    }
-                }
+                applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
+                    bp, st, spallToughnessThreshold, spallDamageScale);
             }
         }
         if (visualClearRays > 0 && visualRange >= MIN_SPALL_VISUAL_CLEARANCE) {
@@ -786,14 +923,54 @@ public final class TBImpactService {
             double dist = Math.max(0.5, to.length());
             double cone = to.normalize().dot(dir);
             if (cone < coneCos) continue;
-            HitResult occlusion = level.clip(new ClipContext(origin, entity.getEyePosition(), ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, projectile));
-            if (occlusion.getType() != HitResult.Type.MISS && occlusion.getLocation().distanceToSqr(origin) + 0.25 < entity.getEyePosition().distanceToSqr(origin)) continue;
+            Vec3 eye = entity.getEyePosition();
+            double eyeDistSqr = eye.distanceToSqr(origin);
+            HitResult occlusion = level.clip(new ClipContext(origin, eye, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, projectile));
+            double occlusionDistSqr = occlusion.getType() == HitResult.Type.MISS ? Double.POSITIVE_INFINITY : occlusion.getLocation().distanceToSqr(origin);
+            // Contraption hull blocks occlude spall lethality even though vanilla clip misses them.
+            if (contraption != null) {
+                double hullDist = contraption.rayDistance(origin, eye);
+                occlusionDistSqr = Math.min(occlusionDistSqr, hullDist * hullDist);
+            }
+            if (occlusionDistSqr + 0.25 < eyeDistSqr) continue;
             int directHits = rayHits.getOrDefault(entity, 0);
             double coneStrength = cone * cone;
             float damage = (float) (Mth.clamp((massRatio * 15.0 + fragments * 1.15) * coneStrength / Math.sqrt(dist) + directHits * 3.5, 4.0, 48.0) * damageModifier);
             entity.hurt(level.damageSources().generic(), damage);
         }
         return fragments;
+    }
+
+    /**
+     * Apply spall fragment integrity damage to a single blocking block (world or
+     * contraption hull). The block is never set to air when it belongs to a
+     * contraption; damage still accumulates and break sounds play.
+     */
+    private static void applyFragmentBlockDamage(ServerLevel level, TBCaliber caliber, int fragments, double massRatio, double damageModifier,
+                                                 BlockPos bp, BlockState st, double spallToughnessThreshold, double spallDamageScale) {
+        float speed = st.getDestroySpeed(level, bp);
+        if (speed < 0) return;
+        double localArmor = localEffectiveToughness(level, st, bp);
+        if (localArmor > spallToughnessThreshold) return;
+        if (spallDamageScale > 0.0 && localArmor > 0.0) {
+            double baseDamage = localArmor * caliberIntegrityWear(caliber) * spallDamageScale * damageModifier;
+            double fragmentShare = Math.max(1.0, fragments / 8.0);
+            double fragmentDamage = baseDamage * massRatio / fragmentShare;
+            ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
+            data.addDamage(level, bp, st, fragmentDamage);
+            BlockState materialState = CopycatMaterialResolver.resolve(level, bp, st, null).orElse(st);
+            MaterialStats blockMaterial = MaterialManager.INSTANCE.get(materialState, localArmor);
+            double threshold = integrityThreshold(materialState, blockMaterial, localArmor);
+            double currentDamage = data.damage(level, bp, st);
+            syncIntegrityProgress(level, bp, currentDamage, threshold);
+            if (currentDamage >= threshold) {
+                if (!ContraptionCompat.isContraptionBlock(level, bp)) {
+                    level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
+                }
+                playBreakSound(level, bp, st);
+                clearMarks(level, bp);
+            }
+        }
     }
 
     private static boolean isCatchingArmorAt(ServerLevel level, Vec3 pos) {

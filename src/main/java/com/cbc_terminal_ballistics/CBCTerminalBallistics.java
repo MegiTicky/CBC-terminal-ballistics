@@ -9,6 +9,8 @@ import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.network.TBNetwork;
+import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.cbc_terminal_ballistics.registry.ModBlockEntities;
 import com.cbc_terminal_ballistics.registry.ModBlocks;
 import com.cbc_terminal_ballistics.registry.ModCreativeTabs;
@@ -96,16 +98,11 @@ public class CBCTerminalBallistics {
         }
         if (event.getServer().getTickCount() % 1200 != 0) return;
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
-            for (net.minecraft.core.BlockPos pos : ArmorIntegritySavedData.get(level).cleanup(level)) {
-                TBImpactService.clearMarks(level, pos);
+            for (ArmorIntegritySavedData.Entry entry : ArmorIntegritySavedData.get(level).cleanup(level)) {
+                TBImpactService.clearMarksForEntry(level, entry);
             }
-            for (net.minecraft.core.BlockPos pos : EmbeddedShellSavedData.get(level).cleanup(level)) {
-                EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
-                if (entry == null || entry.shells.isEmpty()) {
-                    TBImpactService.clearEmbeddedShells(level, pos);
-                } else {
-                    TBImpactService.syncEmbeddedShellsToPlayers(level, pos, java.util.List.copyOf(entry.shells));
-                }
+            for (EmbeddedShellSavedData.Entry entry : EmbeddedShellSavedData.get(level).cleanup(level)) {
+                TBImpactService.clearShellsForEntry(level, entry);
             }
         }
     }

@@ -14,11 +14,21 @@ import net.minecraft.world.level.block.Blocks;
 
 public final class ClientPacketHandlers {
     public static void handleImpactMarks(ClientboundImpactMarksPacket packet) {
-        if (Minecraft.getInstance().level != null) ClientImpactMarks.accept(packet.pos(), packet.marks());
+        if (Minecraft.getInstance().level == null) return;
+        if (packet.contraptionUuid() != null && packet.localPos() != null) {
+            ClientImpactMarks.acceptContraption(packet.contraptionUuid(), packet.localPos(), packet.marks());
+        } else {
+            ClientImpactMarks.accept(packet.pos(), packet.marks());
+        }
     }
 
     public static void handleEmbeddedShells(ClientboundEmbeddedShellsPacket packet) {
-        if (Minecraft.getInstance().level != null) ClientEmbeddedShells.accept(packet.pos(), packet.shells());
+        if (Minecraft.getInstance().level == null) return;
+        if (packet.contraptionUuid() != null && packet.localPos() != null) {
+            ClientEmbeddedShells.acceptContraption(packet.contraptionUuid(), packet.localPos(), packet.shells());
+        } else {
+            ClientEmbeddedShells.accept(packet.pos(), packet.shells());
+        }
     }
 
     public static void handleSpallCone(ClientboundSpallConePacket packet) {

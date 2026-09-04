@@ -159,12 +159,19 @@ public final class TBCommands {
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
         int syncedBlocks = 0;
         int syncedMarks = 0;
-        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry
-             : new java.util.HashMap<>(data.entriesView()).entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
-            ArmorIntegritySavedData.Entry entry = data.getEntry(level, pos);
-            if (entry == null || entry.marks.isEmpty()) continue;
-            TBImpactService.syncMarksToPlayers(level, pos, List.copyOf(entry.marks));
+        for (ArmorIntegritySavedData.Entry entry
+             : new java.util.HashMap<>(data.entriesView()).values()) {
+            if (entry.marks.isEmpty()) continue;
+            if (entry.contraptionUuid != null && entry.localPos != null) {
+                // Contraption-anchored marks are synced with their entity identity.
+                net.minecraft.world.entity.Entity contraption = level.getEntity(entry.contraptionUuid);
+                if (contraption == null) continue;
+                TBImpactService.syncMarksToPlayers(level, entry.localPos, entry.contraptionUuid, entry.localPos, List.copyOf(entry.marks));
+            } else {
+                BlockPos pos = entry.keyPos();
+                if (data.getEntry(level, pos) == null) continue;
+                TBImpactService.syncMarksToPlayers(level, pos, List.copyOf(entry.marks));
+            }
             syncedBlocks++;
             syncedMarks += entry.marks.size();
         }
@@ -177,12 +184,10 @@ public final class TBCommands {
     private static int deleteImpactMarks(CommandSourceStack source) {
         ServerLevel level = source.getLevel();
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
-        List<BlockPos> positions = data.entriesView().entrySet().stream()
-            .map(entry -> BlockPos.of(entry.getKey()))
-            .toList();
+        List<ArmorIntegritySavedData.Entry> removed = new java.util.ArrayList<>(data.entriesView().values());
         int count = data.clearAll();
-        for (BlockPos pos : positions) {
-            TBImpactService.clearMarks(level, pos);
+        for (ArmorIntegritySavedData.Entry entry : removed) {
+            TBImpactService.clearMarksForEntry(level, entry);
         }
         source.sendSuccess(() -> Component.literal("Deleted impact/integrity data for " + count + " blocks."), true);
         return count;
@@ -192,12 +197,17 @@ public final class TBCommands {
         ServerLevel level = source.getLevel();
         int syncedBlocks = 0;
         int syncedShells = 0;
-        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry
-             : new java.util.HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
-            EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
-            if (entry == null || entry.shells.isEmpty()) continue;
-            TBImpactService.syncEmbeddedShellsToPlayers(level, pos, List.copyOf(entry.shells));
+        for (EmbeddedShellSavedData.Entry entry
+             : new java.util.HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).values()) {
+            if (entry.shells.isEmpty()) continue;
+            if (entry.contraptionUuid != null && entry.localPos != null) {
+                net.minecraft.world.entity.Entity contraption = level.getEntity(entry.contraptionUuid);
+                if (contraption == null) continue;
+                TBImpactService.syncEmbeddedShellsToPlayers(level, entry.localPos, entry.contraptionUuid, entry.localPos, List.copyOf(entry.shells));
+            } else {
+                BlockPos pos = entry.keyPos();
+                TBImpactService.syncEmbeddedShellsToPlayers(level, pos, List.copyOf(entry.shells));
+            }
             syncedBlocks++;
             syncedShells += entry.shells.size();
         }
@@ -209,9 +219,11 @@ public final class TBCommands {
 
     private static int deleteEmbeddedShells(CommandSourceStack source) {
         ServerLevel level = source.getLevel();
-        List<BlockPos> positions = EmbeddedShellSavedData.get(level).entriesView().keySet().stream().map(BlockPos::of).toList();
+        List<EmbeddedShellSavedData.Entry> removed = new java.util.ArrayList<>(EmbeddedShellSavedData.get(level).entriesView().values());
         int count = EmbeddedShellSavedData.get(level).clearAll();
-        for (BlockPos pos : positions) TBImpactService.clearEmbeddedShells(level, pos);
+        for (EmbeddedShellSavedData.Entry entry : removed) {
+            TBImpactService.clearShellsForEntry(level, entry);
+        }
         source.sendSuccess(() -> Component.literal("Deleted embedded shell data for " + count + " blocks."), true);
         return count;
     }

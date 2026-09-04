@@ -451,10 +451,74 @@ UUID reference), and transform to world space at render time using the current
 
 ---
 
-## Attempt 8: Pending -- Next Fixes
+## Attempt 8: Applied Fixes (Sep 4 2026) — 0.4.1-vs2.3
 
-Priority order:
-1. **Embedded shells** (Bug 3) -- highest gameplay impact, likely a simple gate fix
-2. **Spall containment** (Bug 2) -- tighter range clamping or per-block skip
-3. **Mark edge clipping** (Bug 1) -- neighbor block awareness for contraptions
-4. **Mark transform** (Bug 4) -- local-coordinate storage + render-time transform
+All four Attempt-7 bugs fixed. Network channel bumped `11 → 12`; `mod_version=0.4.1-vs2.3`.
+
+### Bug 1 — Mark edge clipping (FIXED)
+
+`ClientImpactMarks.isSupportedOverflowNeighbor()` now falls back to
+`ContraptionCompat.blockStateAt(level, neighbor)` when the world neighbor is air,
+so overflow bands on contraption hulls get proper neighbor support checks.
+
+### Bug 2 — Spall escaping contraptions (FIXED)
+
+- `ContraptionCompat.ContraptionSnapshot`: immutable world-space snapshot of a
+  contraption's solid blocks (built once via `snapshot(entity)`), with pure-math
+  slab-method `raycast(from, to)` / `rayDistance(from, to)`. Rays starting inside a
+  block ignore that block (spall origin inside the impact block is not a barrier).
+- `TBImpactService.calculate()` resolves the owning contraption entity once
+  (`ContraptionCompat.contraptionEntityAt`) and passes it into both `spawnSpall`
+  call sites. The old origin-BlockPos re-detection (which missed because the origin
+  is advanced 1.05 blocks) is gone.
+- Per fragment: nearest of vanilla clip vs snapshot hit stops the fragment; hull
+  hits apply the shared `applyFragmentBlockDamage()` (integrity damage + sounds,
+  never setBlock on contraption blocks). Direct-hit comparison and cone-lethality
+  LOS occlusion also use the snapshot, so entities behind hull walls are protected.
+  The `min(range, 4.0)` contraption cap is retained, now keyed off the entity.
+
+### Bugs 3+4 — Marks and shells now follow the contraption (FIXED)
+
+Both decal systems are anchored at the SavedData **entry level** to the contraption
+entity UUID + contraption-local `BlockPos`; the `ImpactMark` / `EmbeddedShell`
+records are unchanged.
+
+- `ContraptionCompat` additions: `contraptionEntityAt`, `localPosAt`,
+  `blockStateForLocal` (direct map lookup, movement-proof), `worldCenterForLocal`,
+  `toLocalVector`, `localFaceAt`, `orientationDegrees`, `snapshot`.
+- `ArmorIntegritySavedData` / `EmbeddedShellSavedData`: `Entry` gained
+  `contraptionUuid` + `localPos` (null for world entries). Contraption entries are
+  keyed by `contraptionKey(uuid, localPos)` (stable across movement). Validation
+  resolves state via entity-by-UUID + `blockStateForLocal`; entries whose entity is
+  temporarily unloaded are kept until TTL expiry. `cleanup()` now returns removed
+  `Entry` objects; NBT stores `Contraption`/`LocalPos`.
+- `TBImpactService`: impact resolves `contraptionEntity` + `contraptionLocalPos`
+  once; mark/exit fractions and faces are computed in contraption-local space
+  (`toLocalVector` / `localFaceAt`); embedded shell positions/directions likewise.
+  Sync helpers build contraption-aware packets; `syncAll*` resolves live entities.
+- Packets (`ClientboundImpactMarksPacket`, `ClientboundEmbeddedShellsPacket`):
+  optional `{UUID, localPos}` identity appended (hasContraption boolean).
+- Client: `ClientImpactMarks` / `ClientEmbeddedShells` gained
+  `Map<UUID, Map<BlockPos, List<Mark>>>` stores and render loops that resolve the
+  entity each frame (linear scan — `ClientLevel` has no UUID lookup in 1.20.1) and
+  draw in the contraption's live rotated frame. Rotation uses `contraptionBasisMatrix()`:
+  the local→world linear part is sampled from `toGlobalVector` around the block
+  center, so marks rotate exactly with any contraption type (no yaw/pitch guessing).
+  Embedded shells render through the same basis with a -0.5 base offset; the
+  world-air skip gate is bypassed for contraption entries via `blockStateForLocal`.
+  Flame particles spawn at live-transformed world points.
+- `TBCommands` marks/shells refresh+delete and the `CBCTerminalBallistics` cleanup
+  loop are entry-identity aware (`clearMarksForEntry` / `clearShellsForEntry`).
+
+### Known limitations
+
+- Server-side integrity damage for contraption hulls is still keyed at the snapped
+  world BlockPos (accumulated hull damage follows the entry anchoring only for
+  decals, not for the `/cbctb clear` world-pos workflow).
+- The 1×1×1 world AABB approximation per block is unchanged; heavily rotated
+  contraptions still use center-containment lookups (consistent with Phase 1).
+
+### Build & Deploy
+
+`cbc_terminal_ballistics-0.4.1-vs2.3.jar` built and deployed (SHA256-verified) to
+`JPCreate2.5\mods\`. In-game verification pending.

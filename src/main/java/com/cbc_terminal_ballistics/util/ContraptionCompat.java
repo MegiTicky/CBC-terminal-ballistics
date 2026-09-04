@@ -16,6 +16,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
@@ -73,6 +74,7 @@ public final class ContraptionCompat {
     private static Method getContraptionMethod;
     private static Method getBlocksMethod;
     private static Method toGlobalVectorMethod;
+    private static Method toLocalVectorMethod;
     private static Method getAnchorVecMethod;
     private static java.lang.reflect.Field stateField;
     private static Method stateAccessor;
@@ -119,6 +121,115 @@ public final class ContraptionCompat {
             if (state != null) return state;
         }
         return null;
+    }
+
+    /**
+     * Find the contraption entity whose block contains the given world position,
+     * or null. Unlike {@link #blockStateAt}, this also identifies WHICH entity owns
+     * the block, which is required for contraption-anchored decals (marks/shells).
+     */
+    @Nullable
+    public static Entity contraptionEntityAt(Level level, BlockPos worldPos) {
+        if (!isLoaded()) return null;
+        Vec3 center = Vec3.atCenterOf(worldPos);
+        for (Entity entity : findContraptionEntities(level, center)) {
+            if (pointInContraptionBlock(center, entity) != null) return entity;
+        }
+        return null;
+    }
+
+    /**
+     * Return the contraption-local block position whose transformed world AABB
+     * contains the given world-space point, or null.
+     */
+    @Nullable
+    public static BlockPos localPosAt(Entity entity, Vec3 worldPoint) {
+        LocalHit hit = pointInContraptionBlockDetailed(worldPoint, entity);
+        return hit == null ? null : hit.localPos();
+    }
+
+    /**
+     * Resolve the block state for a contraption-local position directly from the
+     * contraption's block map. Unlike {@link #blockStateAt} this does NOT depend on
+     * the contraption's current world position, so it keeps working after the
+     * contraption has moved or rotated.
+     */
+    @Nullable
+    public static BlockState blockStateForLocal(Entity entity, BlockPos localPos) {
+        try {
+            Object contraption = getContraption(entity);
+            if (contraption == null) return null;
+            Map<BlockPos, ?> blocks = getBlocks(contraption);
+            if (blocks == null) return null;
+            Object blockInfo = blocks.get(localPos);
+            if (blockInfo == null) return null;
+            BlockState state = getBlockState(blockInfo);
+            return state == null || state.isAir() ? null : state;
+        } catch (Throwable t) {
+            LOG.debug("[ctb] blockStateForLocal failed: {}", t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Transform a contraption-local position to its current world center. The
+     * contraption's live position/rotation at the given partial tick is applied,
+     * so callers get the block's present world location.
+     */
+    @Nullable
+    public static Vec3 worldCenterForLocal(Entity entity, BlockPos localPos, float partialTick) {
+        return toGlobalVectorImpl(entity, Vec3.atCenterOf(localPos), partialTick);
+    }
+
+    /**
+     * Current orientation of an oriented contraption (e.g. mechanical bearing), in
+     * degrees as {@code {yaw, pitch}}. Returns null when the entity type has no
+     * orientation (stationary contraptions, etc.) or reflection fails.
+     */
+    @Nullable
+    public static float[] orientationDegrees(Entity entity) {
+        try {
+            Field yawField = findFieldUpHierarchy(entity.getClass(), "yaw");
+            Field pitchField = findFieldUpHierarchy(entity.getClass(), "pitch");
+            if (yawField == null && pitchField == null) return null;
+            float yaw = yawField != null ? yawField.getFloat(entity) : 0.0f;
+            float pitch = pitchField != null ? pitchField.getFloat(entity) : 0.0f;
+            return new float[]{yaw, pitch};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * Build an immutable world-space snapshot of all solid blocks of a contraption
+     * entity. The box list is computed once (O(blocks) reflection transforms) and can
+     * then answer many raycasts with pure math - used by spall fragment occlusion.
+     */
+    @Nullable
+    public static ContraptionSnapshot snapshot(Entity entity) {
+        try {
+            Object contraption = getContraption(entity);
+            if (contraption == null) return null;
+            Map<BlockPos, ?> blocks = getBlocks(contraption);
+            if (blocks == null || blocks.isEmpty()) return null;
+            List<ContraptionSnapshot.Box> boxes = new ArrayList<>(blocks.size());
+            for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
+                BlockState state = getBlockState(entry.getValue());
+                if (state == null || state.isAir()) continue;
+                Vec3 worldCenter = toGlobalVectorImpl(entity, Vec3.atCenterOf(entry.getKey()), 0f);
+                if (worldCenter == null) continue;
+                AABB box = new AABB(
+                    worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
+                    worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
+                );
+                boxes.add(new ContraptionSnapshot.Box(box, worldCenter, state, entry.getKey()));
+            }
+            if (boxes.isEmpty()) return null;
+            return new ContraptionSnapshot(boxes);
+        } catch (Throwable t) {
+            LOG.debug("[ctb] snapshot failed: {}", t.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -259,6 +370,41 @@ public final class ContraptionCompat {
         return toGlobalVectorImpl(entity, localVec, pt);
     }
 
+    /**
+     * Transform a world-space Vec3 into contraption-local coordinates using Create's
+     * own toLocalVector (the inverse of {@link #toGlobalVector}). Null when Create is
+     * absent or reflection fails.
+     */
+    @Nullable
+    public static Vec3 toLocalVector(Entity entity, Vec3 worldVec, float pt) {
+        try {
+            if (toLocalVectorMethod == null)
+                toLocalVectorMethod = findMethodUpHierarchy(entity.getClass(), "toLocalVector", Vec3.class, float.class);
+            return (Vec3) toLocalVectorMethod.invoke(entity, worldVec, pt);
+        } catch (Throwable t) {
+            LOG.debug("[ctb] toLocalVector failed: {}", t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Convert a world-space face direction into the contraption's local frame, sampled
+     * at the given world point. Returns null when the transform is unavailable (caller
+     * should fall back to the world face).
+     */
+    @Nullable
+    public static Direction localFaceAt(Entity entity, Vec3 worldPoint, Direction worldFace) {
+        Vec3 normal = Vec3.atLowerCornerOf(worldFace.getNormal());
+        Vec3 probeA = toLocalVector(entity, worldPoint.add(normal.scale(0.25)), 0f);
+        Vec3 probeB = toLocalVector(entity, worldPoint.subtract(normal.scale(0.25)), 0f);
+        if (probeA == null || probeB == null) return null;
+        Vec3 delta = probeA.subtract(probeB);
+        double ax = Math.abs(delta.x), ay = Math.abs(delta.y), az = Math.abs(delta.z);
+        if (ax > ay && ax > az) return delta.x > 0 ? Direction.EAST : Direction.WEST;
+        if (ay > az) return delta.y > 0 ? Direction.UP : Direction.DOWN;
+        return delta.z > 0 ? Direction.SOUTH : Direction.NORTH;
+    }
+
     // --- Internal logic ---
 
     private static Class<?> getContraptionEntityClass() {
@@ -297,11 +443,16 @@ public final class ContraptionCompat {
     }
 
     /**
+     * Matched block within a contraption: the local position and its block state.
+     */
+    private record LocalHit(BlockPos localPos, BlockState state) {}
+
+    /**
      * Check if a world-space point falls inside any contraption block's 1×1×1 AABB.
-     * Returns the block state if found, null otherwise.
+     * Returns the matched local position and block state, or null.
      */
     @Nullable
-    private static BlockState pointInContraptionBlock(Vec3 point, Entity entity) {
+    private static LocalHit pointInContraptionBlockDetailed(Vec3 point, Entity entity) {
         try {
             Object contraption = getContraption(entity);
             if (contraption == null) return null;
@@ -318,13 +469,21 @@ public final class ContraptionCompat {
                     worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
                 );
                 if (worldBox.contains(point)) {
-                    return getBlockState(entry.getValue());
+                    BlockState state = getBlockState(entry.getValue());
+                    if (state == null || state.isAir()) continue;
+                    return new LocalHit(localPos, state);
                 }
             }
         } catch (Throwable t) {
             LOG.debug("[ctb] pointInContraptionBlock failed: {}", t.getMessage());
         }
         return null;
+    }
+
+    @Nullable
+    private static BlockState pointInContraptionBlock(Vec3 point, Entity entity) {
+        LocalHit hit = pointInContraptionBlockDetailed(point, entity);
+        return hit == null ? null : hit.state();
     }
 
     @Nullable
@@ -444,6 +603,61 @@ public final class ContraptionCompat {
         }
     }
 
+    /**
+     * Immutable world-space snapshot of a contraption's solid blocks for repeated
+     * ray tests without per-ray reflection (spall fragments, LOS checks).
+     */
+    public static final class ContraptionSnapshot {
+        /** One solid block: its approximate world AABB, transformed center, state and local position. */
+        public record Box(AABB box, Vec3 worldCenter, BlockState state, BlockPos localPos) {}
+
+        /** Nearest hit of a ray against the snapshot. */
+        public record Hit(BlockPos worldPos, Vec3 hitLocation, Direction direction, BlockState state,
+                          BlockPos localPos, double distance) {}
+
+        private final List<Box> boxes;
+
+        private ContraptionSnapshot(List<Box> boxes) {
+            this.boxes = boxes;
+        }
+
+        public int boxCount() {
+            return boxes.size();
+        }
+
+        /** Distance along the ray to the nearest contraption block, or +Infinity when clear. */
+        public double rayDistance(Vec3 from, Vec3 to) {
+            Hit hit = raycast(from, to);
+            return hit == null ? Double.POSITIVE_INFINITY : hit.distance();
+        }
+
+        /** Nearest contraption block along the ray, or null. */
+        @Nullable
+        public Hit raycast(Vec3 from, Vec3 to) {
+            Vec3 rayDir = to.subtract(from);
+            double rayLen = rayDir.length();
+            if (rayLen < 1e-6) return null;
+            Vec3 rayNorm = rayDir.scale(1.0 / rayLen);
+
+            Hit best = null;
+            double bestT = Double.MAX_VALUE;
+            for (Box box : boxes) {
+                // A ray starting inside a block (e.g. the spall origin inside the impacted
+                // block) must not treat that block as a barrier.
+                if (box.box().contains(from)) continue;
+                double t = rayAabbIntersect(from, rayNorm, box.box());
+                if (t >= 0 && t <= rayLen && t < bestT) {
+                    bestT = t;
+                    Vec3 hitLoc = from.add(rayNorm.scale(t));
+                    Direction face = determineFace(box.worldCenter(), hitLoc);
+                    best = new Hit(BlockPos.containing(box.worldCenter()), hitLoc, face,
+                        box.state(), box.localPos(), t);
+                }
+            }
+            return best;
+        }
+    }
+
     // --- Reflection helpers ---
 
     @Nullable
@@ -510,6 +724,24 @@ public final class ContraptionCompat {
         } catch (NoSuchMethodException e) {
             throw new RuntimeException("Cannot find method " + name + " on " + clazz.getName(), e);
         }
+    }
+
+    /**
+     * Walk up the class hierarchy to find a field by name, or null. This handles
+     * fields declared on subclasses like OrientedContraptionEntity's yaw/pitch.
+     */
+    @Nullable
+    private static Field findFieldUpHierarchy(Class<?> clazz, String name) {
+        Class<?> c = clazz;
+        while (c != null && c != Object.class) {
+            try {
+                Field f = c.getDeclaredField(name);
+                f.setAccessible(true);
+                return f;
+            } catch (NoSuchFieldException ignored) {}
+            c = c.getSuperclass();
+        }
+        return null;
     }
 
     @Nullable
