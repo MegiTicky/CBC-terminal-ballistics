@@ -99,6 +99,13 @@ public final class TBImpactService {
                 // where CBCUtils.getSurfaceNormalVector may not resolve world block data)
                 rawNormal = Vec3.atLowerCornerOf(hit.getDirection().getNormal());
             }
+            // Contraption hits carry the exact rotated surface normal. The BlockHitResult
+            // direction is only axis-snapped, which would make angled hull plates behave
+            // as if flat (90 degrees) and let shells penetrate far too easily.
+            if (isContraption) {
+                Vec3 contraptionNormal = ContraptionCompat.matchedContraptionNormal(hit.getLocation());
+                if (contraptionNormal != null) rawNormal = contraptionNormal;
+            }
             Vec3 normal = rawNormal.normalize();
             double incidence = Math.max(0.0, velDir.dot(normal.reverse()));
             double incidentVel = velMag * incidence;

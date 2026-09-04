@@ -56,6 +56,16 @@ public abstract class AbstractCannonProjectileContraptionMixin {
     @Unique
     private BlockState ctb$pendingContraptionState;
 
+    // Self-hit suppression: the cannon a shell was fired from is itself a contraption,
+    // and without exclusion the shell "hits" its own hull right at the muzzle (vanilla
+    // never saw those blocks because they are air in the world).
+    @Unique
+    private java.util.UUID ctb$sourceContraption;
+    @Unique
+    private long ctb$sourceExpiry = -1L;
+    @Unique
+    private int ctb$sourceChecksLeft = 3;
+
     @Inject(method = "clipAndDamage", at = @At("HEAD"))
     private void ctb$logHead(CallbackInfo ci) {
         Entity self = (Entity) (Object) this;
@@ -85,16 +95,32 @@ public abstract class AbstractCannonProjectileContraptionMixin {
         }
 
         try {
+            // Record (and expire) the source contraption to exclude from self-hits.
+            long now = self.level().getGameTime();
+            if (ctb$sourceExpiry > 0 && now > ctb$sourceExpiry) {
+                ctb$sourceContraption = null;
+                ctb$sourceExpiry = -1L;
+            }
+            if (ctb$sourceExpiry < 0 && ctb$sourceChecksLeft > 0) {
+                ctb$sourceChecksLeft--;
+                Entity source = ContraptionCompat.sourceContraptionCandidate(self);
+                if (source != null) {
+                    ctb$sourceContraption = source.getUUID();
+                    ctb$sourceExpiry = now + 100L;
+                    CTB_LOG.info("[ctb] source contraption recorded {} (expires tick {})", ctb$sourceContraption, ctb$sourceExpiry);
+                }
+            }
+
             Vec3 from = self.position();
             Vec3 to = from.add(self.getDeltaMovement());
-            ContraptionCompat.ContraptionHit hit = ContraptionCompat.raycast(self.level(), from, to);
+            ContraptionCompat.ContraptionHit hit = ContraptionCompat.raycast(self.level(), from, to, ctb$sourceContraption);
             if (hit == null) {
                 ctb$pendingContraptionState = null;
                 return original;
             }
 
-            CTB_LOG.info("[ctb] contraption hit! worldPos={} hitLoc={} dir={} state={}",
-                hit.worldPos(), hit.hitLocation(), hit.direction(), hit.state());
+            CTB_LOG.info("[ctb] contraption hit! worldPos={} hitLoc={} dir={} normal={} state={}",
+                hit.worldPos(), hit.hitLocation(), hit.direction(), hit.trueNormal(), hit.state());
             ctb$pendingContraptionState = hit.state();
             return hit.toBlockHitResult();
         } catch (Throwable t) {

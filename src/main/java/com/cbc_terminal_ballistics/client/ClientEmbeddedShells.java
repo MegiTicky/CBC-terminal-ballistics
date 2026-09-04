@@ -146,7 +146,7 @@ public final class ClientEmbeddedShells {
         poseStack.mulPoseMatrix(basis);
         poseStack.translate(-0.5D, -0.5D, -0.5D);
         for (EmbeddedShell shell : shells) {
-            renderShell(contraption.level(), poseStack, buffers, shell, -0.5D);
+            renderShell(contraption.level(), poseStack, buffers, shell, 0.0D);
         }
         poseStack.popPose();
     }

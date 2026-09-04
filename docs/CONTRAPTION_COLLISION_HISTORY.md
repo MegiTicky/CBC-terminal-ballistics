@@ -522,3 +522,58 @@ records are unchanged.
 
 `cbc_terminal_ballistics-0.4.1-vs2.3.jar` built and deployed (SHA256-verified) to
 `JPCreate2.5\mods\`. In-game verification pending.
+
+---
+
+## Attempt 9: Follow-up Fixes (Sep 4 2026) — 0.4.2-vs2.3
+
+In-game testing of Attempt 8 exposed four issues. All traced to two geometry
+root causes plus one behavioral gap.
+
+| Symptom | Root cause |
+|---------|-----------|
+| Shells float off the armor / wrong position | Double offset in the contraption render path: the frame already shifts to the block corner (`translate(-0.5)` after the basis matrix) AND `renderShell` was passed `baseOffset = -0.5` → shells drawn half a block toward the block's local min corner. |
+| Contraption angle ignored — armor behaves as if flat (90°), "random" penetrations, spall leaking | ALL collision geometry (`raycastSingle`, `pointInContraptionBlock`, `ContraptionSnapshot`) transformed block centers to WORLD space at pt=0 and tested axis-aligned ±0.5 boxes. For a rotated contraption those boxes are wrong (gaps/overlaps), and `determineFace()` always produced an axis-aligned face → wrong incidence normal in `calculate()` → momentum math treated angled plate as flat. |
+| Shell hits its own firing cannon contraption | The cannon is itself a contraption; the mixin raycast immediately "hit" the cannon's own hull blocks at the muzzle (vanilla never saw them — air in the world). |
+
+### Fixes
+
+1. **Shell render offset (client)** — contraption path now passes `baseOffset = 0.0`
+   to `renderShell`; the frame's `translate(-0.5)` alone places fractions correctly.
+
+2. **Exact local-space collision (`ContraptionCompat`)** — the RAY is transformed into
+   the contraption's local frame once via `toLocalVector(entity, ·, 0f)` and tested
+   against local block cells (`AABB(localPos)`), which are exact for any rotation
+   (rigid transform, no scale). Applied to `raycastSingle`, `pointInContraptionBlockDetailed`,
+   and `ContraptionSnapshot` (snapshot now stores local cells + entity — also cheaper:
+   no per-block reflection transforms at build time; local cells tile perfectly so the
+   spall-leak gaps are gone).
+   - Local face of the hit → exact world-space normal via `toGlobalVector(center + n_local) − center`
+     (`trueNormalFromLocal`), and an axis-snapped world `Direction` (`dominantDirection`)
+     for the vanilla `BlockHitResult`.
+   - `ContraptionHit` record extended: `entity`, `trueNormal`, `localPos`.
+   - Normal delivery to the impact service: `raycast()` records the returned hit's
+     `hitLocation`+`trueNormal` in a static side-channel; `TBImpactService.calculate()`
+     overrides `rawNormal` with `ContraptionCompat.matchedContraptionNormal(hitLocation)`
+     when `isContraption` (proximity-matched against staleness — the normal cannot ride
+     through CBC's axis-aligned `BlockHitResult`). Incidence, ricochet chance, marks
+     placement, and penetration ratios now all use the true armor angle.
+
+3. **Self-hit suppression (mixin)** — `AbstractCannonProjectileContraptionMixin`
+   records the source contraption on the projectile (`@Unique` fields): within the
+   first 3 clip steps, `ContraptionCompat.sourceContraptionCandidate(Entity)` returns
+   the contraption whose local structure bounding box (inflated 1.5) contains the
+   projectile position; that UUID is excluded from `raycast(level, from, to, exclude)`
+   for 100 ticks, after which the same ship can be hit normally (returning artillery).
+
+### Notes
+
+- `toLocalVector` (public wrapper) is used for all ray/point conversions; the
+  class-level coordinate-system doc (double centerOfOrigin offset) still applies.
+- Snapshot `Box`/`ContraptionHit` records changed shape; no external constructor
+  callers existed.
+
+### Build & Deploy
+
+`cbc_terminal_ballistics-0.4.2-vs2.3.jar` built and deployed (SHA256-verified) to
+`JPCreate2.5\mods\`.

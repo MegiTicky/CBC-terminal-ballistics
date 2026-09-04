@@ -216,16 +216,10 @@ public final class ContraptionCompat {
             for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
                 BlockState state = getBlockState(entry.getValue());
                 if (state == null || state.isAir()) continue;
-                Vec3 worldCenter = toGlobalVectorImpl(entity, Vec3.atCenterOf(entry.getKey()), 0f);
-                if (worldCenter == null) continue;
-                AABB box = new AABB(
-                    worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
-                    worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
-                );
-                boxes.add(new ContraptionSnapshot.Box(box, worldCenter, state, entry.getKey()));
+                boxes.add(new ContraptionSnapshot.Box(entry.getKey().immutable(), state));
             }
             if (boxes.isEmpty()) return null;
-            return new ContraptionSnapshot(boxes);
+            return new ContraptionSnapshot(entity, boxes);
         } catch (Throwable t) {
             LOG.debug("[ctb] snapshot failed: {}", t.getMessage());
             return null;
@@ -304,6 +298,15 @@ public final class ContraptionCompat {
 
     @Nullable
     public static ContraptionHit raycast(Level level, Vec3 from, Vec3 to) {
+        return raycast(level, from, to, null);
+    }
+
+    /**
+     * Nearest contraption hit along the ray. {@code excludeContraption} skips one
+     * entity by UUID (used to suppress self-hits on the firing cannon contraption).
+     */
+    @Nullable
+    public static ContraptionHit raycast(Level level, Vec3 from, Vec3 to, @Nullable java.util.UUID excludeContraption) {
         if (!isLoaded()) {
             LOG.info("[ctb] raycast: Create not loaded");
             return null;
@@ -316,6 +319,7 @@ public final class ContraptionCompat {
             ContraptionHit best = null;
             double bestDistSq = Double.MAX_VALUE;
             for (Entity entity : entities) {
+                if (excludeContraption != null && excludeContraption.equals(entity.getUUID())) continue;
                 Object hit = raycastSingle(level, from, to, entity);
                 if (hit instanceof ContraptionHit ch) {
                     LOG.info("[ctb] raycast: HIT on entity at {}! worldPos={} hitLoc={}", entity.position(), ch.worldPos(), ch.hitLocation());
@@ -326,6 +330,12 @@ public final class ContraptionCompat {
                     }
                 }
             }
+            // Publish the exact normal of the hit actually returned (not a nearer
+            // miss from an entity that was scanned later).
+            if (best != null) {
+                lastHitLocation = best.hitLocation();
+                lastHitNormal = best.trueNormal();
+            }
             return best;
         } catch (Throwable t) {
             LOG.error("[ctb] raycast threw", t);
@@ -334,17 +344,79 @@ public final class ContraptionCompat {
     }
 
     /**
+     * Find the contraption entity the given projectile most likely belongs to (was
+     * fired from): the contraption whose local structure bounding box (inflated)
+     * contains the projectile's position. Used to suppress self-hits on the firing
+     * cannon contraption, which otherwise block the shell right at the muzzle.
+     */
+    @Nullable
+    public static Entity sourceContraptionCandidate(Entity projectile) {
+        if (!isLoaded()) return null;
+        try {
+            Vec3 point = projectile.position();
+            for (Entity entity : findContraptionEntities(projectile.level(), point)) {
+                Object contraption = getContraption(entity);
+                if (contraption == null) continue;
+                Map<BlockPos, ?> blocks = getBlocks(contraption);
+                if (blocks == null || blocks.isEmpty()) continue;
+                Vec3 localPoint = toLocalVector(entity, point, 0f);
+                if (localPoint == null) continue;
+                AABB localBounds = null;
+                for (BlockPos localPos : blocks.keySet()) {
+                    localBounds = localBounds == null ? new AABB(localPos) : localBounds.minmax(new AABB(localPos));
+                }
+                if (localBounds == null) continue;
+                if (localBounds.inflate(1.5).contains(localPoint)) return entity;
+            }
+        } catch (Throwable t) {
+            LOG.debug("[ctb] sourceContraptionCandidate failed: {}", t.getMessage());
+        }
+        return null;
+    }
+
+    /**
      * Result of a raycast against Create contraption blocks.
+     *
+     * @param worldPos   the world-snapped block position of the hit block
+     * @param hitLocation exact world-space hit point
+     * @param direction  axis-snapped world face (for the vanilla BlockHitResult)
+     * @param state      the contraption block state
+     * @param entity     the owning contraption entity
+     * @param trueNormal exact world-space surface normal (rotated contraptions have
+     *                   non-axis-aligned normals; {@code direction} is only the
+     *                   nearest axis)
+     * @param localPos   contraption-local block position of the hit block
      */
     public record ContraptionHit(
         BlockPos worldPos,
         Vec3 hitLocation,
         Direction direction,
-        BlockState state
+        BlockState state,
+        Entity entity,
+        Vec3 trueNormal,
+        BlockPos localPos
     ) {
         public BlockHitResult toBlockHitResult() {
             return new BlockHitResult(hitLocation, direction, worldPos, false);
         }
+    }
+
+    // Exact world-space impact normal of the most recent contraption raycast hit.
+    // TBImpactService consumes it immediately after the clip that produced the hit;
+    // matched by hit-location proximity to guard against staleness (the normal cannot
+    // ride through CBC's axis-aligned BlockHitResult).
+    private static Vec3 lastHitLocation;
+    private static Vec3 lastHitNormal;
+
+    /**
+     * Returns the exact surface normal recorded for a contraption hit at the given
+     * location, or null when no matching recent hit exists.
+     */
+    @Nullable
+    public static Vec3 matchedContraptionNormal(Vec3 hitLocation) {
+        if (lastHitLocation == null || lastHitNormal == null) return null;
+        if (lastHitLocation.distanceToSqr(hitLocation) > 1.0e-6) return null;
+        return lastHitNormal;
     }
 
     // --- Public accessors for debug command ---
@@ -448,8 +520,9 @@ public final class ContraptionCompat {
     private record LocalHit(BlockPos localPos, BlockState state) {}
 
     /**
-     * Check if a world-space point falls inside any contraption block's 1×1×1 AABB.
-     * Returns the matched local position and block state, or null.
+     * Check if a world-space point falls inside any contraption block, tested in the
+     * contraption's LOCAL frame so it is exact for rotated contraptions. Returns the
+     * matched local position and block state, or null.
      */
     @Nullable
     private static LocalHit pointInContraptionBlockDetailed(Vec3 point, Entity entity) {
@@ -460,19 +533,15 @@ public final class ContraptionCompat {
             Map<BlockPos, ?> blocks = getBlocks(contraption);
             if (blocks == null || blocks.isEmpty()) return null;
 
+            Vec3 localPoint = toLocalVector(entity, point, 0f);
+            if (localPoint == null) return null;
+
             for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
                 BlockPos localPos = entry.getKey();
-                Vec3 worldCenter = toGlobalVectorImpl(entity, Vec3.atCenterOf(localPos), 0f);
-                if (worldCenter == null) continue;
-                AABB worldBox = new AABB(
-                    worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
-                    worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
-                );
-                if (worldBox.contains(point)) {
-                    BlockState state = getBlockState(entry.getValue());
-                    if (state == null || state.isAir()) continue;
-                    return new LocalHit(localPos, state);
-                }
+                if (!new AABB(localPos).contains(localPoint)) continue;
+                BlockState state = getBlockState(entry.getValue());
+                if (state == null || state.isAir()) continue;
+                return new LocalHit(localPos, state);
             }
         } catch (Throwable t) {
             LOG.debug("[ctb] pointInContraptionBlock failed: {}", t.getMessage());
@@ -495,7 +564,15 @@ public final class ContraptionCompat {
             Map<BlockPos, ?> blocks = getBlocks(contraption);
             if (blocks == null || blocks.isEmpty()) return null;
 
-            Vec3 rayDir = to.subtract(from);
+            // Transform the RAY into contraption-local space instead of transforming
+            // every block to world space: local block cells are exact axis-aligned
+            // boxes for ANY contraption rotation (rigid transform, no scale). The old
+            // world-space center+/-0.5 boxes made rotated hulls collide as if unrotated.
+            Vec3 localFrom = toLocalVector(entity, from, 0f);
+            Vec3 localTo = toLocalVector(entity, to, 0f);
+            if (localFrom == null || localTo == null) return null;
+
+            Vec3 rayDir = localTo.subtract(localFrom);
             double rayLen = rayDir.length();
             if (rayLen < 1e-6) return null;
             Vec3 rayNorm = rayDir.scale(1.0 / rayLen);
@@ -505,34 +582,25 @@ public final class ContraptionCompat {
 
             for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
                 BlockPos localPos = entry.getKey();
-                Object blockInfo = entry.getValue();
-                BlockState state = getBlockState(blockInfo);
+                BlockState state = getBlockState(entry.getValue());
+                if (state == null || state.isAir()) continue;
 
-                // Use toGlobalVector to correctly transform local block center to world space.
-                // This accounts for anchor offset + centerOfOrigin(0.5,0.5,0.5) + rotation,
-                // unlike the previous reverseRotateAndTranslate which was missing the
-                // centerOfOrigin subtraction/addition.
-                Vec3 worldCenter = toGlobalVectorImpl(entity, Vec3.atCenterOf(localPos), 0f);
-                if (worldCenter == null) continue;
-
-                // For unrotated contraptions (bearing at 0 degrees), blocks form an axis-aligned
-                // bounding box in world space. We can approximate the world AABB as center +/- 0.5.
-                // For rotated contraptions, the AABB would be larger. We inflate to be safe.
-                // The inflation factor accounts for diagonal blocks in rotated contraptions.
-                AABB worldBox = new AABB(
-                    worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
-                    worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5
-                );
-
-                double t = rayAabbIntersect(from, rayNorm, worldBox);
+                double t = rayAabbIntersect(localFrom, rayNorm, new AABB(localPos));
                 if (t >= 0 && t < bestT && t <= rayLen) {
                     bestT = t;
-                    Vec3 hitLoc = from.add(rayNorm.scale(t));
+                    Vec3 localHit = localFrom.add(rayNorm.scale(t));
+                    Vec3 localCenter = Vec3.atCenterOf(localPos);
+                    Direction localFace = determineFace(localCenter, localHit);
 
-                    Direction hitFace = determineFace(worldCenter, hitLoc);
+                    Vec3 worldHitLoc = toGlobalVectorImpl(entity, localHit, 0f);
+                    Vec3 worldCenter = toGlobalVectorImpl(entity, localCenter, 0f);
+                    if (worldHitLoc == null || worldCenter == null) continue;
+
+                    Vec3 trueNormal = trueNormalFromLocal(entity, localCenter, localFace, worldCenter);
+                    Direction worldFace = trueNormal != null ? dominantDirection(trueNormal) : localFace;
                     BlockPos worldBlockPos = BlockPos.containing(worldCenter);
 
-                    best = new ContraptionHit(worldBlockPos, hitLoc, hitFace, state);
+                    best = new ContraptionHit(worldBlockPos, worldHitLoc, worldFace, state, entity, trueNormal, localPos);
                 }
             }
 
@@ -541,6 +609,28 @@ public final class ContraptionCompat {
             LOG.error("[ctb] raycastSingle threw", t);
             return null;
         }
+    }
+
+    /**
+     * Exact world-space normal of a local face, sampled via toGlobalVector around the
+     * block center. Null when the transform is unavailable.
+     */
+    @Nullable
+    private static Vec3 trueNormalFromLocal(Entity entity, Vec3 localCenter, Direction localFace, Vec3 worldCenter) {
+        Vec3 localNormal = Vec3.atLowerCornerOf(localFace.getNormal());
+        Vec3 probe = toGlobalVectorImpl(entity, localCenter.add(localNormal.scale(0.5)), 0f);
+        if (probe == null) return null;
+        Vec3 delta = probe.subtract(worldCenter);
+        if (delta.lengthSqr() < 1.0e-10) return null;
+        return delta.normalize();
+    }
+
+    /** Nearest world axis for a (possibly rotated) normal vector. */
+    private static Direction dominantDirection(Vec3 normal) {
+        double ax = Math.abs(normal.x), ay = Math.abs(normal.y), az = Math.abs(normal.z);
+        if (ax > ay && ax > az) return normal.x > 0 ? Direction.EAST : Direction.WEST;
+        if (ay > az) return normal.y > 0 ? Direction.UP : Direction.DOWN;
+        return normal.z > 0 ? Direction.SOUTH : Direction.NORTH;
     }
 
     /**
@@ -604,20 +694,23 @@ public final class ContraptionCompat {
     }
 
     /**
-     * Immutable world-space snapshot of a contraption's solid blocks for repeated
-     * ray tests without per-ray reflection (spall fragments, LOS checks).
+     * Immutable snapshot of a contraption's solid blocks for repeated ray tests
+     * without per-ray reflection (spall fragments, LOS checks). Rays are transformed
+     * to the contraption's local frame, so collision is exact for any rotation.
      */
     public static final class ContraptionSnapshot {
-        /** One solid block: its approximate world AABB, transformed center, state and local position. */
-        public record Box(AABB box, Vec3 worldCenter, BlockState state, BlockPos localPos) {}
+        /** One solid block: local cell + state. */
+        public record Box(BlockPos localPos, BlockState state) {}
 
         /** Nearest hit of a ray against the snapshot. */
         public record Hit(BlockPos worldPos, Vec3 hitLocation, Direction direction, BlockState state,
                           BlockPos localPos, double distance) {}
 
+        private final Entity entity;
         private final List<Box> boxes;
 
-        private ContraptionSnapshot(List<Box> boxes) {
+        private ContraptionSnapshot(Entity entity, List<Box> boxes) {
+            this.entity = entity;
             this.boxes = boxes;
         }
 
@@ -634,7 +727,10 @@ public final class ContraptionCompat {
         /** Nearest contraption block along the ray, or null. */
         @Nullable
         public Hit raycast(Vec3 from, Vec3 to) {
-            Vec3 rayDir = to.subtract(from);
+            Vec3 localFrom = toLocalVector(entity, from, 0f);
+            Vec3 localTo = toLocalVector(entity, to, 0f);
+            if (localFrom == null || localTo == null) return null;
+            Vec3 rayDir = localTo.subtract(localFrom);
             double rayLen = rayDir.length();
             if (rayLen < 1e-6) return null;
             Vec3 rayNorm = rayDir.scale(1.0 / rayLen);
@@ -642,15 +738,22 @@ public final class ContraptionCompat {
             Hit best = null;
             double bestT = Double.MAX_VALUE;
             for (Box box : boxes) {
+                AABB localBox = new AABB(box.localPos());
                 // A ray starting inside a block (e.g. the spall origin inside the impacted
                 // block) must not treat that block as a barrier.
-                if (box.box().contains(from)) continue;
-                double t = rayAabbIntersect(from, rayNorm, box.box());
+                if (localBox.contains(localFrom)) continue;
+                double t = rayAabbIntersect(localFrom, rayNorm, localBox);
                 if (t >= 0 && t <= rayLen && t < bestT) {
                     bestT = t;
-                    Vec3 hitLoc = from.add(rayNorm.scale(t));
-                    Direction face = determineFace(box.worldCenter(), hitLoc);
-                    best = new Hit(BlockPos.containing(box.worldCenter()), hitLoc, face,
+                    Vec3 localHit = localFrom.add(rayNorm.scale(t));
+                    Vec3 localCenter = Vec3.atCenterOf(box.localPos());
+                    Direction localFace = determineFace(localCenter, localHit);
+                    Vec3 worldHitLoc = toGlobalVectorImpl(entity, localHit, 0f);
+                    Vec3 worldCenter = toGlobalVectorImpl(entity, localCenter, 0f);
+                    if (worldHitLoc == null || worldCenter == null) continue;
+                    Vec3 trueNormal = trueNormalFromLocal(entity, localCenter, localFace, worldCenter);
+                    Direction worldFace = trueNormal != null ? dominantDirection(trueNormal) : localFace;
+                    best = new Hit(BlockPos.containing(worldCenter), worldHitLoc, worldFace,
                         box.state(), box.localPos(), t);
                 }
             }
