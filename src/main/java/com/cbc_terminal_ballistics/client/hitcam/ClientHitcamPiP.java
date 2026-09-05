@@ -22,7 +22,6 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RenderGuiEvent;
 import net.minecraftforge.client.event.RenderLevelStageEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
 
@@ -44,6 +43,8 @@ public final class ClientHitcamPiP {
     private static Entity ghostShell;
     private static boolean ghostFailed;
     private static boolean shaderWarningShown;
+    private static boolean failureLogged;
+    private static Method irisApiShaderPackInUse;
 
     public static boolean isRenderingPip() {
         return RENDERING_PIP.get();
@@ -57,10 +58,16 @@ public final class ClientHitcamPiP {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) return;
 
-        if (shadersBlocked()) {
-            warnShadersOnce(mc);
+        boolean packInUse = shaderPackInUse();
+        String mode = TBConfig.HITCAM_SHADER_MODE.get();
+        if (packInUse && "SKIP".equals(mode)) {
+            warnShadersOnce(mc, false);
             ClientHitcam.stop();
             return;
+        }
+        boolean fullScene = !packInUse || "ATTEMPT".equals(mode);
+        if (packInUse && !fullScene) {
+            warnShadersOnce(mc, true);
         }
 
         int width = Mth.clamp(TBConfig.HITCAM_PIP_WIDTH.get(), 120, 1920);
@@ -69,20 +76,30 @@ public final class ClientHitcamPiP {
 
         ClientHitcam.advance(event.getPartialTick());
 
+        Matrix4f mainProjection = RenderSystem.getProjectionMatrix();
+        com.mojang.blaze3d.vertex.VertexSorting mainSorting = RenderSystem.getVertexSorting();
         try {
             RENDERING_PIP.set(Boolean.TRUE);
-            renderPipScene(mc, width, height, event.getPartialTick());
+            renderPipScene(mc, width, height, event.getPartialTick(), fullScene, packInUse && !fullScene);
         } catch (Throwable t) {
             // A secondary full-scene pass can break under other mods' render hooks;
             // the replay is cosmetic, so drop it instead of crashing the frame.
+            if (!failureLogged) {
+                failureLogged = true;
+                org.slf4j.Logger log = com.mojang.logging.LogUtils.getLogger();
+                log.warn("CBCTB hitcam PiP render failed, replay stopped", t);
+            }
             ClientHitcam.stop();
         } finally {
             RENDERING_PIP.set(Boolean.FALSE);
+            if (mainProjection != null) {
+                RenderSystem.setProjectionMatrix(mainProjection, mainSorting);
+            }
             mc.getMainRenderTarget().bindWrite(true);
         }
     }
 
-    private static void renderPipScene(Minecraft mc, int width, int height, float partialTick) {
+    private static void renderPipScene(Minecraft mc, int width, int height, float partialTick, boolean fullScene, boolean minimal) {
         Camera camera = new Camera();
         Vec3 camPos = ClientHitcam.cameraPos();
         Vec3 look = ClientHitcam.lookTarget().subtract(camPos);
@@ -96,21 +113,59 @@ public final class ClientHitcamPiP {
         updateGhost(mc);
 
         target.bindWrite(true);
-        RenderSystem.clear(256, Minecraft.ON_OSX);
+        if (minimal) {
+            // Transparent clear: the ghost/streak composites over the live world view.
+            RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 0.0F);
+        } else {
+            RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        }
+        RenderSystem.clear(16640, Minecraft.ON_OSX);
         RenderSystem.enableDepthTest();
 
         Matrix4f projection = new Matrix4f().perspective(
             (float) Math.toRadians(mc.options.fov().get()),
             (float) width / height, 0.05F,
             Math.min(mc.options.renderDistance().get() * 16.0F + 64.0F, 1024.0F));
+        RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
-        mc.levelRenderer.renderLevel(
-            new PoseStack(), partialTick, System.nanoTime(), false,
-            camera, (GameRenderer) mc.gameRenderer, mc.gameRenderer.lightTexture(), projection);
-        mc.renderBuffers().bufferSource().endBatch();
+        // GameRenderer normally hands renderLevel a pose stack carrying the
+        // camera's inverse rotation; without it the scene renders disoriented.
+        PoseStack poseStack = new PoseStack();
+        poseStack.mulPose(camera.rotation().conjugate(new org.joml.Quaternionf()));
+
+        if (fullScene) {
+            net.minecraft.client.renderer.FogRenderer.setupFog(camera,
+                net.minecraft.client.renderer.FogRenderer.FogMode.FOG_TERRAIN,
+                mc.options.renderDistance().get() * 16.0F,
+                false, partialTick);
+            mc.levelRenderer.renderLevel(
+                poseStack, partialTick, System.nanoTime(), false,
+                camera, (GameRenderer) mc.gameRenderer, mc.gameRenderer.lightTexture(), projection);
+            mc.renderBuffers().bufferSource().endBatch();
+        }
 
         renderGhost(mc, camera, partialTick);
         mc.renderBuffers().bufferSource().endBatch();
+    }
+
+    /**
+     * True only while a shader pack is actually rendering, not merely when
+     * Oculus/Iris is installed. Uses the Iris v0 API reflectively so the class
+     * never has to be present at compile or run time.
+     */
+    private static boolean shaderPackInUse() {
+        try {
+            if (irisApiShaderPackInUse == null) {
+                Class<?> api = Class.forName("net.irisshaders.iris.api.v0.IrisApi");
+                Object instance = api.getMethod("getInstance").invoke(null);
+                irisApiShaderPackInUse = api.getMethod("isShaderPackInUse");
+                irisApiShaderPackInUse.setAccessible(true);
+            }
+            Object instance = Class.forName("net.irisshaders.iris.api.v0.IrisApi").getMethod("getInstance").invoke(null);
+            return (Boolean) irisApiShaderPackInUse.invoke(instance);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /**
@@ -234,17 +289,13 @@ public final class ClientHitcamPiP {
         }
     }
 
-    private static boolean shadersBlocked() {
-        if (!TBConfig.HITCAM_DISABLE_WITH_SHADERS.get()) return false;
-        return ModList.get().isLoaded("oculus") || ModList.get().isLoaded("iris");
-    }
-
-    private static void warnShadersOnce(Minecraft mc) {
+    private static void warnShadersOnce(Minecraft mc, boolean fallback) {
         if (shaderWarningShown) return;
         shaderWarningShown = true;
         if (mc.player != null) {
-            mc.player.displayClientMessage(net.minecraft.network.chat.Component.literal(
-                "CBCTB hitcam disabled: shader pack detected."), true);
+            mc.player.displayClientMessage(net.minecraft.network.chat.Component.literal(fallback
+                ? "CBCTB hitcam: shader pack active, using lightweight replay view (set hitcamShaderMode to change)."
+                : "CBCTB hitcam disabled: shader pack active (hitcamShaderMode=SKIP)."), false);
         }
     }
 

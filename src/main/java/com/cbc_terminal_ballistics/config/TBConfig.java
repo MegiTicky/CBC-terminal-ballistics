@@ -47,7 +47,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.IntValue HITCAM_PIP_WIDTH;
     public static final ForgeConfigSpec.IntValue HITCAM_PIP_HEIGHT;
     public static final ForgeConfigSpec.ConfigValue<String> HITCAM_PIP_ANCHOR;
-    public static final ForgeConfigSpec.BooleanValue HITCAM_DISABLE_WITH_SHADERS;
+    public static final ForgeConfigSpec.ConfigValue<String> HITCAM_SHADER_MODE;
 
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
@@ -107,7 +107,7 @@ public final class TBConfig {
         HITCAM_PIP_WIDTH = server.comment("Picture-in-picture replay width in GUI-scaled pixels.").defineInRange("hitcamPipWidth", 480, 120, 1920);
         HITCAM_PIP_HEIGHT = server.comment("Picture-in-picture replay height in GUI-scaled pixels.").defineInRange("hitcamPipHeight", 270, 80, 1080);
         HITCAM_PIP_ANCHOR = server.comment("Corner of the screen the replay window is pinned to. One of TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT.").defineInList("hitcamPipAnchor", "TOP_RIGHT", List.of("TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"));
-        HITCAM_DISABLE_WITH_SHADERS = server.comment("Disable the picture-in-picture replay when a shader pack (Oculus/Iris) is loaded, as nested world rendering breaks under shader pipelines.").define("hitcamDisableWithShaders", true);
+        HITCAM_SHADER_MODE = server.comment("Picture-in-picture behaviour when a shader pack is actively rendering: AUTO = lightweight fallback (ghost shell over live view, no nested world render), SKIP = disable with a chat notice, ATTEMPT = try the full nested render anyway. When no shader pack is active the full render is always used.").defineInList("hitcamShaderMode", "AUTO", List.of("AUTO", "SKIP", "ATTEMPT"));
         server.pop();
 
         SERVER_SPEC = server.build();
