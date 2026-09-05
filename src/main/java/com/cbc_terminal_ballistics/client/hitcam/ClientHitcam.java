@@ -122,7 +122,8 @@ public final class ClientHitcam {
     }
 
     public static Vec3 lookTarget() {
-        return shellPos().add(shellDir().scale(8.0D));
+        // Look straight at the shell so it stays centered in the PiP window.
+        return shellPos();
     }
 
     private static Vec3 samplePos(double t) {
