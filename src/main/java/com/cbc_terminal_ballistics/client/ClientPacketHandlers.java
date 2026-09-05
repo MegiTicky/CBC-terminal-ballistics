@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.client;
 
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.network.ClientboundHitcamPacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundInspectionSnapshotPacket;
 import com.cbc_terminal_ballistics.network.ClientboundIntegrityProgressPacket;
@@ -67,6 +68,16 @@ public final class ClientPacketHandlers {
         } else if (packet.outcome().equals("BOUNCE")) {
             CBCReflect.setLastPenetratedBlock(projectile, Blocks.AIR.defaultBlockState());
             CBCReflect.setPenetrationTime(projectile, 0);
+        }
+    }
+
+    public static void handleHitcam(ClientboundHitcamPacket packet) {
+        if (Minecraft.getInstance().level == null) return;
+        if (packet.samples().isEmpty()) {
+            com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.stop();
+        } else {
+            com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.start(
+                packet.entityTypeKey(), packet.samples(), packet.outcomeSummary());
         }
     }
 

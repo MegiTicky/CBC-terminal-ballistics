@@ -66,6 +66,7 @@ public final class ClientTestRayVisuals {
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
+        if (com.cbc_terminal_ballistics.client.hitcam.ClientHitcamPiP.isRenderingPip()) return;
         if (expireTick == 0) return;
 
         Minecraft mc = Minecraft.getInstance();

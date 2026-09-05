@@ -69,7 +69,49 @@ public final class TBCommands {
             .then(Commands.literal("testray")
                 .executes(ctx -> testRay(ctx.getSource()))
                 .then(Commands.argument("distance", IntegerArgumentType.integer(1, 200))
-                    .executes(ctx -> testRay(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "distance"))))));
+                    .executes(ctx -> testRay(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "distance")))))
+            .then(Commands.literal("hitcam")
+                .executes(ctx -> hitcamReplay(ctx.getSource()))
+                .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource()))))
+    );
+    }
+
+    private static int hitcamReplay(CommandSourceStack source) {
+        try {
+            if (!TBConfig.HITCAM_ENABLED.get()) {
+                source.sendFailure(Component.literal("Hitcam recording is disabled in config."));
+                return 0;
+            }
+            ServerPlayer player = source.getPlayerOrException();
+            List<com.cbc_terminal_ballistics.hitcam.HitcamSample> samples =
+                com.cbc_terminal_ballistics.hitcam.HitcamRecorder.lastSamples();
+            if (samples.size() < 2) {
+                source.sendFailure(Component.literal("No projectile flight recorded yet. Fire a cannon shell first."));
+                return 0;
+            }
+            net.minecraft.world.entity.Entity last = com.cbc_terminal_ballistics.hitcam.HitcamRecorder.lastProjectile();
+            String typeKey = net.minecraft.world.entity.EntityType.getKey(last.getType()).toString();
+            TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new com.cbc_terminal_ballistics.network.ClientboundHitcamPacket(typeKey, samples, null));
+            source.sendSuccess(() -> Component.literal("Playing hitcam replay of the last projectile flight (" + samples.size() + " samples, " + typeKey + ")."), false);
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal("Error: " + ex.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int hitcamStop(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new com.cbc_terminal_ballistics.network.ClientboundHitcamPacket("", List.of(), null));
+            source.sendSuccess(() -> Component.literal("Stopped hitcam replay."), false);
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal("Error: " + ex.getMessage()));
+            return 0;
+        }
     }
 
     private static int status(CommandSourceStack source) {
