@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics.mixin;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.ballistics.TBImpactService;
 import com.cbc_terminal_ballistics.hitcam.HitcamRecorder;
+import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -15,12 +16,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class AbstractCannonProjectileTickMixin {
     @Inject(method = {"tick", "m_8119_"}, at = @At("HEAD"), cancellable = true, remap = false)
     private void ctb$slowProjectileTick(CallbackInfo ci) {
-        HitcamRecorder.record((Entity) (Object) this);
-        if (TBProjectileSlowdown.shouldSkip((Entity) (Object) this)) ci.cancel();
+        Entity self = (Entity) (Object) this;
+        if (HitcamRecorder.record(self)) TerminalBallisticsRecorder.onProjectileSpawned(self);
+        if (TBProjectileSlowdown.shouldSkip(self)) ci.cancel();
     }
 
     @Inject(method = "clipAndDamage", at = @At("TAIL"), remap = false)
     private void ctb$finalizeDeferredMassReset(CallbackInfo ci) {
-        TBImpactService.finalizeDeferredMassReset((Entity) (Object) this);
+        Entity self = (Entity) (Object) this;
+        TBImpactService.finalizeDeferredMassReset(self);
+        TerminalBallisticsRecorder.onClipAndDamageTail(self);
     }
 }

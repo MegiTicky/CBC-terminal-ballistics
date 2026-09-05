@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics.client.hitcam;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.hitcam.HitcamSample;
 import net.minecraft.client.Minecraft;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
@@ -12,16 +13,21 @@ import net.minecraftforge.fml.common.Mod;
 import java.util.List;
 
 /**
- * Client-side playback of a recorded projectile flight. The live world keeps
- * ticking untouched; this only advances a virtual playhead over per-tick
- * samples. Slow motion is just a slower playhead rate, exactly like the
- * approach used by replay mods, minus the need to pause or slow the world.
+ * Client-side hitcam state. Three mutually exclusive modes, newest event wins:
+ * REPLAY (the manual /cbctb hitcam ghost playback over recorded samples),
+ * ARTILLERY (a live chase camera locked onto a just-fired projectile entity)
+ * and TERMINAL (the post-impact x-ray diagram orbit view). The live world
+ * keeps ticking untouched in every mode.
  */
 @Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientHitcam {
     private static final int HOLD_TICKS = 40;
 
-    private static boolean active;
+    private enum Mode { NONE, REPLAY, ARTILLERY, TERMINAL }
+
+    private static Mode mode = Mode.NONE;
+
+    // REPLAY state
     private static String entityTypeKey = "";
     private static String outcomeSummary;
     private static List<HitcamSample> samples = List.of();
@@ -31,9 +37,12 @@ public final class ClientHitcam {
     private static float lastPartialTick = -1.0F;
     private static float currentSpeed = 1.0F;
 
+    // ARTILLERY state
+    private static int artilleryEntityId = -1;
+
     public static void start(String typeKey, List<HitcamSample> recorded, String summary) {
         if (recorded.size() < 2) return;
-        active = true;
+        mode = Mode.REPLAY;
         entityTypeKey = typeKey == null ? "" : typeKey;
         outcomeSummary = summary;
         samples = List.copyOf(recorded);
@@ -42,16 +51,70 @@ public final class ClientHitcam {
         holdTicks = 0;
         lastPartialTick = -1.0F;
         currentSpeed = 1.0F;
+        artilleryEntityId = -1;
+        ClientTerminalView.clear();
+    }
+
+    /** Artillery view: follow this live projectile entity until it is gone. */
+    public static void startArtillery(int entityId) {
+        if (!TBConfig.HITCAM_ENABLED.get()) return;
+        mode = Mode.ARTILLERY;
+        artilleryEntityId = entityId;
+        ClientTerminalView.clear();
+        resetReplay();
+    }
+
+    /** Terminal view packet arrived; called by {@link ClientTerminalView#accept}. */
+    public static void startTerminalView() {
+        mode = Mode.TERMINAL;
+        artilleryEntityId = -1;
+        resetReplay();
     }
 
     public static void stop() {
-        active = false;
+        mode = Mode.NONE;
+        artilleryEntityId = -1;
+        ClientTerminalView.clear();
+        resetReplay();
+    }
+
+    private static void resetReplay() {
         samples = List.of();
         outcomeSummary = null;
+        playHead = 0.0D;
+        span = 0.0D;
+        holdTicks = 0;
+        lastPartialTick = -1.0F;
+        currentSpeed = 1.0F;
     }
 
     public static boolean active() {
-        return active;
+        return switch (mode) {
+            case REPLAY -> samples.size() >= 2;
+            case ARTILLERY -> artilleryTarget() != null;
+            case TERMINAL -> ClientTerminalView.active();
+            default -> false;
+        };
+    }
+
+    public static boolean isReplay() {
+        return mode == Mode.REPLAY;
+    }
+
+    public static boolean isArtillery() {
+        return mode == Mode.ARTILLERY && artilleryTarget() != null;
+    }
+
+    public static boolean isTerminal() {
+        return mode == Mode.TERMINAL && ClientTerminalView.active();
+    }
+
+    /** The live projectile entity the artillery cam is following, or null. */
+    public static Entity artilleryTarget() {
+        if (artilleryEntityId < 0) return null;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null) return null;
+        return mc.level.getEntity(artilleryEntityId);
     }
 
     public static String entityTypeKey() {
@@ -63,29 +126,51 @@ public final class ClientHitcam {
     }
 
     public static String statusLine() {
-        String base = outcomeSummary != null && !outcomeSummary.isEmpty() ? outcomeSummary : entityTypeKey;
-        return base + "  ·  " + String.format("%.2fx", currentSpeed);
+        return switch (mode) {
+            case REPLAY -> {
+                String base = outcomeSummary != null && !outcomeSummary.isEmpty() ? outcomeSummary : entityTypeKey;
+                yield base + "  ·  " + String.format("%.2fx", currentSpeed);
+            }
+            case ARTILLERY -> "Artillery cam  ·  LIVE";
+            case TERMINAL -> "X-RAY  ·  " + ClientTerminalView.summary();
+            default -> "";
+        };
     }
 
     @SubscribeEvent
     public static void clientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || !active) return;
+        if (event.phase != TickEvent.Phase.END) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
-            stop();
+            if (mode != Mode.NONE) stop();
             return;
         }
-        if (playHead >= span && ++holdTicks >= HOLD_TICKS) {
-            stop();
+        switch (mode) {
+            case REPLAY -> {
+                if (playHead >= span && ++holdTicks >= HOLD_TICKS) {
+                    stop();
+                }
+            }
+            case ARTILLERY -> {
+                if (artilleryTarget() == null) {
+                    stop();
+                }
+            }
+            case TERMINAL -> {
+                if (ClientTerminalView.expired()) {
+                    stop();
+                }
+            }
+            default -> {}
         }
     }
 
     /**
-     * Advances the playhead once per rendered frame using the real frame
-     * delta, so slow motion stays smooth instead of stepping per tick.
+     * Advances the replay playhead once per rendered frame using the real
+     * frame delta, so slow motion stays smooth instead of stepping per tick.
      */
     public static void advance(float partialTick) {
-        if (!active) return;
+        if (mode != Mode.REPLAY) return;
         if (lastPartialTick < 0.0F) lastPartialTick = partialTick;
         float delta = partialTick - lastPartialTick;
         if (delta < 0.0F) delta += 1.0F;
@@ -110,24 +195,42 @@ public final class ClientHitcam {
     }
 
     public static Vec3 shellPos() {
+        if (isArtillery()) {
+            Entity target = artilleryTarget();
+            return target.position();
+        }
         return samplePos(playHead);
     }
 
     public static Vec3 shellDir() {
+        if (isArtillery()) {
+            Entity target = artilleryTarget();
+            Vec3 vel = target.getDeltaMovement();
+            if (vel.lengthSqr() > 1.0e-6D) return vel.normalize();
+            Vec3 look = target.getLookAngle();
+            return look.lengthSqr() < 1.0e-6D ? new Vec3(0, 1, 0) : look.normalize();
+        }
         return sampleDir(playHead);
     }
 
-    public static Vec3 cameraPos() {
+    public static Vec3 cameraPos(float partialTick) {
+        if (isTerminal()) {
+            return ClientTerminalView.cameraPos(partialTick);
+        }
         Vec3 dir = shellDir();
         return shellPos().subtract(dir.scale(4.5D)).add(0.0D, 1.2D, 0.0D);
     }
 
-    public static Vec3 lookTarget() {
+    public static Vec3 lookTarget(float partialTick) {
+        if (isTerminal()) {
+            return ClientTerminalView.center(partialTick);
+        }
         // Look straight at the shell so it stays centered in the PiP window.
         return shellPos();
     }
 
     private static Vec3 samplePos(double t) {
+        if (samples.isEmpty()) return Vec3.ZERO;
         int i0 = (int) Math.floor(t);
         i0 = Math.max(0, Math.min(i0, samples.size() - 1));
         int i1 = Math.min(i0 + 1, samples.size() - 1);
@@ -141,6 +244,7 @@ public final class ClientHitcam {
     }
 
     private static Vec3 sampleDir(double t) {
+        if (samples.isEmpty()) return new Vec3(0, 1, 0);
         int i0 = (int) Math.floor(t);
         i0 = Math.max(0, Math.min(i0, samples.size() - 1));
         int i1 = Math.min(i0 + 1, samples.size() - 1);

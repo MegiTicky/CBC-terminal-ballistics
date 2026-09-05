@@ -9,6 +9,8 @@ import com.cbc_terminal_ballistics.network.ClientboundImpactOutcomePacket;
 import com.cbc_terminal_ballistics.network.ClientboundEmbeddedShellsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundProjectileSlowdownPacket;
 import com.cbc_terminal_ballistics.network.ClientboundSpallConePacket;
+import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
+import com.cbc_terminal_ballistics.network.ClientboundTrackProjectilePacket;
 import com.cbc_terminal_ballistics.util.CBCReflect;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.level.block.Blocks;
@@ -79,6 +81,15 @@ public final class ClientPacketHandlers {
             com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.start(
                 packet.entityTypeKey(), packet.samples(), packet.outcomeSummary());
         }
+    }
+
+    public static void handleTrackProjectile(ClientboundTrackProjectilePacket packet) {
+        com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.startArtillery(packet.entityId());
+    }
+
+    public static void handleTerminalBallistics(ClientboundTerminalBallisticsPacket packet) {
+        if (Minecraft.getInstance().level == null) return;
+        com.cbc_terminal_ballistics.client.hitcam.ClientTerminalView.accept(packet);
     }
 
     private ClientPacketHandlers() {}

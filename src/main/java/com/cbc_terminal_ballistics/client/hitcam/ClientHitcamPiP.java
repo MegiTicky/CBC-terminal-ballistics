@@ -109,17 +109,24 @@ public final class ClientHitcamPiP {
 
     private static void renderPipScene(Minecraft mc, float partialTick, boolean fullScene, boolean minimal) {
         Camera camera = new Camera();
-        Vec3 camPos = ClientHitcam.cameraPos();
-        Vec3 look = ClientHitcam.lookTarget().subtract(camPos);
+        Vec3 camPos = ClientHitcam.cameraPos(partialTick);
+        Vec3 look = ClientHitcam.lookTarget(partialTick).subtract(camPos);
         double horiz = Math.sqrt(look.x * look.x + look.z * look.z);
         float yaw = (float) Math.toDegrees(Math.atan2(-look.x, look.z));
         float pitch = (float) Math.toDegrees(-Math.atan2(look.y, horiz));
         updateGhost(mc);
 
         // Camera.setup dereferences the entity (view rot / eye pos lerp), so a
-        // null entity NPEs; the ghost shell (or the local player as fallback)
-        // is passed and immediately overridden below.
-        Entity setupEntity = ghostShell != null ? ghostShell : mc.player;
+        // null entity NPEs; a representative entity is passed and immediately
+        // overridden below. Replay uses the ghost shell, the artillery cam the
+        // live projectile, the terminal orbit just the local player.
+        Entity setupEntity = mc.player;
+        if (ClientHitcam.isReplay() && ghostShell != null) {
+            setupEntity = ghostShell;
+        } else if (ClientHitcam.isArtillery()) {
+            Entity target = ClientHitcam.artilleryTarget();
+            if (target != null) setupEntity = target;
+        }
         camera.setup(mc.level, setupEntity, false, false, 1.0F);
         invokeSetPosition(camera, camPos);
         invokeSetRotation(camera, yaw, pitch);
@@ -152,6 +159,7 @@ public final class ClientHitcamPiP {
 
         renderGhost(mc, camera, partialTick);
         mc.renderBuffers().bufferSource().endBatch();
+        ClientTerminalOverlay.render(mc, camera, partialTick);
     }
 
     /**
@@ -217,6 +225,10 @@ public final class ClientHitcamPiP {
             renderGhost(mc, camera, partialTick);
             mc.renderBuffers().bufferSource().endBatch();
 
+            // X-ray diagram of the terminal-ballistics view, drawn into the
+            // same finished frame so it stays inside the PiP window.
+            ClientTerminalOverlay.render(mc, camera, partialTick);
+
             // Copy the finished frame into the private PiP texture.
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
             GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, target.frameBufferId);
@@ -268,6 +280,13 @@ public final class ClientHitcamPiP {
      * if the CBC renderer misbehaves with a fake entity.
      */
     private static void renderGhost(Minecraft mc, Camera camera, float partialTick) {
+        // Artillery mode has a real entity in the nested pass, so nothing to
+        // draw here in full scene; the streak marks it in the minimal pass.
+        if (ClientHitcam.isArtillery()) {
+            renderGhostStreak(mc, camera);
+            return;
+        }
+        if (!ClientHitcam.isReplay()) return;
         if (ghostShell == null || mc.level == null) return;
         Vec3 cam = camera.getPosition();
         double rx = ghostShell.getX() - cam.x;
@@ -348,6 +367,7 @@ public final class ClientHitcamPiP {
     }
 
     private static void updateGhost(Minecraft mc) {
+        if (!ClientHitcam.isReplay()) return;
         if (ghostShell == null && !ghostFailed) {
             Optional<EntityType<?>> type = EntityType.byString(ClientHitcam.entityTypeKey());
             if (type.isPresent() && mc.level != null) {

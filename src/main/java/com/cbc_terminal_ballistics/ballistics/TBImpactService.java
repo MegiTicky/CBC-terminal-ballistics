@@ -7,6 +7,7 @@ import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
+import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import com.cbc_terminal_ballistics.network.ClientboundImpactOutcomePacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundEmbeddedShellsPacket;
@@ -125,6 +126,8 @@ public final class TBImpactService {
             TBCaliber caliber = ProjectileClassifier.classify(projectile, autocannonHint);
             boolean autocannon = caliber == TBCaliber.AUTOCANNON || caliber == TBCaliber.HEAVY_AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
+            // The terminal-ballistics hitcam only reconstructs vehicle/armour engagements.
+            boolean tbArmorHit = isContraption || isArmorLike(state) || isMetalLike(state);
 
             // Penetration/no-penetration intentionally follows CBC's original basis for now:
             // block is perforated if projectile_mass * incident_velocity * velocity_bonus >= CBC block toughness. (default CBC penetration)
@@ -190,6 +193,10 @@ public final class TBImpactService {
                 if (level instanceof ServerLevel server) {
                     Vec3 authoritativeVelocity = curVel.subtract(normal.scale(normal.dot(curVel) * 1.7D));
                     syncImpactOutcome(server, projectile, "BOUNCE", projectile.position(), authoritativeVelocity, false, pos);
+                    if (tbArmorHit) {
+                        TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), "BOUNCE",
+                            0.0D, baseArmorToughness, false, contraptionEntity);
+                    }
                 }
                 return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
             }
@@ -289,6 +296,10 @@ public final class TBImpactService {
                 }
                 LAST_IMPACTS.put(server.dimension().location().hashCode() * 31L + pos.asLong(),
                     new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason, shatterDecision.chance(), projectileShatter));
+                if (tbArmorHit) {
+                    TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), outcome,
+                        appliedDamage, baseArmorToughness, blockBreakPending, contraptionEntity);
+                }
             }
 
             TBDebug.serviceOutcome(outcome, appliedDamage, threshold);
@@ -864,6 +875,7 @@ public final class TBImpactService {
         double combined = velocityFactor * 0.15 + massRatioFactor * 0.25 + toughnessFactor * 0.25 + caliberFactor * 0.15 + shellTypeFactor * 0.20;
         double coneAngleDeg = Mth.lerp(combined, minAngle, maxAngle);
         double coneCos = Math.cos(Math.toRadians(coneAngleDeg));
+        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments);
 
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
@@ -904,8 +916,9 @@ public final class TBImpactService {
             if (contraptionHit != null && contraptionDistSqr <= blockDistSqr) {
                 // Fragment stopped by a contraption hull block: integrity damage accumulates,
                 // but the block itself is never removed (it lives inside the entity).
-                applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
+                boolean broken = applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
                     contraptionHit.worldPos(), contraptionHit.state(), spallToughnessThreshold, spallDamageScale);
+                TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), broken);
             } else if (blockRay instanceof BlockHitResult bhr && blockRay.getType() == HitResult.Type.BLOCK) {
                 BlockPos bp = bhr.getBlockPos();
                 BlockState st = level.getBlockState(bp);
@@ -915,8 +928,9 @@ public final class TBImpactService {
                     if (contraState != null) st = contraState;
                     else continue;
                 }
-                applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
+                boolean broken = applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
                     bp, st, spallToughnessThreshold, spallDamageScale);
+                TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(bp), broken);
             }
         }
         if (visualClearRays > 0 && visualRange >= MIN_SPALL_VISUAL_CLEARANCE) {
@@ -944,6 +958,7 @@ public final class TBImpactService {
             double coneStrength = cone * cone;
             float damage = (float) (Mth.clamp((massRatio * 15.0 + fragments * 1.15) * coneStrength / Math.sqrt(dist) + directHits * 3.5, 4.0, 48.0) * damageModifier);
             entity.hurt(level.damageSources().generic(), damage);
+            TerminalBallisticsRecorder.onSpallEntityHit(projectile, entity, damage);
         }
         return fragments;
     }
@@ -952,13 +967,15 @@ public final class TBImpactService {
      * Apply spall fragment integrity damage to a single blocking block (world or
      * contraption hull). The block is never set to air when it belongs to a
      * contraption; damage still accumulates and break sounds play.
+     *
+     * @return true when this fragment pushed the block past its integrity threshold.
      */
-    private static void applyFragmentBlockDamage(ServerLevel level, TBCaliber caliber, int fragments, double massRatio, double damageModifier,
+    private static boolean applyFragmentBlockDamage(ServerLevel level, TBCaliber caliber, int fragments, double massRatio, double damageModifier,
                                                  BlockPos bp, BlockState st, double spallToughnessThreshold, double spallDamageScale) {
         float speed = st.getDestroySpeed(level, bp);
-        if (speed < 0) return;
+        if (speed < 0) return false;
         double localArmor = localEffectiveToughness(level, st, bp);
-        if (localArmor > spallToughnessThreshold) return;
+        if (localArmor > spallToughnessThreshold) return false;
         if (spallDamageScale > 0.0 && localArmor > 0.0) {
             double baseDamage = localArmor * caliberIntegrityWear(caliber) * spallDamageScale * damageModifier;
             double fragmentShare = Math.max(1.0, fragments / 8.0);
@@ -976,8 +993,10 @@ public final class TBImpactService {
                 }
                 playBreakSound(level, bp, st);
                 clearMarks(level, bp);
+                return true;
             }
         }
+        return false;
     }
 
     private static boolean isCatchingArmorAt(ServerLevel level, Vec3 pos) {
