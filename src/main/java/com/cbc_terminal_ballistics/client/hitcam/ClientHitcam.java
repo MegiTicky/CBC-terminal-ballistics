@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics.client.hitcam;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.hitcam.HitcamSample;
 import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
@@ -202,6 +203,27 @@ public final class ClientHitcam {
         return samplePos(playHead);
     }
 
+    /**
+     * Shell position interpolated to this rendered frame. Entities advance once
+     * per server tick, so the chase camera and manual PiP shell render would
+     * otherwise sit up to a block behind the shell the world pass drew at the
+     * partial-tick position, pushing it toward the window edge.
+     */
+    public static Vec3 shellPos(float partialTick) {
+        if (isArtillery()) {
+            return lerpedPosition(artilleryTarget(), partialTick);
+        }
+        return samplePos(playHead);
+    }
+
+    /** Partial-tick interpolated entity position, matching the vanilla render. */
+    public static Vec3 lerpedPosition(Entity entity, float partialTick) {
+        return new Vec3(
+            Mth.lerp(partialTick, entity.xOld, entity.getX()),
+            Mth.lerp(partialTick, entity.yOld, entity.getY()),
+            Mth.lerp(partialTick, entity.zOld, entity.getZ()));
+    }
+
     public static Vec3 shellDir() {
         if (isArtillery()) {
             Entity target = artilleryTarget();
@@ -221,7 +243,7 @@ public final class ClientHitcam {
         if (isArtillery()) {
             // Further 3/4 chase view: behind and to the side of the shell, so the
             // projectile model is clearly visible against the flight path.
-            Vec3 pos = shellPos();
+            Vec3 pos = shellPos(partialTick);
             Vec3 side = dir.cross(new Vec3(0, 1, 0));
             if (side.lengthSqr() < 1.0e-6D) side = new Vec3(1, 0, 0);
             side = side.normalize();
@@ -237,7 +259,7 @@ public final class ClientHitcam {
         if (isArtillery()) {
             // Lead the shell slightly so it sits below-center with the impact
             // area ahead, instead of filling the window dead-center.
-            return shellPos().add(shellDir().scale(3.0D));
+            return shellPos(partialTick).add(shellDir().scale(3.0D));
         }
         // Look straight at the shell so it stays centered in the PiP window.
         return shellPos();

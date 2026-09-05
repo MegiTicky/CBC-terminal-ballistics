@@ -134,11 +134,20 @@ public final class ClientHitcamPiP {
         invokeSetPosition(camera, camPos);
         invokeSetRotation(camera, yaw, pitch);
 
+        // Rotation-only pose that maps world space into the PiP camera's view
+        // space, built the same way GameRenderer builds it. 1.20.1 never pushes
+        // this pose onto the model-view stack for code running after the nested
+        // world pass returns, so every post-pass draw (the manual shell model,
+        // its bracket and the x-ray overlay) must bake it per-vertex itself.
+        PoseStack viewPose = new PoseStack();
+        viewPose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(pitch));
+        viewPose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(yaw + 180.0F));
+
         if (!fullScene) {
-            renderMinimal(mc, camera, partialTick);
+            renderMinimal(mc, camera, partialTick, viewPose);
             return;
         }
-        renderFullScene(mc, camera, partialTick, yaw, pitch);
+        renderFullScene(mc, camera, partialTick, viewPose);
     }
 
     /**
@@ -146,7 +155,7 @@ public final class ClientHitcamPiP {
      * into the private target with a transparent background, no nested world
      * render, so the ghost composites over the live view in the PiP window.
      */
-    private static void renderMinimal(Minecraft mc, Camera camera, float partialTick) {
+    private static void renderMinimal(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         RenderTarget mainTarget = mc.getMainRenderTarget();
         ensureTarget(mainTarget.width, mainTarget.height);
         target.bindWrite(true);
@@ -160,9 +169,9 @@ public final class ClientHitcamPiP {
             Math.min(mc.options.renderDistance().get() * 16.0F + 64.0F, 1024.0F));
         RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
-        renderGhost(mc, camera, partialTick);
+        renderGhost(mc, camera, partialTick, viewPose);
         mc.renderBuffers().bufferSource().endBatch();
-        ClientTerminalOverlay.render(mc, camera, partialTick);
+        ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
     }
 
     /**
@@ -173,7 +182,7 @@ public final class ClientHitcamPiP {
      * then restore the backup. Also re-prepares the cull frustum for the PiP
      * camera, which renderLevel does not do itself.
      */
-    private static void renderFullScene(Minecraft mc, Camera camera, float partialTick, float yaw, float pitch) {
+    private static void renderFullScene(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         RenderTarget mainTarget = mc.getMainRenderTarget();
         ensureTarget(mainTarget.width, mainTarget.height);
         if (backupTarget == null || backupTarget.width != mainTarget.width || backupTarget.height != mainTarget.height) {
@@ -202,11 +211,6 @@ public final class ClientHitcamPiP {
             RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 1.0F);
             RenderSystem.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, false);
 
-            // Camera-inverse rotation built the same way GameRenderer does.
-            PoseStack poseStack = new PoseStack();
-            poseStack.mulPose(com.mojang.math.Axis.XP.rotationDegrees(pitch));
-            poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(yaw + 180.0F));
-
             int dispW = Mth.clamp(TBConfig.HITCAM_PIP_DISPLAY_WIDTH.get(), 80, 960);
             int dispH = Mth.clamp(TBConfig.HITCAM_PIP_DISPLAY_HEIGHT.get(), 50, 540);
             // Own aspect (the display window's), not the monitor's, or the
@@ -217,20 +221,20 @@ public final class ClientHitcamPiP {
                 Math.min(mc.options.renderDistance().get() * 16.0F + 64.0F, 1024.0F));
             RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
-            mc.levelRenderer.prepareCullFrustum(poseStack, camera.getPosition(), projection);
+            mc.levelRenderer.prepareCullFrustum(viewPose, camera.getPosition(), projection);
             mc.gameRenderer.lightTexture().turnOnLightLayer();
             mc.levelRenderer.renderLevel(
-                poseStack, partialTick, System.nanoTime(), false,
+                viewPose, partialTick, System.nanoTime(), false,
                 camera, (GameRenderer) mc.gameRenderer, mc.gameRenderer.lightTexture(), projection);
             mc.gameRenderer.lightTexture().turnOffLightLayer();
             mc.renderBuffers().bufferSource().endBatch();
 
-            renderGhost(mc, camera, partialTick);
+            renderGhost(mc, camera, partialTick, viewPose);
             mc.renderBuffers().bufferSource().endBatch();
 
             // X-ray diagram of the terminal-ballistics view, drawn into the
             // same finished frame so it stays inside the PiP window.
-            ClientTerminalOverlay.render(mc, camera, partialTick);
+            ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
 
             // Copy the finished frame into the private PiP texture.
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
@@ -282,22 +286,22 @@ public final class ClientHitcamPiP {
      * just prepared for our PiP camera. Falls back to a small additive streak
      * if the CBC renderer misbehaves with a fake entity.
      */
-    private static void renderGhost(Minecraft mc, Camera camera, float partialTick) {
+    private static void renderGhost(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         if (ClientHitcam.isArtillery()) {
             // A real shell exists in the world and is drawn by the nested level
             // pass, but the dispatcher pass renders it crisply in both the full
             // and the shader-minimal PiP frame regardless.
             Entity target = ClientHitcam.artilleryTarget();
-            boolean rendered = target != null && renderEntity(mc, camera, target, partialTick);
-            renderShellMarker(mc, camera);
-            if (!rendered) renderGhostStreak(mc, camera);
+            boolean rendered = target != null && renderEntity(mc, camera, target, partialTick, viewPose);
+            renderShellMarker(mc, camera, partialTick, viewPose);
+            if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
             return;
         }
         if (!ClientHitcam.isReplay()) return;
         if (ghostShell == null || mc.level == null) return;
-        boolean rendered = renderEntity(mc, camera, ghostShell, partialTick);
-        renderShellMarker(mc, camera);
-        if (!rendered) renderGhostStreak(mc, camera);
+        boolean rendered = renderEntity(mc, camera, ghostShell, partialTick, viewPose);
+        renderShellMarker(mc, camera, partialTick, viewPose);
+        if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
     }
 
     /**
@@ -306,12 +310,15 @@ public final class ClientHitcamPiP {
      * the small PiP window, War-Thunder-style. Returns false when the renderer
      * cannot be resolved or throws so the caller can fall back.
      */
-    private static boolean renderEntity(Minecraft mc, Camera camera, Entity entity, float partialTick) {
+    private static boolean renderEntity(Minecraft mc, Camera camera, Entity entity, float partialTick, PoseStack viewPose) {
         if (mc.level == null) return false;
         Vec3 cam = camera.getPosition();
-        double rx = entity.getX() - cam.x;
-        double ry = entity.getY() - cam.y;
-        double rz = entity.getZ() - cam.z;
+        // Render the manual model at the partial-tick interpolated position so
+        // it sits exactly on the shell the world pass drew this frame.
+        Vec3 pos = ClientHitcam.lerpedPosition(entity, partialTick);
+        double rx = pos.x - cam.x;
+        double ry = pos.y - cam.y;
+        double rz = pos.z - cam.z;
         try {
             net.minecraft.client.renderer.entity.EntityRenderer<? super Entity> renderer =
                 mc.getEntityRenderDispatcher().getRenderer(entity);
@@ -323,7 +330,13 @@ public final class ClientHitcamPiP {
             AABB bb = entity.getBoundingBox();
             double longest = Math.max(bb.getXsize(), Math.max(bb.getYsize(), bb.getZsize()));
             float scale = (float) Mth.clamp(1.1D / Math.max(longest, 0.05D), 1.0D, 6.0D);
+            // Seed the pose with the PiP camera rotation, then offset to the
+            // camera-relative shell position and lift the model. Entity models
+            // bake their per-vertex matrix at buffer-build time, so without the
+            // rotation the manual shell would be projected with no camera
+            // orientation (the cause of its direction-dependent drift).
             PoseStack pose = new PoseStack();
+            pose.mulPoseMatrix(viewPose.last().pose());
             var buffers = mc.renderBuffers().bufferSource();
             setGhostOrientation(entity, ClientHitcam.shellDir());
             pose.pushPose();
@@ -349,31 +362,32 @@ public final class ClientHitcamPiP {
      * the viewer can always find the projectile even when the model is hidden
      * by smoke, geometry, or a renderer failure.
      */
-    private static void renderShellMarker(Minecraft mc, Camera camera) {
+    private static void renderShellMarker(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         Entity target = ClientHitcam.isArtillery() ? ClientHitcam.artilleryTarget() : ghostShell;
         if (target == null || mc.level == null) return;
         AABB bb = target.getBoundingBox();
-        double half = Math.max(Math.max(bb.getXsize(), bb.getYsize()), bb.getZsize()) * 0.65D;
-        half = Mth.clamp(half, 0.45D, 3.0D);
-        Vec3 c = ClientHitcam.shellPos();
-        Vec3 cam = camera.getPosition();
-        Matrix4f matrix = new PoseStack().last().pose();
+        double half = Math.max(Math.max(bb.getXsize(), bb.getYsize()), bb.getZsize()) * 0.55D;
+        half = Mth.clamp(half, 0.4D, 2.4D);
+        // Center the bracket on the interpolated shell position so it wraps the
+        // model this frame rather than the shell's last server-tick spot.
+        Vec3 c = ClientHitcam.lerpedPosition(target, partialTick);
+        ClientTerminalOverlay.Ctx ctx = ClientTerminalOverlay.Ctx.of(mc, camera, viewPose);
 
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
         RenderSystem.disableDepthTest();
+        RenderSystem.disableCull();
         RenderSystem.setShader(GameRenderer::getPositionColorShader);
-        RenderSystem.lineWidth(2.5F);
         Tesselator tesselator = Tesselator.getInstance();
         BufferBuilder buffer = tesselator.getBuilder();
-        buffer.begin(VertexFormat.Mode.DEBUG_LINES, DefaultVertexFormat.POSITION_COLOR);
-        ClientTerminalOverlay.drawBox(buffer, matrix, cam,
+        buffer.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        ClientTerminalOverlay.drawThickBox(buffer, ctx,
             c.add(-half, -half, -half), c.add(half, half, half), 1.0F, 0.85F, 0.2F, 0.9F);
-        Vec3 axis = ClientHitcam.shellDir().scale(half * 1.8D);
-        ClientTerminalOverlay.drawLine(buffer, matrix, cam,
-            c.subtract(axis), c.add(axis), 1.0F, 0.85F, 0.2F, 0.75F);
+        Vec3 axis = ClientHitcam.shellDir().scale(half * 1.6D);
+        ClientTerminalOverlay.drawThickLine(buffer, ctx,
+            c.subtract(axis), c.add(axis), 1.0F, 0.85F, 0.2F, 0.8F);
         tesselator.end();
-        RenderSystem.lineWidth(1.0F);
+        RenderSystem.enableCull();
         RenderSystem.enableDepthTest();
         RenderSystem.disableBlend();
     }
@@ -398,40 +412,25 @@ public final class ClientHitcamPiP {
         return null;
     }
 
-    private static void renderGhostStreak(Minecraft mc, Camera camera) {
-        Vec3 pos = ClientHitcam.shellPos();
+    private static void renderGhostStreak(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
+        Vec3 pos = ClientHitcam.shellPos(partialTick);
         Vec3 dir = ClientHitcam.shellDir();
-        Vec3 cam = camera.getPosition();
-        Vec3 mid = pos.subtract(dir.scale(0.5D));
-        Vec3 toCamera = cam.subtract(mid);
-        Vec3 side = dir.cross(toCamera);
-        if (side.lengthSqr() < 1.0e-6D) side = new Vec3(1, 0, 0);
-        side = side.normalize().scale(0.22D);
         Vec3 tail = pos.subtract(dir.scale(1.6D));
-        PoseStack pose = new PoseStack();
-        var buffers = mc.renderBuffers().bufferSource();
-        var buffer = buffers.getBuffer(net.minecraft.client.renderer.RenderType.lightning());
-        Matrix4f matrix = pose.last().pose();
-        quad(buffer, matrix, tail, pos, side, cam, 1.0F, 0.8F, 0.3F, 0.85F);
-        buffers.endBatch(net.minecraft.client.renderer.RenderType.lightning());
-    }
+        ClientTerminalOverlay.Ctx ctx = ClientTerminalOverlay.Ctx.of(mc, camera, viewPose);
 
-    private static void quad(com.mojang.blaze3d.vertex.VertexConsumer buffer, Matrix4f matrix, Vec3 start, Vec3 end,
-                             Vec3 side, Vec3 cam, float red, float green, float blue, float alpha) {
-        Vec3 s0 = start.subtract(side).subtract(cam);
-        Vec3 s1 = start.add(side).subtract(cam);
-        Vec3 e1 = end.add(side).subtract(cam);
-        Vec3 e0 = end.subtract(side).subtract(cam);
-        vertex(buffer, matrix, s0, red, green, blue, alpha * 0.2F);
-        vertex(buffer, matrix, s1, red, green, blue, alpha * 0.2F);
-        vertex(buffer, matrix, e1, red, green, blue, alpha);
-        vertex(buffer, matrix, e0, red, green, blue, alpha);
-    }
-
-    private static void vertex(com.mojang.blaze3d.vertex.VertexConsumer buffer, Matrix4f matrix, Vec3 pos,
-                               float red, float green, float blue, float alpha) {
-        buffer.vertex(matrix, (float) pos.x, (float) pos.y, (float) pos.z)
-            .color(red, green, blue, alpha).endVertex();
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableDepthTest();
+        RenderSystem.disableCull();
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        Tesselator tesselator = Tesselator.getInstance();
+        BufferBuilder buffer = tesselator.getBuilder();
+        buffer.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+        ClientTerminalOverlay.drawThickLine(buffer, ctx, tail, pos, 1.0F, 0.8F, 0.3F, 0.9F);
+        tesselator.end();
+        RenderSystem.enableCull();
+        RenderSystem.enableDepthTest();
+        RenderSystem.disableBlend();
     }
 
     private static void updateGhost(Minecraft mc) {
