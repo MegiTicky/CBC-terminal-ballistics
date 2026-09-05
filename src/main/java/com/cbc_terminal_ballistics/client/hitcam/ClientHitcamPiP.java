@@ -172,13 +172,18 @@ public final class ClientHitcamPiP {
 
         mc.renderBuffers().bufferSource().endBatch();
 
-        // Back up the main screen (color + depth) so the HUD and any later
-        // rendering see the original frame.
+        // Back up the main screen (color only) so the HUD and any later
+        // rendering see the original frame. Depth is deliberately not copied:
+        // blitting depth between framebuffers with different depth formats is
+        // invalid in GL and rejects the whole call, color included, which
+        // would silently leave the main screen unrestored. Nothing after this
+        // stage needs the old depth (the hand render clears it, the next frame
+        // clears color+depth).
         GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
         GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, backupTarget.frameBufferId);
         GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
             0, 0, backupTarget.width, backupTarget.height,
-            GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
+            GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
 
         Matrix4f oldProjection = RenderSystem.getProjectionMatrix();
         try {
@@ -191,7 +196,14 @@ public final class ClientHitcamPiP {
             poseStack.mulPose(com.mojang.math.Axis.XP.rotationDegrees(pitch));
             poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(yaw + 180.0F));
 
-            Matrix4f projection = mc.gameRenderer.getProjectionMatrix((double) mc.options.fov().get());
+            int dispW = Mth.clamp(TBConfig.HITCAM_PIP_DISPLAY_WIDTH.get(), 80, 960);
+            int dispH = Mth.clamp(TBConfig.HITCAM_PIP_DISPLAY_HEIGHT.get(), 50, 540);
+            // Own aspect (the display window's), not the monitor's, or the
+            // scene is squashed on ultrawide screens.
+            Matrix4f projection = new Matrix4f().perspective(
+                (float) Math.toRadians(mc.options.fov().get()),
+                (float) dispW / dispH, 0.05F,
+                Math.min(mc.options.renderDistance().get() * 16.0F + 64.0F, 1024.0F));
             RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
             mc.levelRenderer.prepareCullFrustum(poseStack, camera.getPosition(), projection);
@@ -212,12 +224,18 @@ public final class ClientHitcamPiP {
                 0, 0, target.width, target.height,
                 GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
         } finally {
-            // Restore the main screen exactly as it was before the pass.
+            // Restore the main screen from the backup, color only (see above).
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, backupTarget.frameBufferId);
             GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, mainTarget.frameBufferId);
             GL30.glBlitFramebuffer(0, 0, backupTarget.width, backupTarget.height,
                 0, 0, mainTarget.width, mainTarget.height,
-                GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
+                GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+            int blitError = GL11.glGetError();
+            if (blitError != 0 && !failureLogged) {
+                failureLogged = true;
+                com.mojang.logging.LogUtils.getLogger()
+                    .warn("CBCTB hitcam: main screen restore blit failed, GL error 0x{}", Integer.toHexString(blitError));
+            }
             RenderSystem.setProjectionMatrix(oldProjection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
             mainTarget.bindWrite(true);
         }
