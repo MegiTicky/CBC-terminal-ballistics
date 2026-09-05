@@ -97,12 +97,13 @@ public final class ClientHitcam {
 
         float endFraction = TBConfig.HITCAM_SLOWMO_END_FRACTION.get().floatValue();
         float minSpeed = TBConfig.HITCAM_SLOWMO_MIN_SPEED.get().floatValue();
+        float baseSpeed = TBConfig.HITCAM_BASE_SPEED.get().floatValue();
         float progress = (float) (playHead / span);
-        float speed = 1.0F;
+        float speed = baseSpeed;
         if (endFraction > 1.0e-3F && progress > 1.0F - endFraction) {
             float t = (progress - (1.0F - endFraction)) / endFraction;
             t = t * t * (3.0F - 2.0F * t);
-            speed = 1.0F - (1.0F - minSpeed) * t;
+            speed = baseSpeed - (baseSpeed - minSpeed) * t;
         }
         currentSpeed = speed;
         playHead = Math.min(span, playHead + delta * speed);
