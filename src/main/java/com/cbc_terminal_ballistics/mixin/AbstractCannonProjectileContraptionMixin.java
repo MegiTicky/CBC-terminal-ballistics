@@ -2,6 +2,7 @@ package com.cbc_terminal_ballistics.mixin;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
+import com.cbc_terminal_ballistics.util.IgnoredBlockSkip;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
@@ -83,12 +84,23 @@ public abstract class AbstractCannonProjectileContraptionMixin {
         argsOnly = false
     )
     private BlockHitResult ctb$modifyBlockResult(BlockHitResult original) {
+        Entity self = (Entity) (Object) this;
+        // Ignored world blocks (data-driven list) are skipped in the clip itself so they are
+        // never phased to air or removed — phasing disassembles Create contraptions anchored to
+        // them and pops attached blocks. This must run before contraption substitution: the
+        // vanilla clip result is what sees real world blocks such as a bearing anchor.
+        if (self.level() != null) {
+            BlockHitResult skipped = IgnoredBlockSkip.skipPastIgnored(self.level(), original);
+            if (skipped != original) {
+                ctb$pendingContraptionState = null;
+                return skipped;
+            }
+        }
         if (!TBConfig.HIT_CREATE_CONTRAPTIONS.get()) {
             ctb$pendingContraptionState = null;
             return original;
         }
 
-        Entity self = (Entity) (Object) this;
         if (self.level() == null) {
             ctb$pendingContraptionState = null;
             return original;
