@@ -151,6 +151,7 @@ public final class ClientImpactMarks {
     @SubscribeEvent
     public static void renderLevel(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_TRANSLUCENT_BLOCKS) return;
+        if (com.cbc_terminal_ballistics.client.hitcam.ClientHitcamPiP.isRenderingPip()) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null || MARKS.isEmpty()) return;
 

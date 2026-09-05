@@ -40,6 +40,15 @@ public final class TBConfig {
     public static final ForgeConfigSpec.IntValue MAX_RENDERED_EMBEDDED_SHELLS;
     public static final ForgeConfigSpec.IntValue COPYCAT_ARMOR_MAX_LEVEL;
 
+    public static final ForgeConfigSpec.BooleanValue HITCAM_ENABLED;
+    public static final ForgeConfigSpec.IntValue HITCAM_MAX_SAMPLES;
+    public static final ForgeConfigSpec.DoubleValue HITCAM_SLOWMO_END_FRACTION;
+    public static final ForgeConfigSpec.DoubleValue HITCAM_SLOWMO_MIN_SPEED;
+    public static final ForgeConfigSpec.IntValue HITCAM_PIP_WIDTH;
+    public static final ForgeConfigSpec.IntValue HITCAM_PIP_HEIGHT;
+    public static final ForgeConfigSpec.ConfigValue<String> HITCAM_PIP_ANCHOR;
+    public static final ForgeConfigSpec.BooleanValue HITCAM_DISABLE_WITH_SHADERS;
+
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
 
@@ -88,6 +97,17 @@ public final class TBConfig {
 
         server.push("copycat_armor");
         COPYCAT_ARMOR_MAX_LEVEL = server.comment("Maximum armor level for copycat armor layer blocks. Changes require existing blocks to be updated with the Armor Upgrader tool.").defineInRange("maxLevel", 20, 1, 200);
+        server.pop();
+
+        server.push("hitcam");
+        HITCAM_ENABLED = server.comment("Record projectile flights so /cbctb hitcam can replay the last fired shell in a slow-motion picture-in-picture view.").define("hitcamEnabled", true);
+        HITCAM_MAX_SAMPLES = server.comment("Maximum recorded flight samples per projectile. 20 samples = 1 second of flight.").defineInRange("hitcamMaxSamples", 100, 20, 600);
+        HITCAM_SLOWMO_END_FRACTION = server.comment("Fraction of the replay's flight during which playback eases from normal speed into slow motion (0.3 = last 30%).").defineInRange("hitcamSlowmoEndFraction", 0.3, 0.0, 1.0);
+        HITCAM_SLOWMO_MIN_SPEED = server.comment("Slowest replay playback speed reached at impact (1.0 = real time).").defineInRange("hitcamSlowmoMinSpeed", 0.12, 0.01, 1.0);
+        HITCAM_PIP_WIDTH = server.comment("Picture-in-picture replay width in GUI-scaled pixels.").defineInRange("hitcamPipWidth", 480, 120, 1920);
+        HITCAM_PIP_HEIGHT = server.comment("Picture-in-picture replay height in GUI-scaled pixels.").defineInRange("hitcamPipHeight", 270, 80, 1080);
+        HITCAM_PIP_ANCHOR = server.comment("Corner of the screen the replay window is pinned to. One of TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT.").defineInList("hitcamPipAnchor", "TOP_RIGHT", List.of("TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"));
+        HITCAM_DISABLE_WITH_SHADERS = server.comment("Disable the picture-in-picture replay when a shader pack (Oculus/Iris) is loaded, as nested world rendering breaks under shader pipelines.").define("hitcamDisableWithShaders", true);
         server.pop();
 
         SERVER_SPEC = server.build();

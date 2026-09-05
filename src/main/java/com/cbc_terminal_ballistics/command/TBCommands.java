@@ -12,6 +12,8 @@ import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
+import com.cbc_terminal_ballistics.network.ClientboundHitcamPacket;
+import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
 import net.minecraft.ChatFormatting;
@@ -23,6 +25,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraftforge.network.PacketDistributor;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraftforge.fml.ModList;
@@ -60,7 +63,48 @@ public final class TBCommands {
             .then(Commands.literal("checkarmor")
                 .executes(ctx -> checkArmor(ctx.getSource(), false))
                 .then(Commands.literal("fix")
-                    .executes(ctx -> checkArmor(ctx.getSource(), true)))));
+                    .executes(ctx -> checkArmor(ctx.getSource(), true))))
+            .then(Commands.literal("hitcam")
+                .executes(ctx -> hitcamReplay(ctx.getSource()))
+                .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource())))));
+    }
+
+    private static int hitcamReplay(CommandSourceStack source) {
+        try {
+            if (!TBConfig.HITCAM_ENABLED.get()) {
+                source.sendFailure(Component.literal("Hitcam recording is disabled in config."));
+                return 0;
+            }
+            ServerPlayer player = source.getPlayerOrException();
+            List<com.cbc_terminal_ballistics.hitcam.HitcamSample> samples =
+                com.cbc_terminal_ballistics.hitcam.HitcamRecorder.lastSamples();
+            if (samples.size() < 2) {
+                source.sendFailure(Component.literal("No projectile flight recorded yet. Fire a cannon shell first."));
+                return 0;
+            }
+            net.minecraft.world.entity.Entity last = com.cbc_terminal_ballistics.hitcam.HitcamRecorder.lastProjectile();
+            String typeKey = net.minecraft.world.entity.EntityType.getKey(last.getType()).toString();
+            TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new ClientboundHitcamPacket(typeKey, samples, null));
+            source.sendSuccess(() -> Component.literal("Playing hitcam replay of the last projectile flight (" + samples.size() + " samples, " + typeKey + ")."), false);
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal("Error: " + ex.getMessage()));
+            return 0;
+        }
+    }
+
+    private static int hitcamStop(CommandSourceStack source) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new ClientboundHitcamPacket("", List.of(), null));
+            source.sendSuccess(() -> Component.literal("Stopped hitcam replay."), false);
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal("Error: " + ex.getMessage()));
+            return 0;
+        }
     }
 
     private static int status(CommandSourceStack source) {
