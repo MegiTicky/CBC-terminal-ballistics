@@ -24,6 +24,8 @@ import net.minecraftforge.client.event.RenderLevelStageEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL30;
 
 import java.lang.reflect.Method;
 import java.util.Optional;
@@ -40,6 +42,7 @@ public final class ClientHitcamPiP {
     private static final ThreadLocal<Boolean> RENDERING_PIP = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private static RenderTarget target;
+    private static RenderTarget backupTarget;
     private static Entity ghostShell;
     private static boolean ghostFailed;
     private static boolean shaderWarningShown;
@@ -98,6 +101,12 @@ public final class ClientHitcamPiP {
             if (mainProjection != null) {
                 RenderSystem.setProjectionMatrix(mainProjection, mainSorting);
             }
+            if (fullScene) {
+                // Leave the level renderer with the main view's cull frustum,
+                // since the PiP pass replaced it.
+                mc.levelRenderer.prepareCullFrustum(event.getPoseStack(),
+                    mc.gameRenderer.getMainCamera().getPosition(), event.getProjectionMatrix());
+            }
             mc.getMainRenderTarget().bindWrite(true);
         }
     }
@@ -119,40 +128,98 @@ public final class ClientHitcamPiP {
         invokeSetPosition(camera, camPos);
         invokeSetRotation(camera, yaw, pitch);
 
-        target.bindWrite(true);
-        if (minimal) {
-            // Transparent clear: the ghost/streak composites over the live world view.
-            RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 0.0F);
-        } else {
-            RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        if (!fullScene) {
+            renderMinimal(mc, camera, partialTick);
+            return;
         }
+        renderFullScene(mc, camera, partialTick, yaw, pitch);
+    }
+
+    /**
+     * Lightweight fallback for active shader packs: draws just the ghost shell
+     * into the private target with a transparent background, no nested world
+     * render, so the ghost composites over the live view in the PiP window.
+     */
+    private static void renderMinimal(Minecraft mc, Camera camera, float partialTick) {
+        target.bindWrite(true);
+        RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 0.0F);
         RenderSystem.clear(16640, Minecraft.ON_OSX);
         RenderSystem.enableDepthTest();
 
         Matrix4f projection = new Matrix4f().perspective(
             (float) Math.toRadians(mc.options.fov().get()),
-            (float) width / height, 0.05F,
+            (float) target.width / target.height, 0.05F,
             Math.min(mc.options.renderDistance().get() * 16.0F + 64.0F, 1024.0F));
         RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
-        // GameRenderer normally hands renderLevel a pose stack carrying the
-        // camera's inverse rotation; without it the scene renders disoriented.
-        PoseStack poseStack = new PoseStack();
-        poseStack.mulPose(camera.rotation().conjugate(new org.joml.Quaternionf()));
+        renderGhost(mc, camera, partialTick);
+        mc.renderBuffers().bufferSource().endBatch();
+    }
 
-        if (fullScene) {
-            net.minecraft.client.renderer.FogRenderer.setupFog(camera,
-                net.minecraft.client.renderer.FogRenderer.FogMode.FOG_TERRAIN,
-                mc.options.renderDistance().get() * 16.0F,
-                false, partialTick);
+    /**
+     * Full scene pass using the same proven sandwich as known-working PiP
+     * implementations: back up the main framebuffer, render the secondary
+     * view into the main target (mods like Oculus may rebind it, so a private
+     * target is not reliable), blit the frame into the private PiP target,
+     * then restore the backup. Also re-prepares the cull frustum for the PiP
+     * camera, which renderLevel does not do itself.
+     */
+    private static void renderFullScene(Minecraft mc, Camera camera, float partialTick, float yaw, float pitch) {
+        RenderTarget mainTarget = mc.getMainRenderTarget();
+        if (backupTarget == null || backupTarget.width != mainTarget.width || backupTarget.height != mainTarget.height) {
+            if (backupTarget != null) backupTarget.destroyBuffers();
+            backupTarget = new TextureTarget(mainTarget.width, mainTarget.height, true, Minecraft.ON_OSX);
+        }
+
+        // Back up the main screen (color + depth) so the HUD and any later
+        // rendering see the original frame.
+        GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
+        GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, backupTarget.frameBufferId);
+        GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
+            0, 0, backupTarget.width, backupTarget.height,
+            GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
+
+        Matrix4f oldProjection = RenderSystem.getProjectionMatrix();
+        try {
+            mainTarget.bindWrite(true);
+            RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 1.0F);
+            RenderSystem.clear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT, false);
+
+            // Camera-inverse rotation built the same way GameRenderer does.
+            PoseStack poseStack = new PoseStack();
+            poseStack.mulPose(com.mojang.math.Axis.XP.rotationDegrees(pitch));
+            poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(yaw + 180.0F));
+
+            Matrix4f projection = mc.gameRenderer.getProjectionMatrix((double) mc.options.fov().get());
+            RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
+
+            mc.levelRenderer.prepareCullFrustum(poseStack, camera.getPosition(), projection);
+            mc.gameRenderer.lightTexture().turnOnLightLayer();
             mc.levelRenderer.renderLevel(
                 poseStack, partialTick, System.nanoTime(), false,
                 camera, (GameRenderer) mc.gameRenderer, mc.gameRenderer.lightTexture(), projection);
+            mc.gameRenderer.lightTexture().turnOffLightLayer();
             mc.renderBuffers().bufferSource().endBatch();
-        }
 
-        renderGhost(mc, camera, partialTick);
-        mc.renderBuffers().bufferSource().endBatch();
+            renderGhost(mc, camera, partialTick);
+            mc.renderBuffers().bufferSource().endBatch();
+
+            // Copy the finished frame into the private PiP texture.
+            GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
+            GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, target.frameBufferId);
+            GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
+                0, 0, target.width, target.height,
+                GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+        } finally {
+            // Restore the main screen exactly as it was before the pass.
+            GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, backupTarget.frameBufferId);
+            GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, mainTarget.frameBufferId);
+            GL30.glBlitFramebuffer(0, 0, backupTarget.width, backupTarget.height,
+                0, 0, mainTarget.width, mainTarget.height,
+                GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
+            RenderSystem.setProjectionMatrix(oldProjection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
+            mainTarget.bindWrite(true);
+        }
     }
 
     /**
