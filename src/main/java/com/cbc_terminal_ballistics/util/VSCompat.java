@@ -55,6 +55,16 @@ public final class VSCompat {
     }
 
     /**
+     * True when a position uses VS shipyard coordinates (the magnitude VS
+     * reserves for ship-local block positions, which the rest of this class
+     * assumes when deciding whether a point needs world conversion).
+     */
+    public static boolean isShipyardCoordinate(Vec3 position) {
+        return position != null && (position.x < -100000 || position.x > 100000
+            || position.z < -100000 || position.z > 100000);
+    }
+
+    /**
      * Distance check that understands VS shipyard coordinates on either endpoint.
      */
     public static double squaredDistanceBetweenInclShips(Level level, Vec3 first, Vec3 second) {

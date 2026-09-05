@@ -218,12 +218,26 @@ public final class ClientHitcam {
             return ClientTerminalView.cameraPos(partialTick);
         }
         Vec3 dir = shellDir();
+        if (isArtillery()) {
+            // Further 3/4 chase view: behind and to the side of the shell, so the
+            // projectile model is clearly visible against the flight path.
+            Vec3 pos = shellPos();
+            Vec3 side = dir.cross(new Vec3(0, 1, 0));
+            if (side.lengthSqr() < 1.0e-6D) side = new Vec3(1, 0, 0);
+            side = side.normalize();
+            return pos.subtract(dir.scale(7.5D)).add(0.0D, 2.5D, 0.0D).add(side.scale(2.0D));
+        }
         return shellPos().subtract(dir.scale(4.5D)).add(0.0D, 1.2D, 0.0D);
     }
 
     public static Vec3 lookTarget(float partialTick) {
         if (isTerminal()) {
             return ClientTerminalView.center(partialTick);
+        }
+        if (isArtillery()) {
+            // Lead the shell slightly so it sits below-center with the impact
+            // area ahead, instead of filling the window dead-center.
+            return shellPos().add(shellDir().scale(3.0D));
         }
         // Look straight at the shell so it stays centered in the PiP window.
         return shellPos();

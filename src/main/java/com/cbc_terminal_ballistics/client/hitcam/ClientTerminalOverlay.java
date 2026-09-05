@@ -23,30 +23,44 @@ public final class ClientTerminalOverlay {
     private static final float[] PENETRATE_COLOR = {0.25F, 1.0F, 0.3F};
     private static final float[] STOP_COLOR = {1.0F, 0.25F, 0.2F};
     private static final float[] BOUNCE_COLOR = {1.0F, 0.72F, 0.15F};
+    private static final double PLATE_HALF = 0.62D;
 
     public static void render(Minecraft mc, Camera camera, float partialTick) {
         if (!ClientTerminalView.active()) return;
         float alpha = fadeAlpha(partialTick);
         if (alpha <= 0.02F) return;
 
-        Vec3 cam = camera.getPosition();
-        PoseStack poseStack = new PoseStack();
-        poseStack.translate(-cam.x, -cam.y, -cam.z);
-        MultiBufferSource.BufferSource buffers = mc.renderBuffers().bufferSource();
-        VertexConsumer lines = buffers.getBuffer(RenderType.lines());
+        // X-ray diagram: draw over the rendered world, never hidden behind it.
+        // Wireframe geometry hugging block faces would otherwise be depth-tested
+        // away by the very plates it describes.
+        com.mojang.blaze3d.systems.RenderSystem.disableDepthTest();
+        try {
+            Vec3 cam = camera.getPosition();
+            PoseStack poseStack = new PoseStack();
+            poseStack.translate(-cam.x, -cam.y, -cam.z);
+            MultiBufferSource.BufferSource buffers = mc.renderBuffers().bufferSource();
+            VertexConsumer lines = buffers.getBuffer(RenderType.lines());
 
-        drawPath(lines, poseStack, cam, partialTick, alpha);
-        drawPlates(lines, poseStack, cam, partialTick, alpha);
-        drawSpall(lines, poseStack, cam, partialTick, alpha);
-        drawEntityHits(lines, poseStack, cam, partialTick, alpha);
+            drawPath(lines, poseStack, cam, partialTick, alpha);
+            drawPlates(lines, poseStack, cam, partialTick, alpha);
+            drawSpall(lines, poseStack, cam, partialTick, alpha);
+            drawEntityHits(lines, poseStack, cam, partialTick, alpha);
 
-        buffers.endBatch(RenderType.lines());
+            buffers.endBatch(RenderType.lines());
+        } finally {
+            com.mojang.blaze3d.systems.RenderSystem.enableDepthTest();
+        }
     }
 
     private static float fadeAlpha(float partialTick) {
         int duration = ClientTerminalView.duration();
-        float remaining = duration - ClientTerminalView.age(partialTick);
-        return Mth.clamp(remaining / 20.0F, 0.0F, 1.0F);
+        float age = ClientTerminalView.age(partialTick);
+        float alpha = 1.0F;
+        // Short fade-in so the diagram does not pop in mid-turn.
+        if (age < 12.0F) alpha = Math.min(alpha, age / 12.0F);
+        float remaining = duration - age;
+        alpha = Math.min(alpha, Mth.clamp(remaining / 20.0F, 0.0F, 1.0F));
+        return alpha;
     }
 
     private static void drawPath(VertexConsumer lines, PoseStack poseStack, Vec3 cam, float partialTick, float alpha) {
@@ -67,13 +81,13 @@ public final class ClientTerminalOverlay {
         for (ClientboundTerminalBallisticsPacket.Plate plate : plates) {
             Vec3 pos = ClientTerminalView.toWorld(plate.pos(), partialTick);
             float[] color = colorFor(plate.outcome());
-            drawBox(lines, poseStack, cam, pos.subtract(0.55D, 0.55D, 0.55D), pos.add(0.55D, 0.55D, 0.55D),
+            drawBox(lines, poseStack, cam, pos.subtract(PLATE_HALF, PLATE_HALF, PLATE_HALF), pos.add(PLATE_HALF, PLATE_HALF, PLATE_HALF),
                 color[0], color[1], color[2], alpha);
             if (plate.broken()) {
                 // Destroyed plate: diagonal cross over the box face.
-                drawLine(lines, poseStack, cam, pos.subtract(0.55D, 0.55D, 0.55D), pos.add(0.55D, 0.55D, 0.55D),
+                drawLine(lines, poseStack, cam, pos.subtract(PLATE_HALF, PLATE_HALF, PLATE_HALF), pos.add(PLATE_HALF, PLATE_HALF, PLATE_HALF),
                     color[0], color[1], color[2], alpha * 0.8F);
-                drawLine(lines, poseStack, cam, pos.add(0.55D, 0.55D, -0.55D), pos.add(-0.55D, -0.55D, 0.55D),
+                drawLine(lines, poseStack, cam, pos.add(PLATE_HALF, PLATE_HALF, -PLATE_HALF), pos.add(-PLATE_HALF, -PLATE_HALF, PLATE_HALF),
                     color[0], color[1], color[2], alpha * 0.8F);
             }
         }
@@ -109,7 +123,7 @@ public final class ClientTerminalOverlay {
             Vec3 pos = ClientTerminalView.toWorld(block.pos(), partialTick);
             float a = alpha * (block.broken() ? 0.95F : 0.55F);
             float[] color = block.broken() ? STOP_COLOR : new float[]{0.75F, 0.75F, 0.8F};
-            drawBox(lines, poseStack, cam, pos.subtract(0.45D, 0.45D, 0.45D), pos.add(0.45D, 0.45D, 0.45D),
+            drawBox(lines, poseStack, cam, pos.subtract(0.5D, 0.5D, 0.5D), pos.add(0.5D, 0.5D, 0.5D),
                 color[0], color[1], color[2], a);
         }
     }

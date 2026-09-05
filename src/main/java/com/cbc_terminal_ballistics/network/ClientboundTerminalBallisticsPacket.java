@@ -15,10 +15,10 @@ import java.util.function.Supplier;
  * The full War-Thunder-style x-ray diagram of one shell-vs-armour engagement:
  * the flight path, per-plate outcomes, the spall cone summary and every entity
  * the shell or its spall touched. All points are in world space when
- * {@code anchorUuid} is null; otherwise they are contraption-local and the
- * client re-anchors them to the moving vehicle each frame.
+ * {@code anchor} is null; otherwise they are vehicle-local and the client
+ * re-anchors them to the moving vehicle each frame.
  */
-public record ClientboundTerminalBallisticsPacket(int projectileId, String summary, String anchorUuid,
+public record ClientboundTerminalBallisticsPacket(int projectileId, String summary, Anchor anchor,
                                                   List<HitcamSample> path, List<Plate> plates,
                                                   Spall spall, List<EntityHit> entities) {
 
@@ -29,6 +29,25 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
     public record SpallBlock(Vec3 pos, boolean broken) {}
 
     public record Spall(Vec3 origin, Vec3 dir, double coneCos, double range, int fragments, List<SpallBlock> blocks) {}
+
+    /**
+     * How the packet's coordinates map back to the world. {@code CONTRAPTION}
+     * anchors to a Create contraption entity by UUID (points were converted to
+     * contraption-local space). {@code VS} anchors to a Valkyrien Skies ship
+     * via one ship-local reference point ({@code localRef}, in shipyard
+     * coordinates) and its world position at snapshot time ({@code worldRef});
+     * the client resolves the live ship and re-derives both per frame. A null
+     * anchor means every point is plain world space.
+     */
+    public record Anchor(String kind, String uuid, Vec3 localRef, Vec3 worldRef) {
+        public static Anchor contraption(String uuid) {
+            return new Anchor("CONTRAPTION", uuid, null, null);
+        }
+
+        public static Anchor vs(Vec3 localRef, Vec3 worldRef) {
+            return new Anchor("VS", null, localRef, worldRef);
+        }
+    }
 
     private static void writeVec3(FriendlyByteBuf buf, Vec3 v) {
         buf.writeDouble(v.x);
@@ -43,9 +62,15 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
     public void encode(FriendlyByteBuf buf) {
         buf.writeVarInt(projectileId);
         buf.writeUtf(summary, 256);
-        buf.writeBoolean(anchorUuid != null);
-        if (anchorUuid != null) {
-            buf.writeUtf(anchorUuid, 64);
+        buf.writeBoolean(anchor != null);
+        if (anchor != null) {
+            buf.writeUtf(anchor.kind(), 16);
+            if ("CONTRAPTION".equals(anchor.kind())) {
+                buf.writeUtf(anchor.uuid(), 64);
+            } else if ("VS".equals(anchor.kind())) {
+                writeVec3(buf, anchor.localRef());
+                writeVec3(buf, anchor.worldRef());
+            }
         }
         buf.writeVarInt(path.size());
         for (HitcamSample s : path) {
@@ -89,7 +114,15 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
     public static ClientboundTerminalBallisticsPacket decode(FriendlyByteBuf buf) {
         int projectileId = buf.readVarInt();
         String summary = buf.readUtf(256);
-        String anchorUuid = buf.readBoolean() ? buf.readUtf(64) : null;
+        Anchor anchor = null;
+        if (buf.readBoolean()) {
+            String kind = buf.readUtf(16);
+            if ("CONTRAPTION".equals(kind)) {
+                anchor = Anchor.contraption(buf.readUtf(64));
+            } else if ("VS".equals(kind)) {
+                anchor = Anchor.vs(readVec3(buf), readVec3(buf));
+            }
+        }
         int pathCount = buf.readVarInt();
         List<HitcamSample> path = new ArrayList<>(Math.min(pathCount, 1024));
         for (int i = 0; i < pathCount; i++) {
@@ -121,7 +154,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
         for (int i = 0; i < entityCount; i++) {
             entities.add(new EntityHit(buf.readVarInt(), readVec3(buf), buf.readFloat(), buf.readBoolean()));
         }
-        return new ClientboundTerminalBallisticsPacket(projectileId, summary, anchorUuid, path, plates, spall, entities);
+        return new ClientboundTerminalBallisticsPacket(projectileId, summary, anchor, path, plates, spall, entities);
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

@@ -280,34 +280,49 @@ public final class ClientHitcamPiP {
      * if the CBC renderer misbehaves with a fake entity.
      */
     private static void renderGhost(Minecraft mc, Camera camera, float partialTick) {
-        // Artillery mode has a real entity in the nested pass, so nothing to
-        // draw here in full scene; the streak marks it in the minimal pass.
         if (ClientHitcam.isArtillery()) {
+            // A real shell exists in the world and is drawn by the nested level
+            // pass, but at this chase distance the dispatcher pass renders it
+            // crisply in both the full and the shader-minimal PiP frame.
+            Entity target = ClientHitcam.artilleryTarget();
+            if (target != null) {
+                if (renderEntity(mc, camera, target, partialTick)) return;
+            }
             renderGhostStreak(mc, camera);
             return;
         }
         if (!ClientHitcam.isReplay()) return;
         if (ghostShell == null || mc.level == null) return;
+        if (renderEntity(mc, camera, ghostShell, partialTick)) return;
+        renderGhostStreak(mc, camera);
+    }
+
+    /**
+     * Render one entity through the entity dispatcher (which the nested level
+     * pass has prepared for our PiP camera). Returns false when the renderer
+     * cannot be resolved so the caller can fall back.
+     */
+    private static boolean renderEntity(Minecraft mc, Camera camera, Entity entity, float partialTick) {
+        if (mc.level == null) return false;
         Vec3 cam = camera.getPosition();
-        double rx = ghostShell.getX() - cam.x;
-        double ry = ghostShell.getY() - cam.y;
-        double rz = ghostShell.getZ() - cam.z;
+        double rx = entity.getX() - cam.x;
+        double ry = entity.getY() - cam.y;
+        double rz = entity.getZ() - cam.z;
         try {
             net.minecraft.client.renderer.entity.EntityRenderer<? super Entity> renderer =
-                mc.getEntityRenderDispatcher().getRenderer(ghostShell);
-            if (renderer != null) {
-                PoseStack pose = new PoseStack();
-                var buffers = mc.renderBuffers().bufferSource();
-                setGhostOrientation(ghostShell, ClientHitcam.shellDir());
-                mc.getEntityRenderDispatcher().render(ghostShell, rx, ry, rz,
-                    ghostShell.getYRot(), partialTick, pose, buffers,
-                    net.minecraft.client.renderer.LightTexture.FULL_BRIGHT);
-                buffers.endBatch();
-                return;
-            }
+                mc.getEntityRenderDispatcher().getRenderer(entity);
+            if (renderer == null) return false;
+            PoseStack pose = new PoseStack();
+            var buffers = mc.renderBuffers().bufferSource();
+            setGhostOrientation(entity, ClientHitcam.shellDir());
+            mc.getEntityRenderDispatcher().render(entity, rx, ry, rz,
+                entity.getYRot(), partialTick, pose, buffers,
+                net.minecraft.client.renderer.LightTexture.FULL_BRIGHT);
+            buffers.endBatch();
+            return true;
         } catch (Throwable ignored) {
+            return false;
         }
-        renderGhostStreak(mc, camera);
     }
 
     private static void setGhostOrientation(Entity ghost, Vec3 dir) {

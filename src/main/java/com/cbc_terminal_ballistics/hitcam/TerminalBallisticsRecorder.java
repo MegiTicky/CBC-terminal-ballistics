@@ -5,6 +5,8 @@ import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundTrackProjectilePacket;
 import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
+import com.cbc_terminal_ballistics.util.VSCompat;
+import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -44,6 +46,74 @@ public final class TerminalBallisticsRecorder {
         ServerPlayer audience;
         long firstEventGameTime = -1L;
         boolean hasTerminalOutcome;
+    }
+
+    /**
+     * Coordinate frame the snapshot is stored in. Identity when there is no
+     * anchor (plain world space). A contraption frame converts world points
+     * with Create's toLocalVector; a VS frame converts world points into the
+     * ship's shipyard coordinates and passes points that are already shipyard
+     * (the mod's |x|/|z| &gt; 100000 convention) through untouched, since ship
+     * block positions arrive in that space directly.
+     */
+    private static final class ShipFrame {
+        @Nullable final ClientboundTerminalBallisticsPacket.Anchor anchor;
+        @Nullable private final Entity contraption;
+        @Nullable private final ServerLevel level;
+        @Nullable private final BlockPos vsShipyardPos;
+
+        private ShipFrame(@Nullable ClientboundTerminalBallisticsPacket.Anchor anchor, @Nullable Entity contraption,
+                          @Nullable ServerLevel level, @Nullable BlockPos vsShipyardPos) {
+            this.anchor = anchor;
+            this.contraption = contraption;
+            this.level = level;
+            this.vsShipyardPos = vsShipyardPos;
+        }
+
+        static ShipFrame contraption(Entity contraption) {
+            return new ShipFrame(
+                ClientboundTerminalBallisticsPacket.Anchor.contraption(contraption.getUUID().toString()),
+                contraption, null, null);
+        }
+
+        static ShipFrame vs(ServerLevel level, BlockPos shipyardPos,
+                            ClientboundTerminalBallisticsPacket.Anchor anchor) {
+            return new ShipFrame(anchor, null, level, shipyardPos);
+        }
+
+        static ShipFrame world() {
+            return new ShipFrame(null, null, null, null);
+        }
+
+        /** World-space point -> vehicle-local. */
+        Vec3 toLocal(Vec3 world) {
+            if (contraption != null) return toAnchor(contraption, world);
+            if (vsShipyardPos != null) {
+                Vec3 local = VSCompat.toShipCoordinates(level, vsShipyardPos, world);
+                return local != null ? local : world;
+            }
+            return world;
+        }
+
+        /** A recorded point that may already be ship-local (VS plates/spall) or world. */
+        Vec3 toItemLocal(Vec3 recorded) {
+            if (contraption != null) return toAnchor(contraption, recorded);
+            if (vsShipyardPos != null) {
+                return VSCompat.isShipyardCoordinate(recorded) ? recorded : toLocal(recorded);
+            }
+            return recorded;
+        }
+
+        /** World-space direction -> vehicle-local (rotation only, via two-point sampling). */
+        Vec3 toLocalDir(Vec3 worldDir) {
+            if (contraption != null) return toAnchorDirection(contraption, worldDir);
+            if (vsShipyardPos != null) {
+                Vec3 from = VSCompat.toShipCoordinates(level, vsShipyardPos, Vec3.ZERO);
+                Vec3 to = VSCompat.toShipCoordinates(level, vsShipyardPos, worldDir);
+                if (from != null && to != null) return to.subtract(from);
+            }
+            return worldDir;
+        }
     }
 
     // ---- hooks -----------------------------------------------------------------
@@ -154,22 +224,17 @@ public final class TerminalBallisticsRecorder {
         if (session.plates.isEmpty() || session.audience == null) return;
         if (!(projectile.level() instanceof ServerLevel level)) return;
 
-        boolean anchored = session.anchorUuid != null;
-        Entity anchor = null;
-        if (anchored) {
-            anchor = findEntityByUuid(level, session.anchorUuid);
-            if (anchor == null) anchored = false;
-        }
+        ShipFrame frame = resolveFrame(level, session);
 
         List<HitcamSample> rawPath = HitcamRecorder.samplesOf(projectile);
         List<HitcamSample> path = new ArrayList<>(rawPath.size());
         for (HitcamSample sample : rawPath) {
-            path.add(anchoredSample(anchor, sample));
+            path.add(anchoredSample(frame, sample));
         }
 
         List<ClientboundTerminalBallisticsPacket.Plate> plates = new ArrayList<>(session.plates.size());
         for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
-            plates.add(new ClientboundTerminalBallisticsPacket.Plate(toAnchor(anchor, plate.pos()),
+            plates.add(new ClientboundTerminalBallisticsPacket.Plate(frame.toItemLocal(plate.pos()),
                 plate.outcome(), plate.damage(), plate.toughness(), plate.broken()));
         }
 
@@ -177,24 +242,54 @@ public final class TerminalBallisticsRecorder {
         if (session.spall != null) {
             List<ClientboundTerminalBallisticsPacket.SpallBlock> blocks = new ArrayList<>(session.spallBlocks.size());
             for (ClientboundTerminalBallisticsPacket.SpallBlock block : session.spallBlocks) {
-                blocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(toAnchor(anchor, block.pos()), block.broken()));
+                blocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(frame.toItemLocal(block.pos()), block.broken()));
             }
             ClientboundTerminalBallisticsPacket.Spall converted = session.spall;
-            spall = new ClientboundTerminalBallisticsPacket.Spall(toAnchor(anchor, converted.origin()),
-                toAnchorDirection(anchor, converted.dir()), converted.coneCos(), converted.range(),
+            spall = new ClientboundTerminalBallisticsPacket.Spall(frame.toItemLocal(converted.origin()),
+                frame.toLocalDir(converted.dir()), converted.coneCos(), converted.range(),
                 converted.fragments(), blocks);
         }
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entities = new ArrayList<>(session.entities.size());
         for (ClientboundTerminalBallisticsPacket.EntityHit hit : session.entities) {
             entities.add(new ClientboundTerminalBallisticsPacket.EntityHit(
-                hit.entityId(), toAnchor(anchor, hit.pos()), hit.damage(), hit.killed()));
+                hit.entityId(), frame.toLocal(hit.pos()), hit.damage(), hit.killed()));
         }
 
         String summary = buildSummary(session);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
-            projectile.getId(), summary, anchored && anchor != null ? anchor.getUUID().toString() : null,
-            path, plates, spall, entities));
+            projectile.getId(), summary, frame.anchor, path, plates, spall, entities));
+    }
+
+    /**
+     * Choose the coordinate frame for the snapshot. A Create contraption anchor
+     * wins when the session resolved one. Otherwise, when the first plate lies
+     * on a Valkyrien ship (block positions arrive there in shipyard
+     * coordinates), the whole snapshot is anchored to that ship so the client
+     * can re-anchor it to the moving vessel. Falls back to plain world space.
+     */
+    private static ShipFrame resolveFrame(ServerLevel level, Session session) {
+        if (session.anchorUuid != null) {
+            Entity anchor = findEntityByUuid(level, session.anchorUuid);
+            if (anchor != null) {
+                return ShipFrame.contraption(anchor);
+            }
+        }
+        BlockPos vsPos = null;
+        for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
+            if (VSCompat.isShipyardCoordinate(plate.pos())) {
+                vsPos = BlockPos.containing(plate.pos());
+                break;
+            }
+        }
+        if (vsPos != null) {
+            Vec3 worldRef = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(vsPos));
+            if (worldRef != null && worldRef.distanceToSqr(Vec3.atCenterOf(vsPos)) > 1.0D) {
+                return ShipFrame.vs(level, vsPos, ClientboundTerminalBallisticsPacket.Anchor.vs(
+                    Vec3.atCenterOf(vsPos), worldRef));
+            }
+        }
+        return ShipFrame.world();
     }
 
     private static String buildSummary(Session session) {
@@ -215,10 +310,9 @@ public final class TerminalBallisticsRecorder {
         return sb.toString();
     }
 
-    private static HitcamSample anchoredSample(@Nullable Entity anchor, HitcamSample sample) {
-        if (anchor == null) return sample;
-        Vec3 local = toAnchor(anchor, new Vec3(sample.x(), sample.y(), sample.z()));
-        Vec3 localDir = toAnchorDirection(anchor, new Vec3(sample.ox(), sample.oy(), sample.oz()));
+    private static HitcamSample anchoredSample(ShipFrame frame, HitcamSample sample) {
+        Vec3 local = frame.toLocal(new Vec3(sample.x(), sample.y(), sample.z()));
+        Vec3 localDir = frame.toLocalDir(new Vec3(sample.ox(), sample.oy(), sample.oz()));
         if (localDir.lengthSqr() < 1.0e-8D) localDir = new Vec3(sample.ox(), sample.oy(), sample.oz());
         localDir = localDir.normalize();
         return new HitcamSample(local.x, local.y, local.z, (float) localDir.x, (float) localDir.y, (float) localDir.z);
