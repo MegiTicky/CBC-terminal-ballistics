@@ -238,21 +238,27 @@ public final class ClientTerminalView {
     }
 
     /**
-     * The point the camera tracks, War-Thunder style: the shell itself while it
-     * flies, then an eased settle onto the terminal focus (spall origin if the
-     * plate spalled, else the final plate position) for the impact and spall
-     * phase.
+     * The point the camera watches: the animated replay shell while it flies
+     * in, but only up to the impact point — a pass-through shell continuing out
+     * the far side does not drag the view with it. From impact on, the look
+     * settles onto the terminal focus (spall origin if the plate spalled, else
+     * the final plate position) to follow the spall progression.
      */
     public static Vec3 lookPoint(float partialTick) {
         Vec3 focus = terminalFocus(partialTick);
         if (!hasPath || flightTicks <= 0.0D) return focus;
         float age = age(partialTick);
-        if (age < flightTicks) {
-            return toWorld(pathPointAt(Mth.clamp(age / flightTicks, 0.0D, 1.0D)), partialTick);
+        double impactTicks = spallAppear > 0.0D ? spallAppear
+            : (plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : flightTicks);
+        double impactFraction = Mth.clamp(impactTicks / flightTicks, 0.0D, 1.0D);
+        double progress = Math.min(Mth.clamp(age / flightTicks, 0.0D, 1.0D), impactFraction);
+        Vec3 follow = toWorld(pathPointAt(progress), partialTick);
+        if (age >= impactTicks) {
+            double blend = Mth.clamp((age - impactTicks) / 10.0D, 0.0D, 1.0D);
+            blend = blend * blend * (3.0D - 2.0D * blend);
+            return follow.lerp(focus, blend);
         }
-        double blend = Mth.clamp((age - flightTicks) / 10.0D, 0.0D, 1.0D);
-        blend = blend * blend * (3.0D - 2.0D * blend);
-        return toWorld(pathPointAt(1.0D), partialTick).lerp(focus, blend);
+        return follow;
     }
 
     /** Where the camera settles after the shell lands: spall site, final plate, or center. */
@@ -267,14 +273,14 @@ public final class ClientTerminalView {
     }
 
     /**
-     * Cinematic tracking camera: starts on the side the shell came from
-     * (looking at the impact face), follows the shell along its flight, then
-     * settles around the impact site while making a slow, eased ~115 degree
-     * turn into a side framing. Always re-anchored to the vehicle so a moving
-     * tank stays framed.
+     * Cinematic camera: a slow, eased ~115 degree turn starting on the side the
+     * shell came from (looking at the impact face) and settling into a side
+     * framing, orbited around the static diagram center while the look target
+     * ({@link #lookPoint}) tracks the replay action. Always re-anchored to the
+     * vehicle so a moving tank stays framed.
      */
     public static Vec3 cameraPos(float partialTick) {
-        Vec3 c = lookPoint(partialTick);
+        Vec3 c = center(partialTick);
         double r = orbitRadius;
         double age = age(partialTick);
         double sweepEnd = Math.max(1.0D, duration() * SWEEP_END_FRACTION);
