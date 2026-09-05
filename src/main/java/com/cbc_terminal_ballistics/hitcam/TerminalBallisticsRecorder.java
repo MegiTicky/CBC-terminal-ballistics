@@ -50,6 +50,8 @@ public final class TerminalBallisticsRecorder {
         boolean hasTerminalOutcome;
         /** Spall or the shell body reached non-armour structure behind the armour. */
         boolean internalDamage;
+        /** Raw shipyard position of the first VS plate, captured before world normalization. */
+        BlockPos vsAnchorPos;
     }
 
     /**
@@ -146,24 +148,45 @@ public final class TerminalBallisticsRecorder {
         if (session == null) return;
         if (session.firstEventGameTime < 0L) session.firstEventGameTime = projectile.level().getGameTime();
         if (session.plates.size() < MAX_PLATES) {
-            session.plates.add(new ClientboundTerminalBallisticsPacket.Plate(worldPos, outcome, damage, toughness, broken));
+            if (session.vsAnchorPos == null && VSCompat.isShipyardCoordinate(worldPos)) {
+                session.vsAnchorPos = BlockPos.containing(worldPos);
+            }
+            session.plates.add(new ClientboundTerminalBallisticsPacket.Plate(
+                normalizePoint(projectile, worldPos), outcome, damage, toughness, broken));
         }
         if (contraptionEntity != null && session.anchorUuid == null) session.anchorUuid = contraptionEntity.getUUID();
         if (!"PENETRATE".equals(outcome)) session.hasTerminalOutcome = true;
     }
 
-    public static void onSpall(Entity projectile, Vec3 origin, Vec3 dir, double coneCos, double range, int fragments) {
+    public static void onSpall(Entity projectile, Vec3 origin, Vec3 dir, double coneCos, double range,
+                               int fragments, float[] rayStops) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile);
         if (session == null || fragments <= 0) return;
-        session.spall = new ClientboundTerminalBallisticsPacket.Spall(origin, dir, coneCos, range, fragments, session.spallBlocks);
+        session.spall = new ClientboundTerminalBallisticsPacket.Spall(normalizePoint(projectile, origin),
+            dir, coneCos, range, fragments, session.spallBlocks,
+            rayStops != null ? rayStops : new float[0]);
+    }
+
+    /**
+     * VS ship block hits arrive in the shipyard coordinates of whichever ship
+     * was hit; a session can span several ships (hull of ship A, internals of
+     * ship B), so every recorded point is normalized to plain world space here
+     * and only converted into the single anchor frame at finalize time.
+     */
+    private static Vec3 normalizePoint(Entity projectile, Vec3 recorded) {
+        if (projectile.level() instanceof ServerLevel level) {
+            return VSCompat.toWorldCoordinates(level, recorded);
+        }
+        return recorded;
     }
 
     public static void onSpallBlock(Entity projectile, Vec3 worldPos, boolean broken, boolean armorLike) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile);
         if (session == null || session.spallBlocks.size() >= MAX_SPALL_BLOCKS) return;
-        session.spallBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(worldPos, broken, armorLike));
+        session.spallBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
+            normalizePoint(projectile, worldPos), broken, armorLike));
         if (!armorLike) session.internalDamage = true;
     }
 
@@ -294,7 +317,7 @@ public final class TerminalBallisticsRecorder {
             ClientboundTerminalBallisticsPacket.Spall converted = session.spall;
             spall = new ClientboundTerminalBallisticsPacket.Spall(frame.toItemLocal(converted.origin()),
                 frame.toLocalDir(converted.dir()), converted.coneCos(), converted.range(),
-                converted.fragments(), blocks);
+                converted.fragments(), blocks, converted.rayStops());
         }
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entities = new ArrayList<>(session.entities.size());
@@ -311,10 +334,10 @@ public final class TerminalBallisticsRecorder {
 
     /**
      * Choose the coordinate frame for the snapshot. A Create contraption anchor
-     * wins when the session resolved one. Otherwise, when the first plate lies
-     * on a Valkyrien ship (block positions arrive there in shipyard
-     * coordinates), the whole snapshot is anchored to that ship so the client
-     * can re-anchor it to the moving vessel. Falls back to plain world space.
+     * wins when the session resolved one. Otherwise the frame is the ship whose
+     * shipyard plate was recorded first (points were normalized to world space
+     * at record time, so a shell that continued into a second ship still maps
+     * into this one frame). Falls back to plain world space.
      */
     private static ShipFrame resolveFrame(ServerLevel level, Session session) {
         if (session.anchorUuid != null) {
@@ -323,18 +346,12 @@ public final class TerminalBallisticsRecorder {
                 return ShipFrame.contraption(anchor);
             }
         }
-        BlockPos vsPos = null;
-        for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
-            if (VSCompat.isShipyardCoordinate(plate.pos())) {
-                vsPos = BlockPos.containing(plate.pos());
-                break;
-            }
-        }
-        if (vsPos != null) {
-            Vec3 worldRef = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(vsPos));
-            if (worldRef != null && worldRef.distanceToSqr(Vec3.atCenterOf(vsPos)) > 1.0D) {
-                return ShipFrame.vs(level, vsPos, ClientboundTerminalBallisticsPacket.Anchor.vs(
-                    Vec3.atCenterOf(vsPos), worldRef));
+        if (session.vsAnchorPos != null) {
+            Vec3 shipyardCenter = Vec3.atCenterOf(session.vsAnchorPos);
+            Vec3 worldRef = VSCompat.toWorldCoordinates(level, shipyardCenter);
+            if (worldRef != null && worldRef.distanceToSqr(shipyardCenter) > 1.0D) {
+                return ShipFrame.vs(level, session.vsAnchorPos,
+                    ClientboundTerminalBallisticsPacket.Anchor.vs(shipyardCenter, worldRef));
             }
         }
         return ShipFrame.world();

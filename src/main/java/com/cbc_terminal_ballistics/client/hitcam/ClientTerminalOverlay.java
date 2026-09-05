@@ -45,8 +45,14 @@ public final class ClientTerminalOverlay {
     private static final float[] SPALL_BROKEN_COLOR = {1.0F, 0.3F, 0.12F};
     private static final float[] SPALL_INTERNAL_COLOR = {1.0F, 0.55F, 0.1F};
     private static final double PLATE_HALF = 0.62D;
-    /** Stroke width on the displayed PiP window, in scaled GUI pixels. */
+    /** Default stroke width on the displayed PiP window, in scaled GUI pixels. */
     private static final double LINE_DISPLAY_PX = 2.8D;
+    /** Trajectory trail strokes are slightly thinner than the default. */
+    private static final double PATH_LINE_PX = 2.2D;
+    /** Plate and entity-hit box outlines. */
+    private static final double PLATE_LINE_PX = 1.8D;
+    /** Spall cone rays, the thinnest strokes. */
+    private static final double SPALL_LINE_PX = 1.6D;
     /** Spall-hit marker dot diameter on the displayed PiP window, in px. */
     private static final double DOT_DISPLAY_PX = 4.5D;
     private static final float FILL_ALPHA = 0.34F;
@@ -152,30 +158,44 @@ public final class ClientTerminalOverlay {
      */
     public static void drawThickBox(BufferBuilder buffer, Ctx ctx, Vec3 min, Vec3 max,
                                     float r, float g, float b, float a) {
+        drawThickBox(buffer, ctx, min, max, LINE_DISPLAY_PX, r, g, b, a);
+    }
+
+    /** A box drawn as 12 camera-facing strokes at the given on-window width. */
+    public static void drawThickBox(BufferBuilder buffer, Ctx ctx, Vec3 min, Vec3 max, double widthPx,
+                                    float r, float g, float b, float a) {
         // Bottom face
-        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, min.z), new Vec3(max.x, min.y, min.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, min.z), new Vec3(max.x, min.y, max.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, max.z), new Vec3(min.x, min.y, max.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, max.z), new Vec3(min.x, min.y, min.z), r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, min.z), new Vec3(max.x, min.y, min.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, min.z), new Vec3(max.x, min.y, max.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, max.z), new Vec3(min.x, min.y, max.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, max.z), new Vec3(min.x, min.y, min.z), widthPx, r, g, b, a);
         // Top face
-        drawThickLine(buffer, ctx, new Vec3(min.x, max.y, min.z), new Vec3(max.x, max.y, min.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(max.x, max.y, min.z), new Vec3(max.x, max.y, max.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(max.x, max.y, max.z), new Vec3(min.x, max.y, max.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(min.x, max.y, max.z), new Vec3(min.x, max.y, min.z), r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(min.x, max.y, min.z), new Vec3(max.x, max.y, min.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(max.x, max.y, min.z), new Vec3(max.x, max.y, max.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(max.x, max.y, max.z), new Vec3(min.x, max.y, max.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(min.x, max.y, max.z), new Vec3(min.x, max.y, min.z), widthPx, r, g, b, a);
         // Vertical edges
-        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, min.z), new Vec3(min.x, max.y, min.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, min.z), new Vec3(max.x, max.y, min.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, max.z), new Vec3(max.x, max.y, max.z), r, g, b, a);
-        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, max.z), new Vec3(min.x, max.y, max.z), r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, min.z), new Vec3(min.x, max.y, min.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, min.z), new Vec3(max.x, max.y, min.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(max.x, min.y, max.z), new Vec3(max.x, max.y, max.z), widthPx, r, g, b, a);
+        drawThickLine(buffer, ctx, new Vec3(min.x, min.y, max.z), new Vec3(min.x, max.y, max.z), widthPx, r, g, b, a);
     }
 
     /**
-     * One camera-facing stroke quad between two world points. The half-width is
-     * derived from the segment's distance so the stroke keeps a constant width
-     * in window pixels. The caller owns shader/depth/blend state and the open
+     * One camera-facing stroke quad between two world points at the default
+     * stroke width. The caller owns shader/depth/blend state and the open
      * buffer; this emits four vertices into the current QUADS batch.
      */
     public static void drawThickLine(BufferBuilder buf, Ctx ctx, Vec3 from, Vec3 to,
+                                     float r, float g, float b, float a) {
+        drawThickLine(buf, ctx, from, to, LINE_DISPLAY_PX, r, g, b, a);
+    }
+
+    /**
+     * One camera-facing stroke quad between two world points, half-width sized
+     * for a constant {@code widthPx} width on the displayed PiP window.
+     */
+    public static void drawThickLine(BufferBuilder buf, Ctx ctx, Vec3 from, Vec3 to, double widthPx,
                                      float r, float g, float b, float a) {
         Vec3 seg = to.subtract(from);
         if (seg.lengthSqr() < 1.0e-10D) return;
@@ -186,7 +206,7 @@ public final class ClientTerminalOverlay {
 
         double depth = viewDepth(ctx, from.add(to).scale(0.5D));
         if (depth < 0.06D) return; // entirely behind the camera
-        double halfW = Mth.clamp(ctx.worldHalfWidth(depth, LINE_DISPLAY_PX * 0.5D), 0.01D, 0.5D);
+        double halfW = Mth.clamp(ctx.worldHalfWidth(depth, widthPx * 0.5D), 0.01D, 0.5D);
         perp = perp.scale(halfW);
 
         vertexWorld(buf, ctx, from.subtract(perp), r, g, b, a);
@@ -203,14 +223,14 @@ public final class ClientTerminalOverlay {
             Vec3 point = ClientTerminalView.toWorld(ClientTerminalView.pathPoint(i), partialTick);
             if (ClientTerminalView.pathFraction(i) <= tl.shellProgress) {
                 // Already flown: bright trail.
-                drawThickLine(buffer, ctx, prev, point, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
+                drawThickLine(buffer, ctx, prev, point, PATH_LINE_PX, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
             } else {
                 // Segment the shell is currently on: bright up to the shell.
                 if (tl.shellPos != null && ClientTerminalView.pathFraction(i - 1) < tl.shellProgress) {
-                    drawThickLine(buffer, ctx, prev, tl.shellPos, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
+                    drawThickLine(buffer, ctx, prev, tl.shellPos, PATH_LINE_PX, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
                 }
                 // Still ahead: faint full path so the trajectory reads.
-                drawThickLine(buffer, ctx, prev, point, 0.8F, 0.85F, 1.0F, tl.fade * 0.22F);
+                drawThickLine(buffer, ctx, prev, point, PATH_LINE_PX, 0.8F, 0.85F, 1.0F, tl.fade * 0.22F);
             }
             prev = point;
         }
@@ -230,12 +250,12 @@ public final class ClientTerminalOverlay {
             Vec3 max = pos.add(PLATE_HALF, PLATE_HALF, PLATE_HALF);
             // Translucent filled faces first, bright outline on top.
             filledBox(buffer, ctx, min, max, color[0], color[1], color[2], alpha * FILL_ALPHA);
-            drawThickBox(buffer, ctx, min, max, color[0], color[1], color[2], alpha);
+            drawThickBox(buffer, ctx, min, max, PLATE_LINE_PX, color[0], color[1], color[2], alpha);
             if (plate.broken()) {
                 // Destroyed plate: diagonal cross over the box.
-                drawThickLine(buffer, ctx, min, max, color[0], color[1], color[2], alpha * 0.8F);
+                drawThickLine(buffer, ctx, min, max, PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
                 drawThickLine(buffer, ctx, new Vec3(max.x, max.y, min.z), new Vec3(min.x, min.y, max.z),
-                    color[0], color[1], color[2], alpha * 0.8F);
+                    PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
             }
         }
         // Bright cross at the final impact point, once reached.
@@ -257,18 +277,30 @@ public final class ClientTerminalOverlay {
         ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spall();
         if (spall == null || spall.fragments() <= 0 || tl.spallGrowth <= 0.0F) return;
         Vec3 origin = ClientTerminalView.toWorld(spall.origin(), partialTick);
-        Vec3 dir = spall.dir();
+        // The recorded direction is vehicle-local; re-anchor it to world like
+        // every position, or the cone points the wrong way on rotated ships.
+        Vec3 dir = ClientTerminalView.toWorldDir(spall.dir(), partialTick);
         if (dir.lengthSqr() < 1.0e-8D) return;
         dir = dir.normalize();
+        float[] rayStops = spall.rayStops();
+        List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = ClientTerminalView.entities();
 
         // Deterministic golden-spiral cone sample, matching the server's spall shape.
         int rays = Math.min(12, Math.max(3, spall.fragments() / 2));
         double coneCos = Mth.clamp(spall.coneCos(), 0.05D, 0.999D);
         for (int i = 0; i < rays; i++) {
             Vec3 rayDir = fragmentDirection(dir, i, rays, coneCos);
-            double len = Math.min(spall.range(), 6.0D) * (0.6D + 0.4D * (i % 3) / 2.0D) * tl.spallGrowth;
+            double cap = Math.min(spall.range(), 6.0D) * (0.6D + 0.4D * (i % 3) / 2.0D);
+            double len = cap;
+            // Terminate at the geometry the server raycast for this exact ray.
+            if (rayStops != null && i < rayStops.length && rayStops[i] > 0.0F) {
+                len = Math.min(len, rayStops[i]);
+            }
+            // And at recorded entity hits (crew) along the ray.
+            len = clipRayToEntities(entityHits, origin, rayDir, len, partialTick);
+            len *= tl.spallGrowth;
             if (len < 0.05D) continue;
-            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), 1.0F, 0.62F, 0.1F,
+            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), SPALL_LINE_PX, 1.0F, 0.62F, 0.1F,
                 tl.fade * 0.75F * (0.35F + 0.65F * tl.spallGrowth));
         }
 
@@ -292,6 +324,20 @@ public final class ClientTerminalOverlay {
         }
     }
 
+    /** Shortens a display ray to the first recorded entity hit lying on it. */
+    private static double clipRayToEntities(List<ClientboundTerminalBallisticsPacket.EntityHit> entities,
+                                            Vec3 origin, Vec3 rayDir, double maxLen, float partialTick) {
+        double best = maxLen;
+        for (ClientboundTerminalBallisticsPacket.EntityHit hit : entities) {
+            Vec3 rel = ClientTerminalView.toWorld(hit.pos(), partialTick).subtract(origin);
+            double along = rel.dot(rayDir);
+            if (along <= 0.1D || along >= best) continue;
+            double perpSq = rel.lengthSqr() - along * along;
+            if (perpSq < 0.45D * 0.45D) best = along;
+        }
+        return best;
+    }
+
     private static void drawEntityHits(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
         List<ClientboundTerminalBallisticsPacket.EntityHit> entities = ClientTerminalView.entities();
         for (int i = 0; i < entities.size(); i++) {
@@ -303,7 +349,7 @@ public final class ClientTerminalOverlay {
             float[] color = hit.killed() ? STOP_COLOR : BOUNCE_COLOR;
             Vec3 min = pos.subtract(0.4D, 0.0D, 0.4D);
             Vec3 max = pos.add(0.4D, 1.8D, 0.4D);
-            drawThickBox(buffer, ctx, min, max, color[0], color[1], color[2], tl.fade * pop);
+            drawThickBox(buffer, ctx, min, max, PLATE_LINE_PX, color[0], color[1], color[2], tl.fade * pop);
         }
     }
 

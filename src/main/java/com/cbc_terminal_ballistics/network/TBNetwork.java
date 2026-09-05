@@ -6,7 +6,7 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public final class TBNetwork {
-    private static final String VERSION = "16";
+    private static final String VERSION = "17";
     public static SimpleChannel CHANNEL;
 
     public static void register() {

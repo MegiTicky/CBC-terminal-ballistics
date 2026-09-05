@@ -47,6 +47,7 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.registries.ForgeRegistries;
 
+import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -859,8 +860,34 @@ public final class TBImpactService {
         //level.playSound(null, pos, sound, SoundSource.BLOCKS, caliberVolume * toughnessVolume, velocityPitch);
     }
 
-    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness, Entity contraptionEntity) {
-        double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
+    /**
+     * Stop distances for the terminal-view display rays. The client draws a
+     * deterministic golden-spiral cone sample — this is this class's own
+     * {@code fragmentDirection} with jitter 0 — so raycasting those same
+     * directions here lets the drawn rays terminate exactly at the geometry
+     * that stopped them. Display-only: the real (jittered) damage rays above
+     * are unaffected.
+     */
+    private static float[] computeVisualRayStops(ServerLevel level, Entity projectile,
+                                                 @Nullable ContraptionCompat.ContraptionSnapshot contraption,
+                                                 Vec3 origin, Vec3 dir, double coneCos, double range, int fragments) {
+        int rayCount = Math.min(12, Math.max(3, fragments / 2));
+        float[] stops = new float[rayCount];
+        for (int i = 0; i < rayCount; i++) {
+            Vec3 rayDir = fragmentDirection(dir, i, rayCount, coneCos, 0.0D);
+            Vec3 end = origin.add(rayDir.scale(range));
+            HitResult blockRay = level.clip(new ClipContext(origin, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, projectile));
+            double dist = blockRay.getType() == HitResult.Type.MISS ? range : blockRay.getLocation().distanceTo(origin);
+            if (contraption != null) {
+                ContraptionCompat.ContraptionSnapshot.Hit hullHit = contraption.raycast(origin, end);
+                if (hullHit != null && hullHit.distance() < dist) dist = hullHit.distance();
+            }
+            stops[i] = (float) Math.min(range, Math.max(0.0D, dist));
+        }
+        return stops;
+    }
+
+    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness, Entity contraptionEntity) {        double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
         int fragments = Mth.clamp((int) Math.round(armorToughness * countMultiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
         if (fragments <= 0) return 0;
         double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
@@ -888,7 +915,8 @@ public final class TBImpactService {
         double combined = velocityFactor * 0.15 + massRatioFactor * 0.25 + toughnessFactor * 0.25 + caliberFactor * 0.15 + shellTypeFactor * 0.20;
         double coneAngleDeg = Mth.lerp(combined, minAngle, maxAngle);
         double coneCos = Math.cos(Math.toRadians(coneAngleDeg));
-        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments);
+        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
+            computeVisualRayStops(level, projectile, contraption, origin, dir, coneCos, range, fragments));
 
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;

@@ -335,7 +335,9 @@ public final class ClientHitcamPiP {
             mc.getEntityRenderDispatcher().prepare(mc.level, camera, null);
             AABB bb = entity.getBoundingBox();
             double longest = Math.max(bb.getXsize(), Math.max(bb.getYsize(), bb.getZsize()));
-            float scale = (float) Mth.clamp(1.1D / Math.max(longest, 0.05D), 1.0D, 6.0D);
+            // Lift small shells so they read in the window, but keep mid-caliber
+            // shells close to their real size (0.85 target, gentler cap).
+            float scale = (float) Mth.clamp(0.85D / Math.max(longest, 0.05D), 1.0D, 3.5D);
             // Seed the pose with the PiP camera rotation, then offset to the
             // camera-relative shell position and lift the model. Entity models
             // bake their per-vertex matrix at buffer-build time, so without the

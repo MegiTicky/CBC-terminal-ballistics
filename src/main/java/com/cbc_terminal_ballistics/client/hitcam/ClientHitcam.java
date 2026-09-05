@@ -324,14 +324,15 @@ public final class ClientHitcam {
             Vec3 side = dir.cross(new Vec3(0, 1, 0));
             if (side.lengthSqr() < 1.0e-6D) side = new Vec3(1, 0, 0);
             side = side.normalize();
-            return pos.subtract(dir.scale(16.0D)).add(0.0D, 5.0D, 0.0D).add(side.scale(4.0D));
+            return pos.subtract(dir.scale(10.5D)).add(0.0D, 3.5D, 0.0D).add(side.scale(2.5D));
         }
         return shellPos().subtract(dir.scale(4.5D)).add(0.0D, 1.2D, 0.0D);
     }
 
     public static Vec3 lookTarget(float partialTick) {
         if (isTerminal()) {
-            return ClientTerminalView.center(partialTick);
+            // Track the action: the shell in flight, then the impact/spall site.
+            return ClientTerminalView.lookPoint(partialTick);
         }
         if (isArtillery()) {
             // Lead the shell slightly so it sits below-center with the impact

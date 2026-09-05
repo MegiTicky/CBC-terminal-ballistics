@@ -238,13 +238,43 @@ public final class ClientTerminalView {
     }
 
     /**
-     * Cinematic camera: starts on the side the shell came from (looking at the
-     * impact face), then makes a slow, eased ~115 degree turn that settles into
-     * a side framing for the tail of the view. Always re-anchored to the vehicle
-     * so a moving tank stays framed.
+     * The point the camera tracks, War-Thunder style: the shell itself while it
+     * flies, then an eased settle onto the terminal focus (spall origin if the
+     * plate spalled, else the final plate position) for the impact and spall
+     * phase.
+     */
+    public static Vec3 lookPoint(float partialTick) {
+        Vec3 focus = terminalFocus(partialTick);
+        if (!hasPath || flightTicks <= 0.0D) return focus;
+        float age = age(partialTick);
+        if (age < flightTicks) {
+            return toWorld(pathPointAt(Mth.clamp(age / flightTicks, 0.0D, 1.0D)), partialTick);
+        }
+        double blend = Mth.clamp((age - flightTicks) / 10.0D, 0.0D, 1.0D);
+        blend = blend * blend * (3.0D - 2.0D * blend);
+        return toWorld(pathPointAt(1.0D), partialTick).lerp(focus, blend);
+    }
+
+    /** Where the camera settles after the shell lands: spall site, final plate, or center. */
+    private static Vec3 terminalFocus(float partialTick) {
+        ClientboundTerminalBallisticsPacket.Spall spall = spall();
+        if (spall != null) return toWorld(spall.origin(), partialTick);
+        List<ClientboundTerminalBallisticsPacket.Plate> plateList = plates();
+        if (!plateList.isEmpty()) {
+            return toWorld(plateList.get(plateList.size() - 1).pos(), partialTick);
+        }
+        return center(partialTick);
+    }
+
+    /**
+     * Cinematic tracking camera: starts on the side the shell came from
+     * (looking at the impact face), follows the shell along its flight, then
+     * settles around the impact site while making a slow, eased ~115 degree
+     * turn into a side framing. Always re-anchored to the vehicle so a moving
+     * tank stays framed.
      */
     public static Vec3 cameraPos(float partialTick) {
-        Vec3 c = center(partialTick);
+        Vec3 c = lookPoint(partialTick);
         double r = orbitRadius;
         double age = age(partialTick);
         double sweepEnd = Math.max(1.0D, duration() * SWEEP_END_FRACTION);
@@ -518,7 +548,7 @@ public final class ClientTerminalView {
         for (ClientboundTerminalBallisticsPacket.EntityHit hit : view.entities()) {
             maxDistSq = Math.max(maxDistSq, hit.pos().distanceToSqr(anchorCenter));
         }
-        orbitRadius = Math.max(5.5D, Math.min(15.0D, Math.sqrt(maxDistSq) + 4.5D));
+        orbitRadius = Math.max(5.5D, Math.min(12.0D, Math.sqrt(maxDistSq) + 3.0D));
     }
 
     private ClientTerminalView() {}

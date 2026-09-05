@@ -29,7 +29,14 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
     /** {@code armorLike} is true when the spall-struck block is itself armour/hull, not internal structure. */
     public record SpallBlock(Vec3 pos, boolean broken, boolean armorLike) {}
 
-    public record Spall(Vec3 origin, Vec3 dir, double coneCos, double range, int fragments, List<SpallBlock> blocks) {}
+    /**
+     * {@code rayStops} holds the display-ray stop distances the server raycast
+     * for the client's deterministic cone sampling (absolute block distances;
+     * {@code >= range} means unobstructed), so drawn spall rays terminate at
+     * the geometry that actually stopped them.
+     */
+    public record Spall(Vec3 origin, Vec3 dir, double coneCos, double range, int fragments,
+                        List<SpallBlock> blocks, float[] rayStops) {}
 
     /**
      * How the packet's coordinates map back to the world. {@code CONTRAPTION}
@@ -104,6 +111,11 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
                 buf.writeBoolean(b.broken());
                 buf.writeBoolean(b.armorLike());
             }
+            float[] rayStops = spall.rayStops() == null ? new float[0] : spall.rayStops();
+            buf.writeVarInt(rayStops.length);
+            for (float stop : rayStops) {
+                buf.writeFloat(stop);
+            }
         }
         buf.writeVarInt(entities.size());
         for (EntityHit e : entities) {
@@ -151,7 +163,12 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             for (int i = 0; i < blockCount; i++) {
                 blocks.add(new SpallBlock(readVec3(buf), buf.readBoolean(), buf.readBoolean()));
             }
-            spall = new Spall(origin, dir, coneCos, range, fragments, blocks);
+            int stopCount = buf.readVarInt();
+            float[] rayStops = new float[Math.min(stopCount, 64)];
+            for (int i = 0; i < rayStops.length; i++) {
+                rayStops[i] = buf.readFloat();
+            }
+            spall = new Spall(origin, dir, coneCos, range, fragments, blocks, rayStops);
         }
         int entityCount = buf.readVarInt();
         List<EntityHit> entities = new ArrayList<>(Math.min(entityCount, 32));
