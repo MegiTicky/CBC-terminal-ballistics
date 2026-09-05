@@ -73,17 +73,13 @@ public final class ClientHitcamPiP {
             warnShadersOnce(mc, true);
         }
 
-        int width = Mth.clamp(TBConfig.HITCAM_PIP_WIDTH.get(), 120, 1920);
-        int height = Mth.clamp(TBConfig.HITCAM_PIP_HEIGHT.get(), 80, 1080);
-        ensureTarget(width, height);
-
         ClientHitcam.advance(event.getPartialTick());
 
         Matrix4f mainProjection = RenderSystem.getProjectionMatrix();
         com.mojang.blaze3d.vertex.VertexSorting mainSorting = RenderSystem.getVertexSorting();
         try {
             RENDERING_PIP.set(Boolean.TRUE);
-            renderPipScene(mc, width, height, event.getPartialTick(), fullScene, packInUse && !fullScene);
+            renderPipScene(mc, event.getPartialTick(), fullScene, packInUse && !fullScene);
         } catch (Throwable t) {
             // A secondary full-scene pass can break under other mods' render hooks;
             // the replay is cosmetic, so drop it instead of crashing the frame.
@@ -111,7 +107,7 @@ public final class ClientHitcamPiP {
         }
     }
 
-    private static void renderPipScene(Minecraft mc, int width, int height, float partialTick, boolean fullScene, boolean minimal) {
+    private static void renderPipScene(Minecraft mc, float partialTick, boolean fullScene, boolean minimal) {
         Camera camera = new Camera();
         Vec3 camPos = ClientHitcam.cameraPos();
         Vec3 look = ClientHitcam.lookTarget().subtract(camPos);
@@ -141,6 +137,8 @@ public final class ClientHitcamPiP {
      * render, so the ghost composites over the live view in the PiP window.
      */
     private static void renderMinimal(Minecraft mc, Camera camera, float partialTick) {
+        RenderTarget mainTarget = mc.getMainRenderTarget();
+        ensureTarget(mainTarget.width, mainTarget.height);
         target.bindWrite(true);
         RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 0.0F);
         RenderSystem.clear(16640, Minecraft.ON_OSX);
@@ -166,10 +164,13 @@ public final class ClientHitcamPiP {
      */
     private static void renderFullScene(Minecraft mc, Camera camera, float partialTick, float yaw, float pitch) {
         RenderTarget mainTarget = mc.getMainRenderTarget();
+        ensureTarget(mainTarget.width, mainTarget.height);
         if (backupTarget == null || backupTarget.width != mainTarget.width || backupTarget.height != mainTarget.height) {
             if (backupTarget != null) backupTarget.destroyBuffers();
             backupTarget = new TextureTarget(mainTarget.width, mainTarget.height, true, Minecraft.ON_OSX);
         }
+
+        mc.renderBuffers().bufferSource().endBatch();
 
         // Back up the main screen (color + depth) so the HUD and any later
         // rendering see the original frame.
@@ -380,12 +381,8 @@ public final class ClientHitcamPiP {
         var gui = event.getGuiGraphics();
         int screenW = gui.guiWidth();
         int screenH = gui.guiHeight();
-        int drawW = Math.min(target.width, screenW - 4);
-        int drawH = (int) ((long) drawW * target.height / Math.max(1, target.width));
-        if (drawH > screenH - 4) {
-            drawH = screenH - 4;
-            drawW = (int) ((long) drawH * target.width / Math.max(1, target.height));
-        }
+        int drawW = Mth.clamp(TBConfig.HITCAM_PIP_DISPLAY_WIDTH.get(), 80, screenW - 4);
+        int drawH = Mth.clamp(TBConfig.HITCAM_PIP_DISPLAY_HEIGHT.get(), 50, screenH - 4);
         int x;
         int y;
         switch (TBConfig.HITCAM_PIP_ANCHOR.get()) {
@@ -406,10 +403,12 @@ public final class ClientHitcamPiP {
         RenderSystem.setShaderTexture(0, target.getColorTextureId());
         BufferBuilder builder = RenderSystem.renderThreadTesselator().getBuilder();
         builder.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX);
-        builder.vertex(matrix, x, y + h, 0).uv(0.0F, 1.0F).endVertex();
-        builder.vertex(matrix, x + w, y + h, 0).uv(1.0F, 1.0F).endVertex();
-        builder.vertex(matrix, x + w, y, 0).uv(1.0F, 0.0F).endVertex();
-        builder.vertex(matrix, x, y, 0).uv(0.0F, 0.0F).endVertex();
+        // FBO textures sample bottom-up relative to GUI space, so the bottom
+        // edge of the quad takes v=0 (the texture's first row).
+        builder.vertex(matrix, x, y + h, 0).uv(0.0F, 0.0F).endVertex();
+        builder.vertex(matrix, x + w, y + h, 0).uv(1.0F, 0.0F).endVertex();
+        builder.vertex(matrix, x + w, y, 0).uv(1.0F, 1.0F).endVertex();
+        builder.vertex(matrix, x, y, 0).uv(0.0F, 1.0F).endVertex();
         BufferUploader.drawWithShader(builder.end());
         RenderSystem.disableBlend();
     }
