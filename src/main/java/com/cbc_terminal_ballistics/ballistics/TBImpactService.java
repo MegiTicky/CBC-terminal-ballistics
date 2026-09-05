@@ -308,6 +308,10 @@ public final class TBImpactService {
                 if (tbArmorHit) {
                     TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), outcome,
                         appliedDamage, baseArmorToughness, blockBreakPending, contraptionEntity);
+                } else if (perforates || blockBreakPending) {
+                    // Shell body chewed through a non-armour block; only counts as
+                    // internal damage after real armour was hit (recorder-side check).
+                    TerminalBallisticsRecorder.onInternalBlockDamage(projectile);
                 }
             }
 
@@ -927,7 +931,8 @@ public final class TBImpactService {
                 // but the block itself is never removed (it lives inside the entity).
                 boolean broken = applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
                     contraptionHit.worldPos(), contraptionHit.state(), spallToughnessThreshold, spallDamageScale);
-                TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), broken);
+                TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), broken,
+                    isArmorLike(contraptionHit.state()) || isMetalLike(contraptionHit.state()) || isVehiclePanelLike(contraptionHit.state()));
             } else if (blockRay instanceof BlockHitResult bhr && blockRay.getType() == HitResult.Type.BLOCK) {
                 BlockPos bp = bhr.getBlockPos();
                 BlockState st = level.getBlockState(bp);
@@ -939,7 +944,8 @@ public final class TBImpactService {
                 }
                 boolean broken = applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
                     bp, st, spallToughnessThreshold, spallDamageScale);
-                TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(bp), broken);
+                TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(bp), broken,
+                    isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
             }
         }
         if (visualClearRays > 0 && visualRange >= MIN_SPALL_VISUAL_CLEARANCE) {

@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.hitcam;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
+import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundTrackProjectilePacket;
 import com.cbc_terminal_ballistics.network.TBNetwork;
@@ -10,6 +11,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.Vec3;
@@ -46,6 +48,8 @@ public final class TerminalBallisticsRecorder {
         ServerPlayer audience;
         long firstEventGameTime = -1L;
         boolean hasTerminalOutcome;
+        /** Spall or the shell body reached non-armour structure behind the armour. */
+        boolean internalDamage;
     }
 
     /**
@@ -155,11 +159,24 @@ public final class TerminalBallisticsRecorder {
         session.spall = new ClientboundTerminalBallisticsPacket.Spall(origin, dir, coneCos, range, fragments, session.spallBlocks);
     }
 
-    public static void onSpallBlock(Entity projectile, Vec3 worldPos, boolean broken) {
+    public static void onSpallBlock(Entity projectile, Vec3 worldPos, boolean broken, boolean armorLike) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile);
         if (session == null || session.spallBlocks.size() >= MAX_SPALL_BLOCKS) return;
-        session.spallBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(worldPos, broken));
+        session.spallBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(worldPos, broken, armorLike));
+        if (!armorLike) session.internalDamage = true;
+    }
+
+    /**
+     * The shell body perforated or broke a non-armour block. Only counts as
+     * internal damage once real armour was hit first, so terrain on the flight
+     * path is not misread as a penetration into the hull.
+     */
+    public static void onInternalBlockDamage(Entity projectile) {
+        if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
+        Session session = SESSIONS.get(projectile);
+        if (session == null || session.plates.isEmpty()) return;
+        session.internalDamage = true;
     }
 
     public static void onSpallEntityHit(Entity projectile, LivingEntity target, float damage) {
@@ -218,6 +235,34 @@ public final class TerminalBallisticsRecorder {
         }
     }
 
+    // ---- artillery cam relay -----------------------------------------------------
+
+    /**
+     * Relay live shell positions for the artillery chase cam every other tick.
+     * CBC simulates shells server-side beyond client tracking range, where the
+     * vanilla tracker has already despawned the client copy; these updates let
+     * the cam extrapolate through that region instead of freezing. Called from
+     * the mod's ServerTickEvent handler.
+     */
+    public static void onServerTick(net.minecraft.server.MinecraftServer server) {
+        if (!TBConfig.HITCAM_ENABLED.get() || !TBConfig.HITCAM_ARTILLERY_CAM.get()) return;
+        if (SESSIONS.isEmpty() || server.getTickCount() % 2 != 0) return;
+        for (java.util.Map.Entry<Entity, Session> entry : SESSIONS.entrySet()) {
+            Entity projectile = entry.getKey();
+            Session session = entry.getValue();
+            if (session.audience == null) continue;
+            if (projectile.isRemoved()) {
+                send(session.audience, new ClientboundArtilleryUpdatePacket(
+                    projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
+                session.audience = null;
+                continue;
+            }
+            send(session.audience, new ClientboundArtilleryUpdatePacket(
+                projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
+                projectile.position(), projectile.getDeltaMovement(), false));
+        }
+    }
+
     // ---- finalize ----------------------------------------------------------------
 
     private static void finalizeAndSend(Entity projectile, Session session) {
@@ -243,7 +288,8 @@ public final class TerminalBallisticsRecorder {
         if (session.spall != null) {
             List<ClientboundTerminalBallisticsPacket.SpallBlock> blocks = new ArrayList<>(session.spallBlocks.size());
             for (ClientboundTerminalBallisticsPacket.SpallBlock block : session.spallBlocks) {
-                blocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(frame.toItemLocal(block.pos()), block.broken()));
+                blocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
+                    frame.toItemLocal(block.pos()), block.broken(), block.armorLike()));
             }
             ClientboundTerminalBallisticsPacket.Spall converted = session.spall;
             spall = new ClientboundTerminalBallisticsPacket.Spall(frame.toItemLocal(converted.origin()),
@@ -259,7 +305,8 @@ public final class TerminalBallisticsRecorder {
 
         String summary = buildSummary(session);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
-            projectile.getId(), summary, frame.anchor, path, plates, spall, entities));
+            projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
+            summary, frame.anchor, path, plates, spall, entities));
     }
 
     /**
@@ -294,12 +341,11 @@ public final class TerminalBallisticsRecorder {
     }
 
     private static String buildSummary(Session session) {
-        String last = session.plates.get(session.plates.size() - 1).outcome();
         int killed = 0;
         for (ClientboundTerminalBallisticsPacket.EntityHit hit : session.entities) {
             if (hit.killed()) killed++;
         }
-        StringBuilder sb = new StringBuilder(last);
+        StringBuilder sb = new StringBuilder(classify(session));
         sb.append(" \u00b7 ").append(session.plates.size()).append(session.plates.size() == 1 ? " plate" : " plates");
         if (!session.entities.isEmpty()) {
             sb.append(" \u00b7 ").append(session.entities.size()).append(" crew");
@@ -309,6 +355,21 @@ public final class TerminalBallisticsRecorder {
             sb.append(" \u00b7 ").append(session.spall.fragments()).append(" spall");
         }
         return sb.toString();
+    }
+
+    /**
+     * Three-way engagement classification: HIT when anything behind the armour
+     * was damaged (spall into internals, the shell body punching through
+     * non-armour structure, or any entity hit); RICOCHET when the shell bounced
+     * off armour without such damage; NO PENETRATION when only armour-classified
+     * blocks were hit, even if several layers were perforated.
+     */
+    private static String classify(Session session) {
+        if (session.internalDamage || !session.entities.isEmpty()) return "HIT";
+        for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
+            if ("BOUNCE".equals(plate.outcome())) return "RICOCHET";
+        }
+        return "NO PENETRATION";
     }
 
     private static HitcamSample anchoredSample(ShipFrame frame, HitcamSample sample) {

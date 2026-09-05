@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.client;
 
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundHitcamPacket;
 import com.cbc_terminal_ballistics.network.ClientboundImpactMarksPacket;
 import com.cbc_terminal_ballistics.network.ClientboundInspectionSnapshotPacket;
@@ -85,6 +86,11 @@ public final class ClientPacketHandlers {
 
     public static void handleTrackProjectile(ClientboundTrackProjectilePacket packet) {
         com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.startArtillery(packet.entityId());
+    }
+
+    public static void handleArtilleryUpdate(ClientboundArtilleryUpdatePacket packet) {
+        com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.onArtilleryUpdate(
+            packet.entityId(), packet.entityTypeKey(), packet.pos(), packet.vel(), packet.removed());
     }
 
     public static void handleTerminalBallistics(ClientboundTerminalBallisticsPacket packet) {

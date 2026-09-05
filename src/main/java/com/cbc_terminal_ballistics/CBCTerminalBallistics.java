@@ -6,6 +6,7 @@ import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.CbcArmorCompat;
 import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.debug.TBDebug;
+import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.data.IgnoredBlockManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
@@ -88,6 +89,7 @@ public class CBCTerminalBallistics {
     @SubscribeEvent
     public void onServerTick(TickEvent.ServerTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
+        TerminalBallisticsRecorder.onServerTick(event.getServer());
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
             TemporaryBlockPassage.restore(level);
         }

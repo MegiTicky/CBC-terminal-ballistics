@@ -18,7 +18,7 @@ import java.util.function.Supplier;
  * {@code anchor} is null; otherwise they are vehicle-local and the client
  * re-anchors them to the moving vehicle each frame.
  */
-public record ClientboundTerminalBallisticsPacket(int projectileId, String summary, Anchor anchor,
+public record ClientboundTerminalBallisticsPacket(int projectileId, String entityTypeKey, String summary, Anchor anchor,
                                                   List<HitcamSample> path, List<Plate> plates,
                                                   Spall spall, List<EntityHit> entities) {
 
@@ -26,7 +26,8 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
 
     public record EntityHit(int entityId, Vec3 pos, float damage, boolean killed) {}
 
-    public record SpallBlock(Vec3 pos, boolean broken) {}
+    /** {@code armorLike} is true when the spall-struck block is itself armour/hull, not internal structure. */
+    public record SpallBlock(Vec3 pos, boolean broken, boolean armorLike) {}
 
     public record Spall(Vec3 origin, Vec3 dir, double coneCos, double range, int fragments, List<SpallBlock> blocks) {}
 
@@ -61,6 +62,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
 
     public void encode(FriendlyByteBuf buf) {
         buf.writeVarInt(projectileId);
+        buf.writeUtf(entityTypeKey, 128);
         buf.writeUtf(summary, 256);
         buf.writeBoolean(anchor != null);
         if (anchor != null) {
@@ -100,6 +102,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
             for (SpallBlock b : spall.blocks()) {
                 writeVec3(buf, b.pos());
                 buf.writeBoolean(b.broken());
+                buf.writeBoolean(b.armorLike());
             }
         }
         buf.writeVarInt(entities.size());
@@ -113,6 +116,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
 
     public static ClientboundTerminalBallisticsPacket decode(FriendlyByteBuf buf) {
         int projectileId = buf.readVarInt();
+        String entityTypeKey = buf.readUtf(128);
         String summary = buf.readUtf(256);
         Anchor anchor = null;
         if (buf.readBoolean()) {
@@ -145,7 +149,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
             int blockCount = buf.readVarInt();
             List<SpallBlock> blocks = new ArrayList<>(Math.min(blockCount, 64));
             for (int i = 0; i < blockCount; i++) {
-                blocks.add(new SpallBlock(readVec3(buf), buf.readBoolean()));
+                blocks.add(new SpallBlock(readVec3(buf), buf.readBoolean(), buf.readBoolean()));
             }
             spall = new Spall(origin, dir, coneCos, range, fragments, blocks);
         }
@@ -154,7 +158,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String summa
         for (int i = 0; i < entityCount; i++) {
             entities.add(new EntityHit(buf.readVarInt(), readVec3(buf), buf.readFloat(), buf.readBoolean()));
         }
-        return new ClientboundTerminalBallisticsPacket(projectileId, summary, anchor, path, plates, spall, entities);
+        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spall, entities);
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

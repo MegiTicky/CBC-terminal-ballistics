@@ -1,7 +1,6 @@
 package com.cbc_terminal_ballistics.client.hitcam;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
-import com.cbc_terminal_ballistics.hitcam.HitcamSample;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
@@ -43,9 +42,13 @@ public final class ClientTerminalOverlay {
     private static final float[] PENETRATE_COLOR = {0.25F, 1.0F, 0.3F};
     private static final float[] STOP_COLOR = {1.0F, 0.25F, 0.2F};
     private static final float[] BOUNCE_COLOR = {1.0F, 0.72F, 0.15F};
+    private static final float[] SPALL_BROKEN_COLOR = {1.0F, 0.3F, 0.12F};
+    private static final float[] SPALL_INTERNAL_COLOR = {1.0F, 0.55F, 0.1F};
     private static final double PLATE_HALF = 0.62D;
     /** Stroke width on the displayed PiP window, in scaled GUI pixels. */
     private static final double LINE_DISPLAY_PX = 2.8D;
+    /** Spall-hit marker dot diameter on the displayed PiP window, in px. */
+    private static final double DOT_DISPLAY_PX = 4.5D;
     private static final float FILL_ALPHA = 0.34F;
 
     /**
@@ -65,10 +68,10 @@ public final class ClientTerminalOverlay {
         private final Vec3 fwd;
         private final double tanHalfFov;
         private final double halfFboPx;
-        private final double halfPxFbo;
+        private final double fboPerDisplayPx;
 
         private Ctx(Matrix4f view, Vec3 cam, Vec3 fwd, double vzx, double vzy, double vzz,
-                    double tanHalfFov, double halfFboPx, double halfPxFbo) {
+                    double tanHalfFov, double halfFboPx, double fboPerDisplayPx) {
             this.view = view;
             this.cam = cam;
             this.fwd = fwd;
@@ -77,7 +80,7 @@ public final class ClientTerminalOverlay {
             this.vzz = vzz;
             this.tanHalfFov = tanHalfFov;
             this.halfFboPx = halfFboPx;
-            this.halfPxFbo = halfPxFbo;
+            this.fboPerDisplayPx = fboPerDisplayPx;
         }
 
         public static Ctx of(Minecraft mc, Camera camera, PoseStack viewPose) {
@@ -102,15 +105,23 @@ public final class ClientTerminalOverlay {
             int disp = Math.max(1, Math.min(dispCfg, Math.max(1, mc.getWindow().getGuiScaledWidth() - 4)));
             double fboPerDisplayPx = Math.max(1.0D, fboW / disp);
             double tanHalf = Math.tan(Math.toRadians(mc.options.fov().get()) / 2.0D);
-            double halfPxFbo = (LINE_DISPLAY_PX * 0.5D) * fboPerDisplayPx;
-            return new Ctx(view, camera.getPosition(), fwd, vzx, vzy, vzz, tanHalf, fboH * 0.5D, halfPxFbo);
+            return new Ctx(view, camera.getPosition(), fwd, vzx, vzy, vzz, tanHalf, fboH * 0.5D, fboPerDisplayPx);
+        }
+
+        /**
+         * World-space half-width that renders as {@code displayPxHalfWidth}
+         * pixels on the displayed PiP window for geometry at view depth
+         * {@code depth} — keeps strokes/dots a constant on-window size.
+         */
+        public double worldHalfWidth(double depth, double displayPxHalfWidth) {
+            return depth * tanHalfFov * (displayPxHalfWidth * fboPerDisplayPx) / halfFboPx;
         }
     }
 
     public static void render(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         if (!ClientTerminalView.active()) return;
-        float alpha = fadeAlpha(partialTick);
-        if (alpha <= 0.02F) return;
+        ClientTerminalView.Timeline tl = ClientTerminalView.snapshot(partialTick);
+        if (tl.fade <= 0.02F) return;
         Ctx ctx = Ctx.of(mc, camera, viewPose);
 
         // X-ray: draw over the rendered world, never hidden behind it.
@@ -123,10 +134,10 @@ public final class ClientTerminalOverlay {
         BufferBuilder buffer = tesselator.getBuilder();
         buffer.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
         try {
-            drawPath(buffer, ctx, partialTick, alpha);
-            drawPlates(buffer, ctx, partialTick, alpha);
-            drawSpall(buffer, ctx, partialTick, alpha);
-            drawEntityHits(buffer, ctx, partialTick, alpha);
+            drawPath(buffer, ctx, tl, partialTick);
+            drawPlates(buffer, ctx, tl, partialTick);
+            drawSpall(buffer, ctx, tl, partialTick);
+            drawEntityHits(buffer, ctx, tl, partialTick);
         } finally {
             tesselator.end();
             RenderSystem.enableCull();
@@ -175,7 +186,7 @@ public final class ClientTerminalOverlay {
 
         double depth = viewDepth(ctx, from.add(to).scale(0.5D));
         if (depth < 0.06D) return; // entirely behind the camera
-        double halfW = Mth.clamp(depth * ctx.tanHalfFov * ctx.halfPxFbo / ctx.halfFboPx, 0.01D, 0.5D);
+        double halfW = Mth.clamp(ctx.worldHalfWidth(depth, LINE_DISPLAY_PX * 0.5D), 0.01D, 0.5D);
         perp = perp.scale(halfW);
 
         vertexWorld(buf, ctx, from.subtract(perp), r, g, b, a);
@@ -184,35 +195,37 @@ public final class ClientTerminalOverlay {
         vertexWorld(buf, ctx, to.subtract(perp), r, g, b, a);
     }
 
-    private static float fadeAlpha(float partialTick) {
-        int duration = ClientTerminalView.duration();
-        float age = ClientTerminalView.age(partialTick);
-        float alpha = 1.0F;
-        // Short fade-in so the diagram does not pop in mid-turn.
-        if (age < 12.0F) alpha = Math.min(alpha, age / 12.0F);
-        float remaining = duration - age;
-        alpha = Math.min(alpha, Mth.clamp(remaining / 20.0F, 0.0F, 1.0F));
-        return alpha;
-    }
-
-    private static void drawPath(BufferBuilder buffer, Ctx ctx, float partialTick, float alpha) {
-        List<HitcamSample> path = ClientTerminalView.path();
-        if (path.size() < 2) return;
-        Vec3 prev = ClientTerminalView.toWorld(
-            new Vec3(path.get(0).x(), path.get(0).y(), path.get(0).z()), partialTick);
-        for (int i = 1; i < path.size(); i++) {
-            HitcamSample sample = path.get(i);
-            Vec3 point = ClientTerminalView.toWorld(new Vec3(sample.x(), sample.y(), sample.z()), partialTick);
-            drawThickLine(buffer, ctx, prev, point, 0.95F, 0.95F, 1.0F, alpha * 0.85F);
+    private static void drawPath(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
+        int count = ClientTerminalView.pathPointCount();
+        if (count < 2) return;
+        Vec3 prev = ClientTerminalView.toWorld(ClientTerminalView.pathPoint(0), partialTick);
+        for (int i = 1; i < count; i++) {
+            Vec3 point = ClientTerminalView.toWorld(ClientTerminalView.pathPoint(i), partialTick);
+            if (ClientTerminalView.pathFraction(i) <= tl.shellProgress) {
+                // Already flown: bright trail.
+                drawThickLine(buffer, ctx, prev, point, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
+            } else {
+                // Segment the shell is currently on: bright up to the shell.
+                if (tl.shellPos != null && ClientTerminalView.pathFraction(i - 1) < tl.shellProgress) {
+                    drawThickLine(buffer, ctx, prev, tl.shellPos, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
+                }
+                // Still ahead: faint full path so the trajectory reads.
+                drawThickLine(buffer, ctx, prev, point, 0.8F, 0.85F, 1.0F, tl.fade * 0.22F);
+            }
             prev = point;
         }
     }
 
-    private static void drawPlates(BufferBuilder buffer, Ctx ctx, float partialTick, float alpha) {
+    private static void drawPlates(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
         List<ClientboundTerminalBallisticsPacket.Plate> plates = ClientTerminalView.plates();
-        for (ClientboundTerminalBallisticsPacket.Plate plate : plates) {
+        for (int i = 0; i < plates.size(); i++) {
+            ClientboundTerminalBallisticsPacket.Plate plate = plates.get(i);
+            double appear = tl.plateAppear != null && i < tl.plateAppear.length ? tl.plateAppear[i] : 0.0D;
+            if (tl.age < appear) continue; // not struck yet in the replay
             Vec3 pos = ClientTerminalView.toWorld(plate.pos(), partialTick);
             float[] color = colorFor(plate.outcome());
+            float flash = tl.plateFlash(i);
+            float alpha = Math.min(1.0F, tl.fade * (1.0F + flash * 0.9F));
             Vec3 min = pos.subtract(PLATE_HALF, PLATE_HALF, PLATE_HALF);
             Vec3 max = pos.add(PLATE_HALF, PLATE_HALF, PLATE_HALF);
             // Translucent filled faces first, bright outline on top.
@@ -225,20 +238,24 @@ public final class ClientTerminalOverlay {
                     color[0], color[1], color[2], alpha * 0.8F);
             }
         }
-        // Bright cross at the final impact point.
+        // Bright cross at the final impact point, once reached.
         if (!plates.isEmpty()) {
-            Vec3 last = ClientTerminalView.toWorld(plates.get(plates.size() - 1).pos(), partialTick);
-            float[] color = colorFor(plates.get(plates.size() - 1).outcome());
-            double s = 0.45D;
-            drawThickLine(buffer, ctx, last.add(-s, 0, 0), last.add(s, 0, 0), color[0], color[1], color[2], alpha);
-            drawThickLine(buffer, ctx, last.add(0, -s, 0), last.add(0, s, 0), color[0], color[1], color[2], alpha);
-            drawThickLine(buffer, ctx, last.add(0, 0, -s), last.add(0, 0, s), color[0], color[1], color[2], alpha);
+            double lastAppear = tl.plateAppear != null && tl.plateAppear.length > 0
+                ? tl.plateAppear[tl.plateAppear.length - 1] : 0.0D;
+            if (tl.age >= lastAppear) {
+                Vec3 last = ClientTerminalView.toWorld(plates.get(plates.size() - 1).pos(), partialTick);
+                float[] color = colorFor(plates.get(plates.size() - 1).outcome());
+                double s = 0.45D;
+                drawThickLine(buffer, ctx, last.add(-s, 0, 0), last.add(s, 0, 0), color[0], color[1], color[2], tl.fade);
+                drawThickLine(buffer, ctx, last.add(0, -s, 0), last.add(0, s, 0), color[0], color[1], color[2], tl.fade);
+                drawThickLine(buffer, ctx, last.add(0, 0, -s), last.add(0, 0, s), color[0], color[1], color[2], tl.fade);
+            }
         }
     }
 
-    private static void drawSpall(BufferBuilder buffer, Ctx ctx, float partialTick, float alpha) {
+    private static void drawSpall(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
         ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spall();
-        if (spall == null || spall.fragments() <= 0) return;
+        if (spall == null || spall.fragments() <= 0 || tl.spallGrowth <= 0.0F) return;
         Vec3 origin = ClientTerminalView.toWorld(spall.origin(), partialTick);
         Vec3 dir = spall.dir();
         if (dir.lengthSqr() < 1.0e-8D) return;
@@ -249,27 +266,64 @@ public final class ClientTerminalOverlay {
         double coneCos = Mth.clamp(spall.coneCos(), 0.05D, 0.999D);
         for (int i = 0; i < rays; i++) {
             Vec3 rayDir = fragmentDirection(dir, i, rays, coneCos);
-            double len = Math.min(spall.range(), 6.0D) * (0.6D + 0.4D * (i % 3) / 2.0D);
-            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), 1.0F, 0.62F, 0.1F, alpha * 0.75F);
+            double len = Math.min(spall.range(), 6.0D) * (0.6D + 0.4D * (i % 3) / 2.0D) * tl.spallGrowth;
+            if (len < 0.05D) continue;
+            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), 1.0F, 0.62F, 0.1F,
+                tl.fade * 0.75F * (0.35F + 0.65F * tl.spallGrowth));
         }
 
-        for (ClientboundTerminalBallisticsPacket.SpallBlock block : spall.blocks()) {
-            Vec3 pos = ClientTerminalView.toWorld(block.pos(), partialTick);
-            float a = alpha * (block.broken() ? 0.95F : 0.55F);
-            float[] color = block.broken() ? STOP_COLOR : new float[]{0.75F, 0.75F, 0.8F};
-            drawThickBox(buffer, ctx, pos.subtract(0.5D, 0.5D, 0.5D), pos.add(0.5D, 0.5D, 0.5D),
-                color[0], color[1], color[2], a);
+        // Spall-struck blocks: single billboard dots on the block surface facing
+        // the spall origin (exact fragment hit points are not recorded), lit up
+        // as the growing cone front passes them.
+        for (int j = 0; j < spall.blocks().size(); j++) {
+            ClientboundTerminalBallisticsPacket.SpallBlock block = spall.blocks().get(j);
+            double distFrac = tl.blockDistFrac != null && j < tl.blockDistFrac.length ? tl.blockDistFrac[j] : 0.0D;
+            if (tl.spallGrowth < distFrac) continue;
+            float pop = Mth.clamp((float) ((tl.spallGrowth - distFrac) * 8.0D), 0.0F, 1.0F);
+            if (pop <= 0.01F) continue;
+            Vec3 blockPos = ClientTerminalView.toWorld(block.pos(), partialTick);
+            Vec3 toOrigin = origin.subtract(blockPos);
+            Vec3 surface = toOrigin.lengthSqr() < 1.0e-8D
+                ? blockPos : blockPos.add(toOrigin.normalize().scale(0.5D));
+            float[] color = block.broken() ? SPALL_BROKEN_COLOR
+                : (block.armorLike() ? new float[]{0.75F, 0.75F, 0.8F} : SPALL_INTERNAL_COLOR);
+            drawDot(buffer, ctx, surface, DOT_DISPLAY_PX * 0.5D * pop,
+                color[0], color[1], color[2], tl.fade * (block.broken() ? 0.95F : 0.6F) * pop);
         }
     }
 
-    private static void drawEntityHits(BufferBuilder buffer, Ctx ctx, float partialTick, float alpha) {
-        for (ClientboundTerminalBallisticsPacket.EntityHit hit : ClientTerminalView.entities()) {
+    private static void drawEntityHits(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
+        List<ClientboundTerminalBallisticsPacket.EntityHit> entities = ClientTerminalView.entities();
+        for (int i = 0; i < entities.size(); i++) {
+            ClientboundTerminalBallisticsPacket.EntityHit hit = entities.get(i);
+            double appear = tl.entityAppear != null && i < tl.entityAppear.length ? tl.entityAppear[i] : 0.0D;
+            if (tl.age < appear) continue;
+            float pop = Mth.clamp((float) ((tl.age - appear) / 4.0D), 0.0F, 1.0F);
             Vec3 pos = ClientTerminalView.toWorld(hit.pos(), partialTick);
             float[] color = hit.killed() ? STOP_COLOR : BOUNCE_COLOR;
             Vec3 min = pos.subtract(0.4D, 0.0D, 0.4D);
             Vec3 max = pos.add(0.4D, 1.8D, 0.4D);
-            drawThickBox(buffer, ctx, min, max, color[0], color[1], color[2], alpha);
+            drawThickBox(buffer, ctx, min, max, color[0], color[1], color[2], tl.fade * pop);
         }
+    }
+
+    /**
+     * Camera-facing billboard dot of a constant on-window size; the quad lies in
+     * the plane through {@code at} perpendicular to the view direction.
+     */
+    public static void drawDot(BufferBuilder buf, Ctx ctx, Vec3 at, double halfDisplayPx,
+                               float r, float g, float b, float a) {
+        if (halfDisplayPx <= 0.01D) return;
+        double depth = viewDepth(ctx, at);
+        if (depth < 0.06D) return;
+        double half = ctx.worldHalfWidth(depth, halfDisplayPx);
+        Vec3 upHint = Math.abs(ctx.fwd.y) > 0.95D ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
+        Vec3 right = ctx.fwd.cross(upHint).normalize();
+        Vec3 up = right.cross(ctx.fwd).normalize();
+        vertexWorld(buf, ctx, at.add(right.scale(half)).add(up.scale(half)), r, g, b, a);
+        vertexWorld(buf, ctx, at.subtract(right.scale(half)).add(up.scale(half)), r, g, b, a);
+        vertexWorld(buf, ctx, at.subtract(right.scale(half)).subtract(up.scale(half)), r, g, b, a);
+        vertexWorld(buf, ctx, at.add(right.scale(half)).subtract(up.scale(half)), r, g, b, a);
     }
 
     /** Six translucent faces of a box; fills are surfaces, so overlapping plates do not double-blend. */

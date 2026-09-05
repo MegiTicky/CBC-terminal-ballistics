@@ -40,6 +40,16 @@ public final class ClientHitcam {
 
     // ARTILLERY state
     private static int artilleryEntityId = -1;
+    // Server-relayed shell state for when the projectile is beyond client
+    // tracking range (CBC keeps simulating it server-side; the vanilla tracker
+    // has despawned the client copy there).
+    private static String artilleryGhostTypeKey = "";
+    private static Vec3 artilleryGhostPos = Vec3.ZERO;
+    private static Vec3 artilleryGhostVel = Vec3.ZERO;
+    private static long artilleryGhostUpdateGameTime;
+    private static boolean artilleryGhostAlive;
+    /** Ticks of silence after which the relay is considered lost. */
+    private static final int ARTILLERY_GHOST_TIMEOUT_TICKS = 10;
 
     public static void start(String typeKey, List<HitcamSample> recorded, String summary) {
         if (recorded.size() < 2) return;
@@ -61,6 +71,7 @@ public final class ClientHitcam {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
         mode = Mode.ARTILLERY;
         artilleryEntityId = entityId;
+        clearArtilleryGhost();
         ClientTerminalView.clear();
         resetReplay();
     }
@@ -69,14 +80,45 @@ public final class ClientHitcam {
     public static void startTerminalView() {
         mode = Mode.TERMINAL;
         artilleryEntityId = -1;
+        clearArtilleryGhost();
         resetReplay();
     }
 
     public static void stop() {
         mode = Mode.NONE;
         artilleryEntityId = -1;
+        clearArtilleryGhost();
         ClientTerminalView.clear();
         resetReplay();
+    }
+
+    private static void clearArtilleryGhost() {
+        artilleryGhostTypeKey = "";
+        artilleryGhostPos = Vec3.ZERO;
+        artilleryGhostVel = Vec3.ZERO;
+        artilleryGhostAlive = false;
+    }
+
+    /** Server relay: authoritative shell state from beyond tracking range. */
+    public static void onArtilleryUpdate(int entityId, String typeKey, Vec3 pos, Vec3 vel, boolean removed) {
+        if (!TBConfig.HITCAM_ENABLED.get()) return;
+        if (removed) {
+            artilleryGhostAlive = false;
+            return;
+        }
+        if (mode == Mode.ARTILLERY && artilleryEntityId >= 0 && artilleryEntityId != entityId) return;
+        if (mode == Mode.NONE) {
+            mode = Mode.ARTILLERY;
+            artilleryEntityId = entityId;
+            ClientTerminalView.clear();
+            resetReplay();
+        }
+        artilleryGhostTypeKey = typeKey == null ? "" : typeKey;
+        artilleryGhostPos = pos;
+        artilleryGhostVel = vel;
+        artilleryGhostAlive = true;
+        Minecraft mc = Minecraft.getInstance();
+        artilleryGhostUpdateGameTime = mc.level != null ? mc.level.getGameTime() : 0L;
     }
 
     private static void resetReplay() {
@@ -92,7 +134,7 @@ public final class ClientHitcam {
     public static boolean active() {
         return switch (mode) {
             case REPLAY -> samples.size() >= 2;
-            case ARTILLERY -> artilleryTarget() != null;
+            case ARTILLERY -> hasLiveArtilleryTarget();
             case TERMINAL -> ClientTerminalView.active();
             default -> false;
         };
@@ -103,7 +145,7 @@ public final class ClientHitcam {
     }
 
     public static boolean isArtillery() {
-        return mode == Mode.ARTILLERY && artilleryTarget() != null;
+        return mode == Mode.ARTILLERY && hasLiveArtilleryTarget();
     }
 
     public static boolean isTerminal() {
@@ -111,11 +153,26 @@ public final class ClientHitcam {
     }
 
     /** The live projectile entity the artillery cam is following, or null. */
+    @javax.annotation.Nullable
     public static Entity artilleryTarget() {
         if (artilleryEntityId < 0) return null;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) return null;
         return mc.level.getEntity(artilleryEntityId);
+    }
+
+    /** True while the cam has something to follow: a tracked entity or fresh relay data. */
+    private static boolean hasLiveArtilleryTarget() {
+        if (artilleryTarget() != null) return true;
+        if (!artilleryGhostAlive) return false;
+        Minecraft mc = Minecraft.getInstance();
+        return mc.level != null
+            && mc.level.getGameTime() - artilleryGhostUpdateGameTime <= ARTILLERY_GHOST_TIMEOUT_TICKS;
+    }
+
+    /** Shell type key for the relay ghost model (empty while the real entity is tracked). */
+    public static String artilleryGhostTypeKey() {
+        return artilleryGhostTypeKey;
     }
 
     public static String entityTypeKey() {
@@ -153,7 +210,7 @@ public final class ClientHitcam {
                 }
             }
             case ARTILLERY -> {
-                if (artilleryTarget() == null) {
+                if (!hasLiveArtilleryTarget()) {
                     stop();
                 }
             }
@@ -196,24 +253,36 @@ public final class ClientHitcam {
     }
 
     public static Vec3 shellPos() {
-        if (isArtillery()) {
-            Entity target = artilleryTarget();
-            return target.position();
-        }
-        return samplePos(playHead);
+        return shellPos(0.0F);
     }
 
     /**
      * Shell position interpolated to this rendered frame. Entities advance once
      * per server tick, so the chase camera and manual PiP shell render would
      * otherwise sit up to a block behind the shell the world pass drew at the
-     * partial-tick position, pushing it toward the window edge.
+     * partial-tick position, pushing it toward the window edge. When the entity
+     * is beyond tracking range, extrapolates the last server relay instead.
      */
     public static Vec3 shellPos(float partialTick) {
+        if (isTerminal()) {
+            Vec3 pos = ClientTerminalView.shellPos(partialTick);
+            return pos != null ? pos : samplePos(playHead);
+        }
         if (isArtillery()) {
-            return lerpedPosition(artilleryTarget(), partialTick);
+            Entity target = artilleryTarget();
+            if (target != null) {
+                return lerpedPosition(target, partialTick);
+            }
+            return ghostExtrapolated(partialTick);
         }
         return samplePos(playHead);
+    }
+
+    /** Relay-based shell position, extrapolated forward by velocity since the last update. */
+    private static Vec3 ghostExtrapolated(float partialTick) {
+        Minecraft mc = Minecraft.getInstance();
+        double elapsed = mc.level != null ? mc.level.getGameTime() - artilleryGhostUpdateGameTime : 0L;
+        return artilleryGhostPos.add(artilleryGhostVel.scale(Math.max(0.0D, elapsed + partialTick)));
     }
 
     /** Partial-tick interpolated entity position, matching the vanilla render. */
@@ -225,11 +294,19 @@ public final class ClientHitcam {
     }
 
     public static Vec3 shellDir() {
+        return shellDir(0.0F);
+    }
+
+    public static Vec3 shellDir(float partialTick) {
+        if (isTerminal()) {
+            Vec3 dir = ClientTerminalView.shellDir(partialTick);
+            return dir != null ? dir : sampleDir(playHead);
+        }
         if (isArtillery()) {
             Entity target = artilleryTarget();
-            Vec3 vel = target.getDeltaMovement();
+            Vec3 vel = target != null ? target.getDeltaMovement() : artilleryGhostVel;
             if (vel.lengthSqr() > 1.0e-6D) return vel.normalize();
-            Vec3 look = target.getLookAngle();
+            Vec3 look = target != null ? target.getLookAngle() : Vec3.ZERO;
             return look.lengthSqr() < 1.0e-6D ? new Vec3(0, 1, 0) : look.normalize();
         }
         return sampleDir(playHead);
@@ -247,7 +324,7 @@ public final class ClientHitcam {
             Vec3 side = dir.cross(new Vec3(0, 1, 0));
             if (side.lengthSqr() < 1.0e-6D) side = new Vec3(1, 0, 0);
             side = side.normalize();
-            return pos.subtract(dir.scale(7.5D)).add(0.0D, 2.5D, 0.0D).add(side.scale(2.0D));
+            return pos.subtract(dir.scale(16.0D)).add(0.0D, 5.0D, 0.0D).add(side.scale(4.0D));
         }
         return shellPos().subtract(dir.scale(4.5D)).add(0.0D, 1.2D, 0.0D);
     }

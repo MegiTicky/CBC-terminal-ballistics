@@ -46,6 +46,7 @@ public final class ClientHitcamPiP {
     private static RenderTarget target;
     private static RenderTarget backupTarget;
     private static Entity ghostShell;
+    private static String ghostShellKey = "";
     private static boolean ghostFailed;
     private static boolean shellRenderWarned;
     private static boolean shaderWarningShown;
@@ -117,7 +118,7 @@ public final class ClientHitcamPiP {
         double horiz = Math.sqrt(look.x * look.x + look.z * look.z);
         float yaw = (float) Math.toDegrees(Math.atan2(-look.x, look.z));
         float pitch = (float) Math.toDegrees(-Math.atan2(look.y, horiz));
-        updateGhost(mc);
+        updateGhost(mc, partialTick);
 
         // Camera.setup dereferences the entity (view rot / eye pos lerp), so a
         // null entity NPEs; a representative entity is passed and immediately
@@ -287,20 +288,25 @@ public final class ClientHitcamPiP {
      * if the CBC renderer misbehaves with a fake entity.
      */
     private static void renderGhost(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
+        if (ClientHitcam.isTerminal()) {
+            // Animated replay: the actual shell model flies the recorded path.
+            Entity ghost = ClientTerminalView.ghost(partialTick);
+            boolean rendered = ghost != null && renderEntity(mc, camera, ghost, partialTick, viewPose);
+            if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
+            return;
+        }
         if (ClientHitcam.isArtillery()) {
-            // A real shell exists in the world and is drawn by the nested level
-            // pass, but the dispatcher pass renders it crisply in both the full
-            // and the shader-minimal PiP frame regardless.
+            // Prefer the tracked live entity; beyond tracking range, updateGhost
+            // parks the relay-fed ghost shell model at the extrapolated position.
             Entity target = ClientHitcam.artilleryTarget();
+            if (target == null) target = ghostShell;
             boolean rendered = target != null && renderEntity(mc, camera, target, partialTick, viewPose);
-            renderShellMarker(mc, camera, partialTick, viewPose);
             if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
             return;
         }
         if (!ClientHitcam.isReplay()) return;
         if (ghostShell == null || mc.level == null) return;
         boolean rendered = renderEntity(mc, camera, ghostShell, partialTick, viewPose);
-        renderShellMarker(mc, camera, partialTick, viewPose);
         if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
     }
 
@@ -357,42 +363,8 @@ public final class ClientHitcamPiP {
         }
     }
 
-    /**
-     * Bright wireframe bracket around the shell, drawn with depth test off so
-     * the viewer can always find the projectile even when the model is hidden
-     * by smoke, geometry, or a renderer failure.
-     */
-    private static void renderShellMarker(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
-        Entity target = ClientHitcam.isArtillery() ? ClientHitcam.artilleryTarget() : ghostShell;
-        if (target == null || mc.level == null) return;
-        AABB bb = target.getBoundingBox();
-        double half = Math.max(Math.max(bb.getXsize(), bb.getYsize()), bb.getZsize()) * 0.55D;
-        half = Mth.clamp(half, 0.4D, 2.4D);
-        // Center the bracket on the interpolated shell position so it wraps the
-        // model this frame rather than the shell's last server-tick spot.
-        Vec3 c = ClientHitcam.lerpedPosition(target, partialTick);
-        ClientTerminalOverlay.Ctx ctx = ClientTerminalOverlay.Ctx.of(mc, camera, viewPose);
-
-        RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
-        RenderSystem.disableDepthTest();
-        RenderSystem.disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionColorShader);
-        Tesselator tesselator = Tesselator.getInstance();
-        BufferBuilder buffer = tesselator.getBuilder();
-        buffer.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-        ClientTerminalOverlay.drawThickBox(buffer, ctx,
-            c.add(-half, -half, -half), c.add(half, half, half), 1.0F, 0.85F, 0.2F, 0.9F);
-        Vec3 axis = ClientHitcam.shellDir().scale(half * 1.6D);
-        ClientTerminalOverlay.drawThickLine(buffer, ctx,
-            c.subtract(axis), c.add(axis), 1.0F, 0.85F, 0.2F, 0.8F);
-        tesselator.end();
-        RenderSystem.enableCull();
-        RenderSystem.enableDepthTest();
-        RenderSystem.disableBlend();
-    }
-
-    private static void setGhostOrientation(Entity ghost, Vec3 dir) {
+    /** Sets the CBC projectile orientation field on a ghost shell (package-visible for ClientTerminalView). */
+    static void setGhostOrientation(Entity ghost, Vec3 dir) {
         try {
             java.lang.reflect.Field f = findField(ghost.getClass(), "orientation");
             f.set(ghost, dir.normalize());
@@ -414,7 +386,7 @@ public final class ClientHitcamPiP {
 
     private static void renderGhostStreak(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         Vec3 pos = ClientHitcam.shellPos(partialTick);
-        Vec3 dir = ClientHitcam.shellDir();
+        Vec3 dir = ClientHitcam.shellDir(partialTick);
         Vec3 tail = pos.subtract(dir.scale(1.6D));
         ClientTerminalOverlay.Ctx ctx = ClientTerminalOverlay.Ctx.of(mc, camera, viewPose);
 
@@ -433,32 +405,67 @@ public final class ClientHitcamPiP {
         RenderSystem.disableBlend();
     }
 
-    private static void updateGhost(Minecraft mc) {
-        if (!ClientHitcam.isReplay()) return;
-        if (ghostShell == null && !ghostFailed) {
-            Optional<EntityType<?>> type = EntityType.byString(ClientHitcam.entityTypeKey());
-            if (type.isPresent() && mc.level != null) {
-                try {
-                    ghostShell = type.get().create(mc.level);
-                } catch (Throwable t) {
-                    ghostShell = null;
-                }
+    /**
+     * Replays move an untracked ghost shell through the world themselves; the
+     * artillery cam needs one only while the real projectile is beyond tracking
+     * range (fed by server relay packets). Builds the ghost from the recorded
+     * type key and parks it at the current shell position each frame.
+     */
+    private static void updateGhost(Minecraft mc, float partialTick) {
+        if (ClientHitcam.isReplay()) {
+            if (ensureGhostShell(mc, ClientHitcam.entityTypeKey())) {
+                Vec3 pos = ClientHitcam.shellPos();
+                ghostShell.setPos(pos.x, pos.y, pos.z);
+                Vec3 dir = ClientHitcam.shellDir();
+                float yaw = (float) Math.toDegrees(Math.atan2(-dir.x, dir.z));
+                float pitch = (float) Math.toDegrees(-Math.asin(Mth.clamp(dir.y, -1.0D, 1.0D)));
+                ghostShell.setYRot(yaw);
+                ghostShell.setXRot(pitch);
+                ghostShell.yRotO = yaw;
+                ghostShell.xRotO = pitch;
+                ghostShell.xOld = ghostShell.xo = pos.x;
+                ghostShell.yOld = ghostShell.yo = pos.y;
+                ghostShell.zOld = ghostShell.zo = pos.z;
+                setGhostOrientation(ghostShell, dir);
             }
-            if (ghostShell == null) ghostFailed = true;
+            return;
         }
-        if (ghostShell == null || mc.level == null) return;
-        Vec3 pos = ClientHitcam.shellPos();
-        ghostShell.setPos(pos.x, pos.y, pos.z);
-        Vec3 dir = ClientHitcam.shellDir();
-        float yaw = (float) Math.toDegrees(Math.atan2(-dir.x, dir.z));
-        float pitch = (float) Math.toDegrees(-Math.asin(Mth.clamp(dir.y, -1.0D, 1.0D)));
-        ghostShell.setYRot(yaw);
-        ghostShell.setXRot(pitch);
-        ghostShell.yRotO = yaw;
-        ghostShell.xRotO = pitch;
-        ghostShell.xOld = ghostShell.xo = pos.x;
-        ghostShell.yOld = ghostShell.yo = pos.y;
-        ghostShell.zOld = ghostShell.zo = pos.z;
+        if (ClientHitcam.isArtillery() && ClientHitcam.artilleryTarget() == null) {
+            if (ensureGhostShell(mc, ClientHitcam.artilleryGhostTypeKey())) {
+                Vec3 pos = ClientHitcam.shellPos(partialTick);
+                Vec3 dir = ClientHitcam.shellDir(partialTick);
+                ghostShell.setPos(pos.x, pos.y, pos.z);
+                ghostShell.xOld = ghostShell.xo = pos.x;
+                ghostShell.yOld = ghostShell.yo = pos.y;
+                ghostShell.zOld = ghostShell.zo = pos.z;
+                float yaw = (float) Math.toDegrees(Math.atan2(-dir.x, dir.z));
+                float pitch = (float) Math.toDegrees(-Math.asin(Mth.clamp(dir.y, -1.0D, 1.0D)));
+                ghostShell.setYRot(yaw);
+                ghostShell.setXRot(pitch);
+                ghostShell.yRotO = yaw;
+                ghostShell.xRotO = pitch;
+                setGhostOrientation(ghostShell, dir);
+            }
+        }
+    }
+
+    /** Creates (or re-creates for a new type) the ghost shell; false while unavailable. */
+    private static boolean ensureGhostShell(Minecraft mc, String typeKey) {
+        if (typeKey == null || typeKey.isEmpty()) return false;
+        if (ghostShell != null && typeKey.equals(ghostShellKey)) return true;
+        if (ghostFailed && typeKey.equals(ghostShellKey)) return false;
+        ghostShell = null;
+        Optional<EntityType<?>> type = EntityType.byString(typeKey);
+        if (type.isPresent() && mc.level != null) {
+            try {
+                ghostShell = type.get().create(mc.level);
+            } catch (Throwable t) {
+                ghostShell = null;
+            }
+        }
+        ghostShellKey = typeKey;
+        if (ghostShell == null) ghostFailed = true;
+        return ghostShell != null;
     }
 
     private static void ensureTarget(int width, int height) {
