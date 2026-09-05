@@ -4,6 +4,7 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.TestLauncherProjectileCompat;
 import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
+import com.cbc_terminal_ballistics.data.IgnoredBlockManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
@@ -74,6 +75,20 @@ public final class TBImpactService {
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
         if (!TBConfig.ENABLED.get()) return null;
+        if (IgnoredBlockManager.INSTANCE.isIgnored(state)) {
+            // Ignored blocks (data-driven list) are treated as if they do not exist: the
+            // projectile passes straight through with no damage, marks, or fuze trigger,
+            // and the block is left intact. Runs before the HEAP/HEAT bypass so bypassed
+            // shells also pass through. World blocks are phased to air for the rest of the
+            // tick so CBC's clip loop continues past them; contraption blocks already have
+            // air in the world (the block lives inside the contraption), so no phasing.
+            Level level = projectile.level();
+            if (!level.isClientSide && level instanceof ServerLevel server
+                    && !ContraptionCompat.isContraptionBlock(level, hit.getBlockPos())) {
+                TemporaryBlockPassage.phaseForThisTick(server, hit.getBlockPos(), state);
+            }
+            return CBCReflect.newImpactResult("PENETRATE", false);
+        }
         if (ProjectileClassifier.shouldBypassTB(projectile)) return null;
         try {
             Level level = projectile.level();
