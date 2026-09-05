@@ -88,6 +88,9 @@ public final class ClientHitcamPiP {
                 failureLogged = true;
                 org.slf4j.Logger log = com.mojang.logging.LogUtils.getLogger();
                 log.warn("CBCTB hitcam PiP render failed, replay stopped", t);
+                Minecraft.getInstance().player.displayClientMessage(
+                    net.minecraft.network.chat.Component.literal("CBCTB hitcam PiP render failed, replay stopped: "
+                        + t.getClass().getSimpleName() + ": " + t.getMessage()), false);
             }
             ClientHitcam.stop();
         } finally {
@@ -106,11 +109,15 @@ public final class ClientHitcamPiP {
         double horiz = Math.sqrt(look.x * look.x + look.z * look.z);
         float yaw = (float) Math.toDegrees(Math.atan2(-look.x, look.z));
         float pitch = (float) Math.toDegrees(-Math.atan2(look.y, horiz));
-        camera.setup(mc.level, null, false, false, 1.0F);
+        updateGhost(mc);
+
+        // Camera.setup dereferences the entity (view rot / eye pos lerp), so a
+        // null entity NPEs; the ghost shell (or the local player as fallback)
+        // is passed and immediately overridden below.
+        Entity setupEntity = ghostShell != null ? ghostShell : mc.player;
+        camera.setup(mc.level, setupEntity, false, false, 1.0F);
         invokeSetPosition(camera, camPos);
         invokeSetRotation(camera, yaw, pitch);
-
-        updateGhost(mc);
 
         target.bindWrite(true);
         if (minimal) {
