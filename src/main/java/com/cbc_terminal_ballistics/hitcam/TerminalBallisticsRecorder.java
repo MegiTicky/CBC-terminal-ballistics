@@ -132,7 +132,8 @@ public final class TerminalBallisticsRecorder {
 
     /**
      * One armour plate processed by {@code TBImpactService.calculate}. Only
-     * armour-like or contraption blocks are reported; terrain hits are ignored.
+     * armour-like, metal, vehicle-panel (copycat/framed) or contraption blocks
+     * are reported; terrain hits are ignored.
      */
     public static void onPlateImpact(Entity projectile, Vec3 worldPos, String outcome, double damage,
                                      double toughness, boolean broken, @Nullable Entity contraptionEntity) {

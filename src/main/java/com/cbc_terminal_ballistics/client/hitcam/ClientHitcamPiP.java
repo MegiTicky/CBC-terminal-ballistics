@@ -9,6 +9,7 @@ import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.BufferUploader;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -17,6 +18,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RenderGuiEvent;
@@ -45,6 +47,7 @@ public final class ClientHitcamPiP {
     private static RenderTarget backupTarget;
     private static Entity ghostShell;
     private static boolean ghostFailed;
+    private static boolean shellRenderWarned;
     private static boolean shaderWarningShown;
     private static boolean failureLogged;
     private static Method irisApiShaderPackInUse;
@@ -282,25 +285,26 @@ public final class ClientHitcamPiP {
     private static void renderGhost(Minecraft mc, Camera camera, float partialTick) {
         if (ClientHitcam.isArtillery()) {
             // A real shell exists in the world and is drawn by the nested level
-            // pass, but at this chase distance the dispatcher pass renders it
-            // crisply in both the full and the shader-minimal PiP frame.
+            // pass, but the dispatcher pass renders it crisply in both the full
+            // and the shader-minimal PiP frame regardless.
             Entity target = ClientHitcam.artilleryTarget();
-            if (target != null) {
-                if (renderEntity(mc, camera, target, partialTick)) return;
-            }
-            renderGhostStreak(mc, camera);
+            boolean rendered = target != null && renderEntity(mc, camera, target, partialTick);
+            renderShellMarker(mc, camera);
+            if (!rendered) renderGhostStreak(mc, camera);
             return;
         }
         if (!ClientHitcam.isReplay()) return;
         if (ghostShell == null || mc.level == null) return;
-        if (renderEntity(mc, camera, ghostShell, partialTick)) return;
-        renderGhostStreak(mc, camera);
+        boolean rendered = renderEntity(mc, camera, ghostShell, partialTick);
+        renderShellMarker(mc, camera);
+        if (!rendered) renderGhostStreak(mc, camera);
     }
 
     /**
-     * Render one entity through the entity dispatcher (which the nested level
-     * pass has prepared for our PiP camera). Returns false when the renderer
-     * cannot be resolved so the caller can fall back.
+     * Render one entity through the entity renderer directly. CBC shells can be
+     * tiny (autocannon calibres), so the model is lifted to a size that reads in
+     * the small PiP window, War-Thunder-style. Returns false when the renderer
+     * cannot be resolved or throws so the caller can fall back.
      */
     private static boolean renderEntity(Minecraft mc, Camera camera, Entity entity, float partialTick) {
         if (mc.level == null) return false;
@@ -312,17 +316,66 @@ public final class ClientHitcamPiP {
             net.minecraft.client.renderer.entity.EntityRenderer<? super Entity> renderer =
                 mc.getEntityRenderDispatcher().getRenderer(entity);
             if (renderer == null) return false;
+            // The dispatcher's level/camera are still the main view's; point them
+            // at the PiP camera so renderer code that reads camera orientation
+            // (billboards, overlays) resolves against the right frame.
+            mc.getEntityRenderDispatcher().prepare(mc.level, camera, null);
+            AABB bb = entity.getBoundingBox();
+            double longest = Math.max(bb.getXsize(), Math.max(bb.getYsize(), bb.getZsize()));
+            float scale = (float) Mth.clamp(1.1D / Math.max(longest, 0.05D), 1.0D, 6.0D);
             PoseStack pose = new PoseStack();
             var buffers = mc.renderBuffers().bufferSource();
             setGhostOrientation(entity, ClientHitcam.shellDir());
-            mc.getEntityRenderDispatcher().render(entity, rx, ry, rz,
-                entity.getYRot(), partialTick, pose, buffers,
+            pose.pushPose();
+            pose.translate(rx, ry, rz);
+            pose.scale(scale, scale, scale);
+            renderer.render(entity, entity.getYRot(), partialTick, pose, buffers,
                 net.minecraft.client.renderer.LightTexture.FULL_BRIGHT);
+            pose.popPose();
             buffers.endBatch();
             return true;
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            if (!shellRenderWarned) {
+                shellRenderWarned = true;
+                com.mojang.logging.LogUtils.getLogger()
+                    .warn("CBCTB hitcam: manual shell render failed for {}, streak fallback in effect", entity.getType(), t);
+            }
             return false;
         }
+    }
+
+    /**
+     * Bright wireframe bracket around the shell, drawn with depth test off so
+     * the viewer can always find the projectile even when the model is hidden
+     * by smoke, geometry, or a renderer failure.
+     */
+    private static void renderShellMarker(Minecraft mc, Camera camera) {
+        Entity target = ClientHitcam.isArtillery() ? ClientHitcam.artilleryTarget() : ghostShell;
+        if (target == null || mc.level == null) return;
+        AABB bb = target.getBoundingBox();
+        double half = Math.max(Math.max(bb.getXsize(), bb.getYsize()), bb.getZsize()) * 0.65D;
+        half = Mth.clamp(half, 0.45D, 3.0D);
+        Vec3 c = ClientHitcam.shellPos();
+        Vec3 cam = camera.getPosition();
+        Matrix4f matrix = new PoseStack().last().pose();
+
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableDepthTest();
+        RenderSystem.setShader(GameRenderer::getPositionColorShader);
+        RenderSystem.lineWidth(2.5F);
+        Tesselator tesselator = Tesselator.getInstance();
+        BufferBuilder buffer = tesselator.getBuilder();
+        buffer.begin(VertexFormat.Mode.DEBUG_LINES, DefaultVertexFormat.POSITION_COLOR);
+        ClientTerminalOverlay.drawBox(buffer, matrix, cam,
+            c.add(-half, -half, -half), c.add(half, half, half), 1.0F, 0.85F, 0.2F, 0.9F);
+        Vec3 axis = ClientHitcam.shellDir().scale(half * 1.8D);
+        ClientTerminalOverlay.drawLine(buffer, matrix, cam,
+            c.subtract(axis), c.add(axis), 1.0F, 0.85F, 0.2F, 0.75F);
+        tesselator.end();
+        RenderSystem.lineWidth(1.0F);
+        RenderSystem.enableDepthTest();
+        RenderSystem.disableBlend();
     }
 
     private static void setGhostOrientation(Entity ghost, Vec3 dir) {

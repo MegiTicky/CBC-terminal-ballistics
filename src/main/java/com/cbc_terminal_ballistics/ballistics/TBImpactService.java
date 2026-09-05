@@ -136,7 +136,7 @@ public final class TBImpactService {
             boolean autocannon = caliber == TBCaliber.AUTOCANNON || caliber == TBCaliber.HEAVY_AUTOCANNON;
             boolean surfaceImpact = autocannon ? CBCReflect.lastPenetratedBlockIsAir(projectile) : CBCReflect.canHitSurface(projectile);
             // The terminal-ballistics hitcam only reconstructs vehicle/armour engagements.
-            boolean tbArmorHit = isContraption || isArmorLike(state) || isMetalLike(state);
+            boolean tbArmorHit = isContraption || isArmorLike(state) || isMetalLike(state) || isVehiclePanelLike(state);
 
             // Penetration/no-penetration intentionally follows CBC's original basis for now:
             // block is perforated if projectile_mass * incident_velocity * velocity_bonus >= CBC block toughness. (default CBC penetration)
@@ -1079,6 +1079,19 @@ public final class TBImpactService {
         String ns = id.getNamespace();
         String path = id.getPath();
         return ns.equals("rha") || ns.equals("s_a_b") || path.contains("armor") || path.contains("armour") || path.contains("rha");
+    }
+
+    /**
+     * Vehicle hull skins that are neither classic armour nor metal blocks:
+     * Copycats+ shapes, Create copycat panels/steps and Framed Blocks. Tanks are
+     * usually dressed in these, so hits on them belong in the terminal view too.
+     */
+    private static boolean isVehiclePanelLike(BlockState state) {
+        net.minecraft.resources.ResourceLocation id = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock());
+        String ns = id.getNamespace();
+        if (ns.equals("copycats") || ns.equals("framedblocks")) return true;
+        String path = id.getPath();
+        return path.contains("copycat") || path.contains("framed");
     }
 
     private static boolean isMetalLike(BlockState state) {
