@@ -98,12 +98,16 @@ public final class ClientTerminalOverlay {
 
         public static Ctx of(Minecraft mc, Camera camera, PoseStack viewPose) {
             // The rotation pose maps world space into the camera's view space
-            // (column-vector convention), so its third row is the view-space Z
+            // (column-vector convention), so its third ROW is the view-space Z
             // axis expressed in world coordinates; the camera looks along -Z,
-            // making the negated third row the world-space forward.
+            // making the negated third row the world-space forward. JOML's
+            // mXY() is column X, row Y — the row is (m02, m12, m22). Reading
+            // the third column here transposed the vector and made strokes
+            // flip direction with the camera azimuth (invisible x-ray for
+            // shots whose sweep crossed ±Z; visible for ±X).
             Matrix4f view = new Matrix4f(viewPose.last().pose());
-            double vzx = view.m20();
-            double vzy = view.m21();
+            double vzx = view.m02();
+            double vzy = view.m12();
             double vzz = view.m22();
             Vec3 fwd = new Vec3(-vzx, -vzy, -vzz);
             if (fwd.lengthSqr() < 1.0e-8D) fwd = new Vec3(0, 0, 1);
