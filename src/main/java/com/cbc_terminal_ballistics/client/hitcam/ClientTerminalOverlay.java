@@ -416,8 +416,21 @@ public final class ClientTerminalOverlay {
     }
 
     private static void drawSpall(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
-        ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spall();
-        if (spall == null || spall.fragments() <= 0 || tl.spallGrowth <= 0.0F) return;
+        if (tl.spallCount() == 0) return;
+        List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = ClientTerminalView.entities();
+        // Every cone renders; secondary cones (later plates, a second ship)
+        // start growing later in the timeline but never take the camera.
+        for (int cone = 0; cone < tl.spallCount(); cone++) {
+            drawSpallCone(buffer, ctx, tl, partialTick, cone, entityHits);
+        }
+    }
+
+    private static void drawSpallCone(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl,
+                                      float partialTick, int coneIndex,
+                                      List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits) {
+        ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spalls().get(coneIndex);
+        float growth = tl.spallGrowth(coneIndex);
+        if (spall.fragments() <= 0 || growth <= 0.0F) return;
         Vec3 origin = ClientTerminalView.toWorld(spall.origin(), partialTick);
         // The recorded direction is vehicle-local; re-anchor it to world like
         // every position, or the cone points the wrong way on rotated ships.
@@ -425,7 +438,6 @@ public final class ClientTerminalOverlay {
         if (dir.lengthSqr() < 1.0e-8D) return;
         dir = dir.normalize();
         float[] rayStops = spall.rayStops();
-        List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = ClientTerminalView.entities();
 
         // Deterministic golden-spiral cone sample, matching the server's spall shape.
         int rays = Math.min(12, Math.max(3, spall.fragments() / 2));
@@ -440,10 +452,10 @@ public final class ClientTerminalOverlay {
             }
             // And at recorded entity hits (crew) along the ray.
             len = clipRayToEntities(entityHits, origin, rayDir, len, partialTick);
-            len *= tl.spallGrowth;
+            len *= growth;
             if (len < 0.05D) continue;
             drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), SPALL_LINE_PX, 1.0F, 0.62F, 0.1F,
-                tl.fade * 0.75F * (0.35F + 0.65F * tl.spallGrowth));
+                tl.fade * 0.75F * (0.35F + 0.65F * growth));
         }
 
         // Spall-struck blocks: single billboard dots on the block surface facing
@@ -451,9 +463,9 @@ public final class ClientTerminalOverlay {
         // as the growing cone front passes them.
         for (int j = 0; j < spall.blocks().size(); j++) {
             ClientboundTerminalBallisticsPacket.SpallBlock block = spall.blocks().get(j);
-            double distFrac = tl.blockDistFrac != null && j < tl.blockDistFrac.length ? tl.blockDistFrac[j] : 0.0D;
-            if (tl.spallGrowth < distFrac) continue;
-            float pop = Mth.clamp((float) ((tl.spallGrowth - distFrac) * 8.0D), 0.0F, 1.0F);
+            double distFrac = tl.blockDistFrac(coneIndex, j);
+            if (growth < distFrac) continue;
+            float pop = Mth.clamp((growth - (float) distFrac) * 8.0F, 0.0F, 1.0F);
             if (pop <= 0.01F) continue;
             Vec3 blockPos = ClientTerminalView.toWorld(block.pos(), partialTick);
             Vec3 toOrigin = origin.subtract(blockPos);

@@ -95,8 +95,8 @@ public final class ClientTerminalView {
     private static double[] timeLut;
     private static Vec3 incomingDirLocal = Vec3.ZERO;
     private static double[] plateAppear;
-    private static double spallAppear;
-    private static double[] blockDistFrac;
+    private static double[] spallAppear;
+    private static double[][] blockDistFrac;
     private static double[] entityAppear;
 
     // Ghost shell model for the replay.
@@ -116,15 +116,16 @@ public final class ClientTerminalView {
         /** 0 once the shell has passed the end of its path (plus a short linger). */
         public final float shellAlpha;
         public final double[] plateAppear;
-        public final double spallStart;
-        public final float spallGrowth;
-        public final double[] blockDistFrac;
+        /** Per-cone appear tick; index 0 is the main armour cone (camera focus). */
+        public final double[] spallStarts;
+        public final float[] spallGrowths;
+        public final double[][] blockDistFracs;
         public final double[] entityAppear;
 
         Timeline(float age, float fade, boolean hasPath, double flightTicks, double shellProgress,
                  @Nullable Vec3 shellPos, Vec3 shellDir, float shellAlpha,
-                 double[] plateAppear, double spallStart, float spallGrowth,
-                 double[] blockDistFrac, double[] entityAppear) {
+                 double[] plateAppear, double[] spallStarts, float[] spallGrowths,
+                 double[][] blockDistFracs, double[] entityAppear) {
             this.age = age;
             this.fade = fade;
             this.hasPath = hasPath;
@@ -134,10 +135,28 @@ public final class ClientTerminalView {
             this.shellDir = shellDir;
             this.shellAlpha = shellAlpha;
             this.plateAppear = plateAppear;
-            this.spallStart = spallStart;
-            this.spallGrowth = spallGrowth;
-            this.blockDistFrac = blockDistFrac;
+            this.spallStarts = spallStarts;
+            this.spallGrowths = spallGrowths;
+            this.blockDistFracs = blockDistFracs;
             this.entityAppear = entityAppear;
+        }
+
+        public int spallCount() {
+            return spallStarts == null ? 0 : spallStarts.length;
+        }
+
+        public double spallStart(int cone) {
+            return spallStarts != null && cone < spallStarts.length ? spallStarts[cone] : Double.MAX_VALUE;
+        }
+
+        public float spallGrowth(int cone) {
+            return spallGrowths != null && cone < spallGrowths.length ? spallGrowths[cone] : 0.0F;
+        }
+
+        public double blockDistFrac(int cone, int block) {
+            if (blockDistFracs == null || cone >= blockDistFracs.length) return 0.0D;
+            double[] fracs = blockDistFracs[cone];
+            return fracs != null && block < fracs.length ? fracs[block] : 0.0D;
         }
 
         /** 0..1 brightness boost right after a plate is struck. */
@@ -274,9 +293,16 @@ public final class ClientTerminalView {
         return view == null ? List.of() : view.plates();
     }
 
+    /** All spall cones in order; index 0 is the main armour cone. */
+    public static List<ClientboundTerminalBallisticsPacket.Spall> spalls() {
+        return view == null ? List.of() : view.spalls();
+    }
+
+    /** The primary (main armour) spall cone, or null when nothing spalled. */
     @Nullable
     public static ClientboundTerminalBallisticsPacket.Spall spall() {
-        return view == null ? null : view.spall();
+        List<ClientboundTerminalBallisticsPacket.Spall> list = spalls();
+        return list.isEmpty() ? null : list.get(0);
     }
 
     public static List<ClientboundTerminalBallisticsPacket.EntityHit> entities() {
@@ -336,13 +362,18 @@ public final class ClientTerminalView {
         return follow;
     }
 
-    /** Where the camera settles after the shell lands: spall site, final plate, or center. */
+    /**
+     * Where the camera settles after the shell lands. Always the FIRST
+     * engagement: the main armour plate's spall site, or the first plate
+     * itself. Secondary engagements (later plates, a second ship) render into
+     * the diagram but never drag the camera away from the first hit.
+     */
     private static Vec3 terminalFocus(float partialTick) {
         ClientboundTerminalBallisticsPacket.Spall spall = spall();
         if (spall != null) return toWorld(spall.origin(), partialTick);
         List<ClientboundTerminalBallisticsPacket.Plate> plateList = plates();
         if (!plateList.isEmpty()) {
-            return toWorld(plateList.get(plateList.size() - 1).pos(), partialTick);
+            return toWorld(plateList.get(0).pos(), partialTick);
         }
         return center(partialTick);
     }
@@ -416,25 +447,30 @@ public final class ClientTerminalView {
             plateAppear[i] = hasPath ? flightTicks * timeAtProgress(fractionOf(plateList.get(i).pos())) : 0.0D;
         }
 
-        ClientboundTerminalBallisticsPacket.Spall spall = spall();
-        spallAppear = 0.0D;
-        blockDistFrac = null;
-        if (spall != null) {
-            double start = hasPath ? flightTicks * timeAtProgress(fractionOf(spall.origin())) : 0.0D;
-            double lastPlate = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : 0.0D;
+        List<ClientboundTerminalBallisticsPacket.Spall> spallList = spalls();
+        spallAppear = new double[spallList.size()];
+        blockDistFrac = new double[spallList.size()][];
+        double lastPlate = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : 0.0D;
+        for (int c = 0; c < spallList.size(); c++) {
+            ClientboundTerminalBallisticsPacket.Spall cone = spallList.get(c);
+            double start = hasPath ? flightTicks * timeAtProgress(fractionOf(cone.origin())) : 0.0D;
             // The spall waits for the struck plate's flash to finish, so the
-            // beats read in order: shell travels, block highlights, spall travels.
-            spallAppear = Math.max(start, lastPlate + PLATE_FLASH_TICKS + 2.0D);
-            blockDistFrac = new double[spall.blocks().size()];
-            double range = Math.max(spall.range(), 0.5D);
-            for (int i = 0; i < spall.blocks().size(); i++) {
-                blockDistFrac[i] = Mth.clamp(spall.blocks().get(i).pos().distanceTo(spall.origin()) / range, 0.0D, 1.0D);
+            // beats read in order: shell travels, block highlights, spall
+            // travels. Secondary cones (later plates, a second ship) queue
+            // after the previous cone's growth so each reads on its own.
+            double queue = c > 0 ? spallAppear[c - 1] + SPALL_GROW_TICKS + 2.0D : 0.0D;
+            spallAppear[c] = Math.max(Math.max(start, lastPlate + PLATE_FLASH_TICKS + 2.0D), queue);
+            blockDistFrac[c] = new double[cone.blocks().size()];
+            double range = Math.max(cone.range(), 0.5D);
+            for (int i = 0; i < cone.blocks().size(); i++) {
+                blockDistFrac[c][i] = Mth.clamp(cone.blocks().get(i).pos().distanceTo(cone.origin()) / range, 0.0D, 1.0D);
             }
         }
+        ClientboundTerminalBallisticsPacket.Spall firstCone = spallList.isEmpty() ? null : spallList.get(0);
         // The impact moment (camera close-up start, look easing) is when the
         // shell lands on the last plate — not the delayed spall start.
         impactTime = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1]
-            : (spall != null ? spallAppear : (hasPath ? flightTicks : 0.0D));
+            : (firstCone != null ? spallAppear[0] : (hasPath ? flightTicks : 0.0D));
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entityList = entities();
         entityAppear = new double[entityList.size()];
@@ -442,18 +478,18 @@ public final class ClientTerminalView {
             ClientboundTerminalBallisticsPacket.EntityHit hit = entityList.get(i);
             double direct = hasPath ? flightTicks * timeAtProgress(fractionOf(hit.pos())) : 0.0D;
             double viaSpall = 0.0D;
-            if (spall != null) {
-                double range = Math.max(spall.range(), 0.5D);
-                viaSpall = spallAppear + SPALL_GROW_TICKS
-                    * Mth.clamp(hit.pos().distanceTo(spall.origin()) / range, 0.0D, 1.0D);
+            if (firstCone != null) {
+                double range = Math.max(firstCone.range(), 0.5D);
+                viaSpall = spallAppear[0] + SPALL_GROW_TICKS
+                    * Mth.clamp(hit.pos().distanceTo(firstCone.origin()) / range, 0.0D, 1.0D);
             }
             entityAppear[i] = Math.max(direct, viaSpall);
         }
 
         // Tick at which the animation has fully played: last plate flashed,
-        // spall fully grown, entity pops done. Until then the view is sticky.
+        // every spall cone fully grown, entity pops done. Until then sticky.
         double end = 0.0D;
-        if (spall != null) end = Math.max(end, spallAppear + SPALL_GROW_TICKS);
+        for (double appear : spallAppear) end = Math.max(end, appear + SPALL_GROW_TICKS);
         for (double a : entityAppear) end = Math.max(end, a + 8.0D);
         if (plateAppear.length > 0) {
             end = Math.max(end, plateAppear[plateAppear.length - 1] + PLATE_FLASH_TICKS);
@@ -603,18 +639,21 @@ public final class ClientTerminalView {
         float age = age(partialTick);
         float remaining = duration() - age;
         float fade = Mth.clamp(remaining / 20.0F, 0.0F, 1.0F);
+        float[] growths = new float[spallAppear.length];
+        for (int i = 0; i < growths.length; i++) {
+            growths[i] = (float) Mth.clamp((age - spallAppear[i]) / SPALL_GROW_TICKS, 0.0D, 1.0D);
+        }
         if (!hasPath) {
             return new Timeline(age, fade, false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
-                plateAppear, spallAppear, 1.0F, blockDistFrac, entityAppear);
+                plateAppear, spallAppear, growths, blockDistFrac, entityAppear);
         }
         double progress = progressAtTime(age / flightTicks);
         Vec3 local = pathPointAt(progress);
         Vec3 world = toWorld(local, partialTick);
         Vec3 dir = toWorldDir(pathDirAt(progress), partialTick);
         float linger = 1.0F - (float) Mth.clamp((age - flightTicks) / SHELL_FADE_TICKS, 0.0D, 1.0D);
-        float growth = (float) Mth.clamp((age - spallAppear) / SPALL_GROW_TICKS, 0.0D, 1.0D);
         return new Timeline(age, fade, true, flightTicks, progress, world, dir, linger,
-            plateAppear, spallAppear, growth, blockDistFrac, entityAppear);
+            plateAppear, spallAppear, growths, blockDistFrac, entityAppear);
     }
 
     /** World-space shell position for the current animation frame, or null when hidden. */
@@ -706,23 +745,22 @@ public final class ClientTerminalView {
 
     private static void recomputeBounds() {
         if (view == null) return;
-        Vec3 sum = Vec3.ZERO;
-        int count = 0;
+        // Center on the FIRST engagement (first plate), so secondary
+        // engagements farther out never pull the camera off the first hit.
+        List<ClientboundTerminalBallisticsPacket.Plate> plateList = view.plates();
+        if (!plateList.isEmpty()) {
+            anchorCenter = plateList.get(0).pos();
+        } else if (!view.spalls().isEmpty()) {
+            anchorCenter = view.spalls().get(0).origin();
+        } else {
+            anchorCenter = Vec3.ZERO;
+        }
         double maxDistSq = 0.0D;
-        for (ClientboundTerminalBallisticsPacket.Plate plate : view.plates()) {
-            sum = sum.add(plate.pos());
-            count++;
-        }
-        if (count == 0 && view.spall() != null) {
-            sum = view.spall().origin();
-            count = 1;
-        }
-        anchorCenter = count > 0 ? sum.scale(1.0D / count) : Vec3.ZERO;
-        for (ClientboundTerminalBallisticsPacket.Plate plate : view.plates()) {
+        for (ClientboundTerminalBallisticsPacket.Plate plate : plateList) {
             maxDistSq = Math.max(maxDistSq, plate.pos().distanceToSqr(anchorCenter));
         }
-        if (view.spall() != null) {
-            double spallDist = Math.sqrt(view.spall().origin().distanceToSqr(anchorCenter)) + view.spall().range();
+        for (ClientboundTerminalBallisticsPacket.Spall cone : view.spalls()) {
+            double spallDist = Math.sqrt(cone.origin().distanceToSqr(anchorCenter)) + cone.range();
             maxDistSq = Math.max(maxDistSq, spallDist * spallDist);
         }
         for (ClientboundTerminalBallisticsPacket.EntityHit hit : view.entities()) {

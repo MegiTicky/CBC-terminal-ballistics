@@ -20,7 +20,7 @@ import java.util.function.Supplier;
  */
 public record ClientboundTerminalBallisticsPacket(int projectileId, String entityTypeKey, String summary, Anchor anchor,
                                                   List<HitcamSample> path, List<Plate> plates,
-                                                  Spall spall, List<EntityHit> entities) {
+                                                  List<Spall> spalls, List<EntityHit> entities) {
 
     /**
      * {@code blockStateId} is the struck block's state id ({@code Block.getId});
@@ -122,8 +122,8 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
                 }
             }
         }
-        buf.writeBoolean(spall != null);
-        if (spall != null) {
+        buf.writeVarInt(spalls == null ? 0 : spalls.size());
+        for (Spall spall : spalls == null ? List.<Spall>of() : spalls) {
             writeVec3(buf, spall.origin());
             writeVec3(buf, spall.dir());
             buf.writeFloat((float) spall.coneCos());
@@ -187,8 +187,9 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             }
             plates.add(new Plate(pos, outcome, damage, toughness, broken, stateId, boxes));
         }
-        Spall spall = null;
-        if (buf.readBoolean()) {
+        int spallCount = buf.readVarInt();
+        List<Spall> spalls = new ArrayList<>(Math.min(spallCount, 8));
+        for (int c = 0; c < spallCount; c++) {
             Vec3 origin = readVec3(buf);
             Vec3 dir = readVec3(buf);
             double coneCos = buf.readFloat();
@@ -204,14 +205,14 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             for (int i = 0; i < rayStops.length; i++) {
                 rayStops[i] = buf.readFloat();
             }
-            spall = new Spall(origin, dir, coneCos, range, fragments, blocks, rayStops);
+            spalls.add(new Spall(origin, dir, coneCos, range, fragments, blocks, rayStops));
         }
         int entityCount = buf.readVarInt();
         List<EntityHit> entities = new ArrayList<>(Math.min(entityCount, 32));
         for (int i = 0; i < entityCount; i++) {
             entities.add(new EntityHit(buf.readVarInt(), readVec3(buf), buf.readFloat(), buf.readBoolean()));
         }
-        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spall, entities);
+        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spalls, entities);
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

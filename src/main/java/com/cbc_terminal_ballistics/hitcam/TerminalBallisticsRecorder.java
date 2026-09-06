@@ -37,7 +37,8 @@ import java.util.UUID;
 public final class TerminalBallisticsRecorder {
     private static final int MAX_PLATES = 16;
     private static final int MAX_ENTITY_HITS = 8;
-    private static final int MAX_SPALL_BLOCKS = 16;
+    private static final int MAX_SPALL_CONES = 4;
+    private static final int MAX_SPALL_BLOCKS_PER_CONE = 16;
     private static final int STALE_FLUSH_TICKS = 30;
     private static final double AUDIENCE_SEARCH_RADIUS = 32.0D;
     /**
@@ -61,8 +62,14 @@ public final class TerminalBallisticsRecorder {
         Entity bound;
         final List<ClientboundTerminalBallisticsPacket.Plate> plates = new ArrayList<>();
         final List<ClientboundTerminalBallisticsPacket.EntityHit> entities = new ArrayList<>();
-        final List<ClientboundTerminalBallisticsPacket.SpallBlock> spallBlocks = new ArrayList<>();
-        ClientboundTerminalBallisticsPacket.Spall spall;
+        /**
+         * Spall cones in record order; index 0 is the main armour plate's cone
+         * (the camera focus). Later cones are secondary engagements — another
+         * plate, another ship — rendered unfocused after the first.
+         */
+        final List<ClientboundTerminalBallisticsPacket.Spall> spalls = new ArrayList<>();
+        /** Spall-struck blocks per cone, parallel to {@link #spalls}; filled after each cone is recorded. */
+        final List<List<ClientboundTerminalBallisticsPacket.SpallBlock>> spallBlocksPerCone = new ArrayList<>();
         UUID anchorUuid;
         ServerPlayer audience;
         long firstEventGameTime = -1L;
@@ -71,16 +78,19 @@ public final class TerminalBallisticsRecorder {
         boolean internalDamage;
         /** Raw shipyard position of the first VS plate, captured before world normalization. */
         BlockPos vsAnchorPos;
-        /**
-         * Set once a spall cone has been recorded and a later one arrives:
-         * the first (main armour) cone is kept and later interior cones are
-         * dropped rather than overwriting origin/dir/range with tiny cones.
-         */
-        boolean spallClosed;
         /** Game time of the last immediate snapshot send, for rate limiting. */
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
         boolean dirty;
+        /**
+         * Counts every recorded plate/spall-cone/spall-block/entity; the flush
+         * gates compare it against the value at the last dispatch so a
+         * pass-through shell's later engagements (second ship) actually reach
+         * the client instead of dying in a never-flushed session.
+         */
+        int dataVersion;
+        /** {@link #dataVersion} at the last snapshot dispatch. */
+        int dataVersionAtSnapshot;
         /** Chunks already streamed to the audience for the artillery cam's client-side terrain. */
         final it.unimi.dsi.fastutil.longs.LongOpenHashSet streamedChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
         /** Terrain-stream diagnostics: lifetime total, plus last-relay sent/unloaded counts. */
@@ -235,6 +245,7 @@ public final class TerminalBallisticsRecorder {
         } else if (!"PENETRATE".equals(outcome)) {
             session.hasTerminalOutcome = true;
         }
+        session.dataVersion++;
         session.dirty = true;
         // Play the first armour hit: one snapshot when the first plate is
         // struck starts the terminal animation while the shell keeps flying.
@@ -257,15 +268,13 @@ public final class TerminalBallisticsRecorder {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
         if (session == null || fragments <= 0) return;
-        if (session.spall != null) {
-            // Keep-first: the heaviest cone belongs to the main armour plate;
-            // later interior penetrations would overwrite it with tiny cones.
-            session.spallClosed = true;
-            return;
+        if (session.spalls.size() < MAX_SPALL_CONES) {
+            session.spalls.add(new ClientboundTerminalBallisticsPacket.Spall(normalizePoint(projectile, origin),
+                dir, coneCos, range, fragments, new ArrayList<>(),
+                rayStops != null ? rayStops : new float[0]));
+            session.spallBlocksPerCone.add(new ArrayList<>());
         }
-        session.spall = new ClientboundTerminalBallisticsPacket.Spall(normalizePoint(projectile, origin),
-            dir, coneCos, range, fragments, session.spallBlocks,
-            rayStops != null ? rayStops : new float[0]);
+        session.dataVersion++;
         session.dirty = true;
     }
 
@@ -285,10 +294,16 @@ public final class TerminalBallisticsRecorder {
     public static void onSpallBlock(Entity projectile, Vec3 worldPos, boolean broken, boolean armorLike) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
-        if (session == null || session.spallClosed || session.spallBlocks.size() >= MAX_SPALL_BLOCKS) return;
-        session.spallBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
+        if (session == null || session.spallBlocksPerCone.isEmpty()) return;
+        // Blocks arrive right after their own cone's onSpall, so the last
+        // list is always the cone these blocks belong to.
+        List<ClientboundTerminalBallisticsPacket.SpallBlock> coneBlocks =
+            session.spallBlocksPerCone.get(session.spallBlocksPerCone.size() - 1);
+        if (coneBlocks.size() >= MAX_SPALL_BLOCKS_PER_CONE) return;
+        coneBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
             normalizePoint(projectile, worldPos), broken, armorLike));
         if (!armorLike) session.internalDamage = true;
+        session.dataVersion++;
         session.dirty = true;
     }
 
@@ -322,6 +337,7 @@ public final class TerminalBallisticsRecorder {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
         if (session == null) return;
+        session.dataVersion++;
         session.dirty = true;
         for (int i = 0; i < session.entities.size(); i++) {
             ClientboundTerminalBallisticsPacket.EntityHit hit = session.entities.get(i);
@@ -351,7 +367,8 @@ public final class TerminalBallisticsRecorder {
         boolean stale = session.firstEventGameTime >= 0L
             && projectile.level().getGameTime() - session.firstEventGameTime >= STALE_FLUSH_TICKS;
         boolean neverSnapshotted = session.lastSnapshotGameTime == Long.MIN_VALUE;
-        if (session.hasTerminalOutcome || (stale && session.dirty && neverSnapshotted)) {
+        boolean newData = session.dataVersion > session.dataVersionAtSnapshot;
+        if (session.hasTerminalOutcome || (stale && session.dirty && (neverSnapshotted || newData))) {
             finalizeAndSend(projectile, session);
         }
     }
@@ -393,8 +410,11 @@ public final class TerminalBallisticsRecorder {
                     projectile.getId(), projectile.getRemovalReason(), projectile.position());
                 // Pass-through terminal flush (formerly on the entity-leave
                 // event, which also fires client-side): a shell that recorded
-                // events but never snapshotted gets its x-ray here.
-                if (session.dirty && session.lastSnapshotGameTime == Long.MIN_VALUE) {
+                // events but never snapshotted gets its x-ray here. A shell
+                // that DID snapshot still flushes when engagements accumulated
+                // since (e.g. it passed into a second ship) — otherwise that
+                // data would die with the session, never reaching the client.
+                if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot) {
                     dispatch(projectile, session);
                 }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
@@ -419,6 +439,11 @@ public final class TerminalBallisticsRecorder {
                 CBCTerminalBallistics.LOGGER.info(
                     "[CTB-HITCAM] session for shell {} ended: stationary {} ticks at {}",
                     projectile.getId(), session.stuckRelays, posNow);
+                // Same as the removed-shell path: flush engagements recorded
+                // after the last snapshot before tearing the session down.
+                if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot) {
+                    dispatch(projectile, session);
+                }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", posNow, Vec3.ZERO, true));
                 session.audience = null;
@@ -648,6 +673,7 @@ public final class TerminalBallisticsRecorder {
     private static void sendSnapshot(Entity projectile, Session session) {
         dispatch(projectile, session);
         session.lastSnapshotGameTime = projectile.level().getGameTime();
+        session.dataVersionAtSnapshot = session.dataVersion;
         session.dirty = false;
     }
 
@@ -696,17 +722,18 @@ public final class TerminalBallisticsRecorder {
                 plate.shapeBoxes()));
         }
 
-        ClientboundTerminalBallisticsPacket.Spall spall = null;
-        if (session.spall != null) {
-            List<ClientboundTerminalBallisticsPacket.SpallBlock> blocks = new ArrayList<>(session.spallBlocks.size());
-            for (ClientboundTerminalBallisticsPacket.SpallBlock block : session.spallBlocks) {
+        List<ClientboundTerminalBallisticsPacket.Spall> spalls = new ArrayList<>(session.spalls.size());
+        for (int i = 0; i < session.spalls.size(); i++) {
+            ClientboundTerminalBallisticsPacket.Spall converted = session.spalls.get(i);
+            List<ClientboundTerminalBallisticsPacket.SpallBlock> coneBlocks = session.spallBlocksPerCone.get(i);
+            List<ClientboundTerminalBallisticsPacket.SpallBlock> blocks = new ArrayList<>(coneBlocks.size());
+            for (ClientboundTerminalBallisticsPacket.SpallBlock block : coneBlocks) {
                 blocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
                     frame.toItemLocal(block.pos()), block.broken(), block.armorLike()));
             }
-            ClientboundTerminalBallisticsPacket.Spall converted = session.spall;
-            spall = new ClientboundTerminalBallisticsPacket.Spall(frame.toItemLocal(converted.origin()),
+            spalls.add(new ClientboundTerminalBallisticsPacket.Spall(frame.toItemLocal(converted.origin()),
                 frame.toLocalDir(converted.dir()), converted.coneCos(), converted.range(),
-                converted.fragments(), blocks, converted.rayStops());
+                converted.fragments(), blocks, converted.rayStops()));
         }
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entities = new ArrayList<>(session.entities.size());
@@ -715,17 +742,19 @@ public final class TerminalBallisticsRecorder {
                 hit.entityId(), frame.toLocal(hit.pos()), hit.damage(), hit.killed()));
         }
 
+        int totalSpallFragments = 0;
+        for (ClientboundTerminalBallisticsPacket.Spall cone : spalls) totalSpallFragments += cone.fragments();
         String summary = buildSummary(session);
         Vec3 plate0 = plates.get(0).pos();
         CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spall={} entities={} plate0=({},{},{}) summary=\"{}\"",
+            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} plate0=({},{},{}) summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
             frame.anchor == null ? "world" : frame.anchor.kind(),
-            path.size(), plates.size(), spall == null ? 0 : spall.fragments(), entities.size(),
+            path.size(), plates.size(), spalls.size(), totalSpallFragments, entities.size(),
             (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z), summary);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
-            summary, frame.anchor, path, plates, spall, entities));
+            summary, frame.anchor, path, plates, spalls, entities));
     }
 
     /**
@@ -764,8 +793,10 @@ public final class TerminalBallisticsRecorder {
             sb.append(" \u00b7 ").append(session.entities.size()).append(" crew");
             if (killed > 0) sb.append(" (").append(killed).append(" KIA)");
         }
-        if (session.spall != null) {
-            sb.append(" \u00b7 ").append(session.spall.fragments()).append(" spall");
+        if (!session.spalls.isEmpty()) {
+            int fragments = 0;
+            for (ClientboundTerminalBallisticsPacket.Spall cone : session.spalls) fragments += cone.fragments();
+            sb.append(" \u00b7 ").append(fragments).append(" spall");
         }
         return sb.toString();
     }
