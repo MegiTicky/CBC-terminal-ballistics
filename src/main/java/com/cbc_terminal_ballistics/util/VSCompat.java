@@ -206,6 +206,19 @@ public final class VSCompat {
 
 
     /**
+     * Public ship lookup at a world-space point, for callers that need the
+     * owning ship's identity (e.g. hitcam session splitting). Returns null
+     * outside any ship or on any failure — callers treat null as "not a ship".
+     */
+    public static Object shipManaging(Level level, Vec3 worldPos) {
+        try {
+            return getShipManagingPos(level, BlockPos.containing(worldPos));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
      * Core ship lookup using direct reflection on implementing classes.
      * This avoids VSGameUtilsKt which has client-only methods that fail verification on dedicated server.
      */

@@ -157,7 +157,12 @@ public final class ClientTerminalView {
             // started (shell stopped on the next plate a tick or two later)
             // replaces it outright — the stub is invisible. Anything else that
             // would cut a playing animation parks until the animation ends.
-            if (sameShell && (age < 10.0D || age >= animationEndTicks)) {
+            // One shell can span two ships, though: a packet anchored to a
+            // different ship is a new engagement leg, not an update of the
+            // current one, so it must park even at stub age or it would
+            // delete the first ship's x-ray right after it starts.
+            if (sameShell && (age < 10.0D || age >= animationEndTicks)
+                && !differentEngagement(packet)) {
                 start(packet, "replace same-shell stub");
                 return;
             }
@@ -173,6 +178,37 @@ public final class ClientTerminalView {
             return;
         }
         start(packet, "no active view");
+    }
+
+    /**
+     * Whether the incoming packet is anchored to a different engagement than
+     * the view currently playing. One shell can span two ships; the session
+     * splits server-side per ship, and each leg's packet carries that ship's
+     * anchor. Identity is compared by value: shipyard anchor points as
+     * components (Vec3 equals is unreliable across copies) and contraption
+     * anchor by UUID.
+     */
+    private static boolean differentEngagement(ClientboundTerminalBallisticsPacket packet) {
+        ClientboundTerminalBallisticsPacket.Anchor anchor = packet.anchor();
+        String kind = anchor == null ? null : anchor.kind();
+        if (kind == null || anchorKind == null) {
+            return kind != anchorKind;
+        }
+        if (!kind.equals(anchorKind)) return true;
+        if ("CONTRAPTION".equals(kind)) {
+            return contraptionUuid == null
+                || !contraptionUuid.toString().equals(anchor.uuid());
+        }
+        if ("VS".equals(kind)) {
+            return anchor.localRef() == null || anchor.worldRef() == null
+                || componentDiffers(anchor.localRef(), vsLocalRef)
+                || componentDiffers(anchor.worldRef(), vsWorldRef);
+        }
+        return false;
+    }
+
+    private static boolean componentDiffers(Vec3 a, Vec3 b) {
+        return a.x != b.x || a.y != b.y || a.z != b.z;
     }
 
     private static void start(ClientboundTerminalBallisticsPacket packet, String reason) {

@@ -60,6 +60,20 @@ public final class TerminalBallisticsRecorder {
         boolean internalDamage;
         /** Raw shipyard position of the first VS plate, captured before world normalization. */
         BlockPos vsAnchorPos;
+        /**
+         * The VS ship this engagement leg belongs to (identity of the object
+         * returned by {@link VSCompat#shipManaging}). A shell that passes out
+         * of one ship and into another splits the session so each leg's points
+         * convert through their own ship's frame; null keeps terrain and
+         * contraption sessions unsplit.
+         */
+        Object vsShipKey;
+        /**
+         * Set once a spall cone has been recorded and a later one arrives:
+         * the first (main armour) cone is kept and later interior cones are
+         * dropped rather than overwriting origin/dir/range with tiny cones.
+         */
+        boolean spallClosed;
         /** Game time of the last immediate snapshot send, for rate limiting. */
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
@@ -164,6 +178,40 @@ public final class TerminalBallisticsRecorder {
     }
 
     /**
+     * The session a recorded world-space point belongs to, splitting per VS
+     * ship: a shell that passes out of one ship and into another must not mix
+     * both ships' points into a single anchor frame (the second ship's blocks
+     * would render tilted through the first ship's transform). The first ship
+     * hit adopts the session; a different ship finalizes the current leg
+     * immediately (the client parks it behind the playing animation) and opens
+     * a fresh one for the new ship. Null (terrain, Create contraption) never
+     * splits. Entity hits deliberately resolve no split — they carry no block
+     * position, and spall entity/block hits interleave inside one spawnSpall
+     * pass, so splitting there could thrash the ship key.
+     */
+    private static Session sessionFor(Entity projectile, Vec3 worldPos) {
+        Session session = SESSIONS.get(projectile);
+        if (session == null) return null;
+        if (!(projectile.level() instanceof ServerLevel level)) return session;
+        Object ship = VSCompat.shipManaging(level, worldPos);
+        if (ship == null) return session;
+        if (session.vsShipKey == null) {
+            session.vsShipKey = ship;
+            return session;
+        }
+        if (session.vsShipKey == ship) return session;
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] session split shell={} oldPlates={} oldSpallBlocks={}",
+            projectile.getId(), session.plates.size(), session.spallBlocks.size());
+        Session next = new Session();
+        next.audience = session.audience;
+        next.vsShipKey = ship;
+        SESSIONS.put(projectile, next);
+        dispatch(projectile, session);
+        return next;
+    }
+
+    /**
      * One armour plate processed by {@code TBImpactService.calculate}. Only
      * armour-like, metal, vehicle-panel (copycat/framed) or contraption blocks
      * are reported; terrain hits are ignored.
@@ -172,7 +220,7 @@ public final class TerminalBallisticsRecorder {
                                      double toughness, boolean broken, int blockStateId, float[][] shapeBoxes,
                                      @Nullable Entity contraptionEntity) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
-        Session session = SESSIONS.get(projectile);
+        Session session = sessionFor(projectile, worldPos);
         if (session == null) return;
         if (session.firstEventGameTime < 0L) session.firstEventGameTime = projectile.level().getGameTime();
         if (session.plates.size() < MAX_PLATES) {
@@ -212,8 +260,18 @@ public final class TerminalBallisticsRecorder {
     public static void onSpall(Entity projectile, Vec3 origin, Vec3 dir, double coneCos, double range,
                                int fragments, float[] rayStops) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
-        Session session = SESSIONS.get(projectile);
+        // sessionFor must run before the closed check: spawnSpall calls this
+        // hook before its spall-block loop, so on a second ship the split has
+        // to happen here — a closed-check-first return would skip the split
+        // and the fresh leg would never receive its Spall cone.
+        Session session = sessionFor(projectile, origin);
         if (session == null || fragments <= 0) return;
+        if (session.spall != null) {
+            // Keep-first: the heaviest cone belongs to the main armour plate;
+            // later interior penetrations would overwrite it with tiny cones.
+            session.spallClosed = true;
+            return;
+        }
         session.spall = new ClientboundTerminalBallisticsPacket.Spall(normalizePoint(projectile, origin),
             dir, coneCos, range, fragments, session.spallBlocks,
             rayStops != null ? rayStops : new float[0]);
@@ -235,8 +293,10 @@ public final class TerminalBallisticsRecorder {
 
     public static void onSpallBlock(Entity projectile, Vec3 worldPos, boolean broken, boolean armorLike) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
-        Session session = SESSIONS.get(projectile);
-        if (session == null || session.spallBlocks.size() >= MAX_SPALL_BLOCKS) return;
+        // sessionFor before the closed check so a second ship's blocks still
+        // trigger the split even when the first ship's spall is closed.
+        Session session = sessionFor(projectile, worldPos);
+        if (session == null || session.spallClosed || session.spallBlocks.size() >= MAX_SPALL_BLOCKS) return;
         session.spallBlocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
             normalizePoint(projectile, worldPos), broken, armorLike));
         if (!armorLike) session.internalDamage = true;
