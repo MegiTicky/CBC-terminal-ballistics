@@ -38,6 +38,10 @@ public final class ArtilleryChunkCache {
     private static boolean serveHookProbed;
     private static boolean activationLogged;
     private static boolean captureLogged;
+    /** Capture/serve counters for the periodic health summary. */
+    private static int capturesSinceLog;
+    private static int servesSinceLog;
+    private static long lastCacheLogGameTime = Long.MIN_VALUE;
 
     /**
      * Called by the mixin's capture handler on every chunk packet. Logs once
@@ -83,38 +87,60 @@ public final class ArtilleryChunkCache {
     }
 
     /**
-     * True only for chunks vanilla would discard: strictly outside the
-     * player-centered view square (vanilla keeps
-     * {@code max(2, renderDistance) + 3} chunks of radius around the player),
-     * plus one extra chunk of slack so chunks near that boundary always take
-     * the vanilla path even while the client's view center lags the player by
-     * a tick. Without this check the capture would steal the player's own
-     * first-arrival chunk packets out of the client storage ring — vanilla
-     * never re-sends them, so clearing the cache later punched permanent holes
-     * into the world.
+     * True exactly when vanilla would discard the chunk: outside the
+     * player-centered view square of radius {@code max(2, renderDistance) + 3}
+     * (vanilla's {@code ClientChunkCache} view square). Matching the condition
+     * exactly matters in both directions — one chunk of slack used to leave a
+     * ring that vanilla discarded ("not in the view range") and we refused,
+     * while over-capturing steals the player's own first-arrival chunks, which
+     * vanilla never re-sends. Boundary captures are safe either way because
+     * {@link #clear()} and {@link #sweep(double, double)} release chunks
+     * without unloading anything inside vanilla's view range.
      */
     public static boolean outsideViewRange(int chunkX, int chunkZ) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return false;
         ChunkPos center = mc.player.chunkPosition();
-        int radius = Math.max(2, mc.options.renderDistance().get()) + 3 + 1;
+        int radius = Math.max(2, mc.options.renderDistance().get()) + 3;
         return Math.abs(chunkX - center.x) > radius || Math.abs(chunkZ - center.z) > radius;
     }
 
     public static void put(LevelChunk chunk) {
         CHUNKS.put(chunk.getPos().toLong(), chunk);
         empty = false;
+        capturesSinceLog++;
         if (!captureLogged) {
             captureLogged = true;
             CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] first chunk captured at {}", chunk.getPos());
         }
     }
 
+    /** Counts one serve-back to the renderer for the periodic health summary. */
+    public static void countServe() {
+        servesSinceLog++;
+    }
+
+    /**
+     * Periodic streaming-health summary while retention is active: cache size
+     * plus capture/serve deltas since the last line. Server sent == client
+     * captured == served proves the streaming chain end-to-end.
+     */
+    public static void logSummaryIfDue(long gameTime) {
+        if (gameTime - lastCacheLogGameTime < 40) return;
+        lastCacheLogGameTime = gameTime;
+        CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] client cache: size={} capturedDelta={} servedDelta={}",
+            CHUNKS.size(), capturesSinceLog, servesSinceLog);
+        capturesSinceLog = 0;
+        servesSinceLog = 0;
+    }
+
     /**
      * Drops chunks that fell well behind the shell, unloading their block
      * entities and marking their sections dirty so the compiled meshes are
      * rebuilt empty (freeing the VBOs). Called periodically from the hitcam
-     * client tick.
+     * client tick. Chunks inside vanilla's view range are dropped from the
+     * map without unloading — vanilla tracks its own copy there and never
+     * re-sends, so unloading would punch permanent holes into the world.
      */
     public static void sweep(double shellX, double shellZ) {
         if (empty) return;
@@ -127,16 +153,25 @@ public final class ArtilleryChunkCache {
             ChunkPos pos = chunk.getPos();
             if (Math.max(Math.abs(pos.x - shellCx), Math.abs(pos.z - shellCz)) <= keep) continue;
             it.remove();
-            discard(chunk);
+            if (outsideViewRange(pos.x, pos.z)) {
+                discard(chunk);
+            }
         }
         empty = CHUNKS.isEmpty();
     }
 
-    /** Drops everything; used when the view ends or the level unloads. */
+    /**
+     * Drops everything; used when the view ends or the level unloads. Same
+     * rule as {@link #sweep(double, double)}: chunks inside vanilla's view
+     * range are released without unloading.
+     */
     public static void clear() {
         if (empty) return;
         for (LevelChunk chunk : CHUNKS.values()) {
-            discard(chunk);
+            ChunkPos pos = chunk.getPos();
+            if (outsideViewRange(pos.x, pos.z)) {
+                discard(chunk);
+            }
         }
         CHUNKS.clear();
         empty = true;

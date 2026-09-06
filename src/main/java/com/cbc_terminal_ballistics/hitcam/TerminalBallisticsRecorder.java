@@ -66,6 +66,11 @@ public final class TerminalBallisticsRecorder {
         boolean dirty;
         /** Chunks already streamed to the audience for the artillery cam's client-side terrain. */
         final it.unimi.dsi.fastutil.longs.LongOpenHashSet streamedChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        /** Terrain-stream diagnostics: lifetime total, plus last-relay sent/unloaded counts. */
+        int streamTotal;
+        int streamSentLast;
+        int streamNullLast;
+        long lastStreamLogGameTime = Long.MIN_VALUE;
         /** Stuck-shell watchdog: last relayed position and count of unmoved relays. */
         Vec3 lastRelayPos;
         int stuckRelays;
@@ -174,7 +179,14 @@ public final class TerminalBallisticsRecorder {
                 shapeBoxes == null ? new float[0][] : shapeBoxes));
         }
         if (contraptionEntity != null && session.anchorUuid == null) session.anchorUuid = contraptionEntity.getUUID();
-        if (!"PENETRATE".equals(outcome)) session.hasTerminalOutcome = true;
+        if ("BOUNCE".equals(outcome)) {
+            // A ricochet does not end the shell: it keeps flying and the
+            // artillery relay must survive the hit. The x-ray still plays —
+            // sent as a snapshot so the session stays open for the relay loop.
+            sendSnapshot(projectile, session);
+        } else if (!"PENETRATE".equals(outcome)) {
+            session.hasTerminalOutcome = true;
+        }
         session.dirty = true;
         // Play the first armour hit: one snapshot when the first plate is
         // struck starts the terminal animation while the shell keeps flying.
@@ -293,8 +305,19 @@ public final class TerminalBallisticsRecorder {
     /** Projectile left the level: final flush for pass-through shells. */
     public static void onEntityRemoved(Entity projectile) {
         Session session = SESSIONS.remove(projectile);
-        if (session != null && session.dirty && session.lastSnapshotGameTime == Long.MIN_VALUE) {
-            finalizeAndSend(projectile, session);
+        if (session == null) return;
+        if (session.audience != null) {
+            // Tell the artillery cam the shell is gone. Without this the client
+            // sits out its 10-tick relay timeout and ends the view on pure
+            // extrapolation (the ghostAlive=true / silence≈11 log signature).
+            if (TBConfig.HITCAM_ENABLED.get() && TBConfig.HITCAM_ARTILLERY_CAM.get()) {
+                send(session.audience, new ClientboundArtilleryUpdatePacket(
+                    projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
+            }
+            session.audience = null;
+        }
+        if (session.dirty && session.lastSnapshotGameTime == Long.MIN_VALUE) {
+            dispatch(projectile, session);
         }
     }
 
@@ -355,7 +378,7 @@ public final class TerminalBallisticsRecorder {
     private static final int STUCK_SESSION_RELAYS = 50;
 
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
-    private static final int TERRAIN_STREAM_BUDGET_PER_RELAY = 6;
+    private static final int TERRAIN_STREAM_BUDGET_PER_RELAY = 16;
     /** Cached handle for RPL's {@code queueForceLoad} — resolved once, null if unavailable. */
     private static volatile java.lang.reflect.Method rplQueueForceLoad;
 
@@ -446,18 +469,41 @@ public final class TerminalBallisticsRecorder {
         }
 
         int budget = TERRAIN_STREAM_BUDGET_PER_RELAY;
-        for (it.unimi.dsi.fastutil.longs.LongIterator it = candidates.iterator(); it.hasNext(); ) {
-            long packed = it.nextLong();
+        // Near-camera chunks first: a fast shell outruns the budget, so the
+        // PiP camera's immediate neighbourhood must win over the ring's far
+        // corners (hash-set iteration order would otherwise be arbitrary).
+        long[] order = candidates.toLongArray();
+        it.unimi.dsi.fastutil.longs.LongArrays.unstableSort(order, (a, b) -> {
+            int da = Math.max(Math.abs(ChunkPos.getX(a) - center.x), Math.abs(ChunkPos.getZ(a) - center.z));
+            int db = Math.max(Math.abs(ChunkPos.getX(b) - center.x), Math.abs(ChunkPos.getZ(b) - center.z));
+            return Integer.compare(da, db);
+        });
+        int sentLast = 0;
+        int nullLast = 0;
+        for (long packed : order) {
             if (session.streamedChunks.contains(packed)) continue;
             int cx = ChunkPos.getX(packed);
             int cz = ChunkPos.getZ(packed);
             net.minecraft.world.level.chunk.LevelChunk chunk = chunks.getChunkNow(cx, cz);
-            if (chunk == null) continue;
+            if (chunk == null) {
+                nullLast++;
+                continue;
+            }
             player.trackChunk(new ChunkPos(cx, cz),
                 new net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket(
                     chunk, chunks.getLightEngine(), null, null));
             session.streamedChunks.add(packed);
+            sentLast++;
             if (--budget <= 0) break;
+        }
+        session.streamTotal += sentLast;
+        session.streamSentLast = sentLast;
+        session.streamNullLast = nullLast;
+        if (level.getGameTime() - session.lastStreamLogGameTime >= 40) {
+            session.lastStreamLogGameTime = level.getGameTime();
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-CHUNKSTREAM] server stream: shell=[{},{}] total={} sentLast={} nullLast={}",
+                center.x, center.z, session.streamTotal, sentLast, nullLast);
         }
     }
 

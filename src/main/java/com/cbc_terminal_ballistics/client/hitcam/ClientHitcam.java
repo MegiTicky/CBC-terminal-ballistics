@@ -158,6 +158,7 @@ public final class ClientHitcam {
         if (live && mc.level.getGameTime() % 20 == 0) {
             Vec3 shell = shellPos();
             ArtilleryChunkCache.sweep(shell.x, shell.z);
+            ArtilleryChunkCache.logSummaryIfDue(mc.level.getGameTime());
         }
     }
 

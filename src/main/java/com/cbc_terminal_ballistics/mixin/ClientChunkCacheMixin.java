@@ -110,6 +110,7 @@ public abstract class ClientChunkCacheMixin {
         LevelChunk aux = ArtilleryChunkCache.get(x, z);
         if (aux != null) {
             ArtilleryChunkCache.probeServeHook(x, z);
+            ArtilleryChunkCache.countServe();
             cir.setReturnValue(aux);
         }
     }
