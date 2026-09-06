@@ -141,36 +141,6 @@ public final class ClientTerminalOverlay {
         if (tl.fade <= 0.02F) return;
         Ctx ctx = Ctx.of(mc, camera, viewPose);
 
-        // DIAGNOSTIC (missing x-ray on some ship shots): project plate 0's
-        // world position through the CURRENT RenderSystem matrices exactly as
-        // a stroke vertex would be, and log the NDC result.
-        List<ClientboundTerminalBallisticsPacket.Plate> plateList = ClientTerminalView.plates();
-        if (!plateList.isEmpty()) {
-            long now = mc.level != null ? mc.level.getGameTime() : 0L;
-            if (now - diagLastNdcLogGameTime >= 10) {
-                diagLastNdcLogGameTime = now;
-                Vec3 plate0World = ClientTerminalView.toWorld(plateList.get(0).pos(), partialTick);
-                Vec3 look = ClientTerminalView.lookPoint(partialTick);
-                org.joml.Matrix4f full = new org.joml.Matrix4f(RenderSystem.getProjectionMatrix());
-                full.mul(new org.joml.Matrix4f(RenderSystem.getModelViewMatrix()));
-                full.mul(new org.joml.Matrix4f(ctx.view));
-                org.joml.Vector4f p = full.transform(new org.joml.Vector4f(
-                    (float) (plate0World.x - ctx.cam.x),
-                    (float) (plate0World.y - ctx.cam.y),
-                    (float) (plate0World.z - ctx.cam.z), 1.0F));
-                float ndcX = p.x() / p.w();
-                float ndcY = p.y() / p.w();
-                com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
-                    "[CTB-HITCAM] overlay ndc age={} plate0=({},{}) look=({},{},{}) lookDist={} fwd=({},{},{}) depth={}",
-                    String.format("%.1f", tl.age),
-                    String.format("%.2f", ndcX), String.format("%.2f", ndcY),
-                    String.format("%.0f", look.x), String.format("%.0f", look.y), String.format("%.0f", look.z),
-                    String.format("%.1f", look.subtract(camera.getPosition()).length()),
-                    String.format("%.2f", ctx.fwd.x), String.format("%.2f", ctx.fwd.y), String.format("%.2f", ctx.fwd.z),
-                    String.format("%.1f", viewDepth(ctx, plate0World)));
-            }
-        }
-
         // X-ray: draw over the rendered world, never hidden behind it.
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
@@ -454,43 +424,17 @@ public final class ClientTerminalOverlay {
         List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = ClientTerminalView.entities();
         // Every cone renders; secondary cones (later plates, a second ship)
         // start growing later in the timeline but never take the camera.
-        diagRaysDrawn = 0;
-        diagRaysZeroLen = 0;
-        diagRaysNoGrowth = 0;
-        diagDotsDrawn = 0;
-        if (tl.age < diagLastLogAge) diagLastLogAge = -100.0F;
         for (int cone = 0; cone < tl.spallCount(); cone++) {
             drawSpallCone(buffer, ctx, tl, partialTick, cone, entityHits);
         }
-        // DIAGNOSTIC (multi-cone spall investigation): why rays skip.
-        if (diagLastLogAge < 0.0F || tl.age - diagLastLogAge >= 10.0F) {
-            diagLastLogAge = tl.age;
-            StringBuilder growths = new StringBuilder();
-            for (int c = 0; c < tl.spallCount(); c++) {
-                growths.append(String.format("%.2f ", tl.spallGrowth(c)));
-            }
-            com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
-                "[CTB-HITCAM] spall draw age={} growths={} raysDrawn={} zeroLen={} noGrowth={} dots={}",
-                String.format("%.1f", tl.age), growths, diagRaysDrawn, diagRaysZeroLen, diagRaysNoGrowth, diagDotsDrawn);
-        }
     }
-
-    private static int diagRaysDrawn;
-    private static int diagRaysZeroLen;
-    private static int diagRaysNoGrowth;
-    private static int diagDotsDrawn;
-    private static float diagLastLogAge = -100.0F;
-    private static long diagLastNdcLogGameTime = -1L;
 
     private static void drawSpallCone(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl,
                                       float partialTick, int coneIndex,
                                       List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits) {
         ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spalls().get(coneIndex);
         float growth = tl.spallGrowth(coneIndex);
-        if (spall.fragments() <= 0 || growth <= 0.0F) {
-            diagRaysNoGrowth += Math.min(12, Math.max(3, spall.fragments() / 2));
-            return;
-        }
+        if (spall.fragments() <= 0 || growth <= 0.0F) return;
         Vec3 origin = ClientTerminalView.toWorld(spall.origin(), partialTick);
         // The recorded direction is vehicle-local; re-anchor it to world like
         // every position, or the cone points the wrong way on rotated ships.
@@ -513,11 +457,7 @@ public final class ClientTerminalOverlay {
             // And at recorded entity hits (crew) along the ray.
             len = clipRayToEntities(entityHits, origin, rayDir, len, partialTick);
             len *= growth;
-            if (len < 0.05D) {
-                diagRaysZeroLen++;
-                continue;
-            }
-            diagRaysDrawn++;
+            if (len < 0.05D) continue;
             drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), SPALL_LINE_PX, 1.0F, 0.62F, 0.1F,
                 tl.fade * 0.75F * (0.35F + 0.65F * growth));
         }
@@ -531,7 +471,6 @@ public final class ClientTerminalOverlay {
             if (growth < distFrac) continue;
             float pop = Mth.clamp((growth - (float) distFrac) * 8.0F, 0.0F, 1.0F);
             if (pop <= 0.01F) continue;
-            diagDotsDrawn++;
             Vec3 blockPos = ClientTerminalView.toWorld(block.pos(), partialTick);
             Vec3 toOrigin = origin.subtract(blockPos);
             Vec3 surface = toOrigin.lengthSqr() < 1.0e-8D

@@ -219,22 +219,6 @@ public final class ClientTerminalView {
             reason, packet.projectileId(), packet.path().size(), trimmedPath.size(),
             String.format("%.1f", flightTicks), String.format("%.1f", impactTime),
             String.format("%.1f", animationEndTicks), anchorKind, vsShip != null);
-        // DIAGNOSTIC (multi-cone spall investigation): where the diagram and
-        // camera actually land in the world for this view.
-        Vec3 diagPlate0 = plates().isEmpty() ? Vec3.ZERO : toWorld(plates().get(0).pos(), 0.0F);
-        Vec3 diagCam = cameraPos(0.0F);
-        StringBuilder coneInfo = new StringBuilder();
-        for (int i = 0; i < spallAppear.length; i++) {
-            coneInfo.append(String.format("[c%d appear=%.1f origin=%s range=%.1f blocks=%d] ", i,
-                spallAppear[i], spalls().get(i).origin(), spalls().get(i).range(),
-                spalls().get(i).blocks().size()));
-        }
-        CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] view geometry shell={} plate0World=({},{},{}) camera=({},{},{}) orbit={} cones={}",
-            packet.projectileId(),
-            String.format("%.0f", diagPlate0.x), String.format("%.0f", diagPlate0.y), String.format("%.0f", diagPlate0.z),
-            String.format("%.0f", diagCam.x), String.format("%.0f", diagCam.y), String.format("%.0f", diagCam.z),
-            String.format("%.1f", orbitRadius), coneInfo);
         ClientHitcam.startTerminalView();
     }
 
@@ -335,38 +319,13 @@ public final class ClientTerminalView {
         if ("VS".equals(anchorKind)) {
             Object ship = vsShip();
             Vec3 world = ship != null ? VSClientCompat.shipyardToWorld(ship, local) : null;
-            if (world != null) {
-                diagToWorld(ship, local, world, false);
-                return world;
-            }
+            if (world != null) return world;
             // Ship not resolvable right now (unloaded/too far): keep the diagram
             // near the impact point via a static offset instead of vanishing.
-            Vec3 fallback = local.add(vsOffset);
-            diagToWorld(null, local, fallback, true);
-            return fallback;
+            return local.add(vsOffset);
         }
         return local;
     }
-
-    /**
-     * DIAGNOSTIC (missing x-ray on some ship shots): which transform serves
-     * the diagram — the resolved ship (identity hash) or the static offset
-     * fallback — sampled at most once per 10 ticks.
-     */
-    private static void diagToWorld(Object ship, Vec3 local, Vec3 world, boolean offsetFallback) {
-        Minecraft mc = Minecraft.getInstance();
-        long now = mc.level != null ? mc.level.getGameTime() : 0L;
-        if (now - diagLastToWorldLogGameTime < 10) return;
-        diagLastToWorldLogGameTime = now;
-        CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] toWorld ship={} hash={} offsetFallback={} local=({},{},{}) world=({},{},{})",
-            ship != null ? ship.getClass().getSimpleName() : "null",
-            System.identityHashCode(ship), offsetFallback,
-            String.format("%.0f", local.x), String.format("%.0f", local.y), String.format("%.0f", local.z),
-            String.format("%.0f", world.x), String.format("%.0f", world.y), String.format("%.0f", world.z));
-    }
-
-    private static long diagLastToWorldLogGameTime = -1L;
 
     /** Vehicle-local direction -> world (rotation only), via a two-point transform. */
     public static Vec3 toWorldDir(Vec3 localDir, float partialTick) {
@@ -390,44 +349,18 @@ public final class ClientTerminalView {
      */
     public static Vec3 lookPoint(float partialTick) {
         Vec3 focus = terminalFocus(partialTick);
-        if (!hasPath || flightTicks <= 0.0D) {
-            diagLook(partialTick, focus, focus, -1.0F);
-            return focus;
-        }
+        if (!hasPath || flightTicks <= 0.0D) return focus;
         float age = age(partialTick);
         double impactFraction = Mth.clamp(impactTime / flightTicks, 0.0D, 1.0D);
         double progress = Math.min(progressAtTime(age / flightTicks), impactFraction);
         Vec3 follow = toWorld(pathPointAt(progress), partialTick);
-        Vec3 out;
         if (age >= impactTime) {
             double blend = Mth.clamp((age - impactTime) / 10.0D, 0.0D, 1.0D);
             blend = blend * blend * (3.0D - 2.0D * blend);
-            out = follow.lerp(focus, blend);
-        } else {
-            out = follow;
+            return follow.lerp(focus, blend);
         }
-        diagLook(partialTick, follow, focus, age);
-        return out;
+        return follow;
     }
-
-    /**
-     * DIAGNOSTIC (missing x-ray on some ship shots): the look target must sit
-     * on the diagram once the shell lands; log follow/focus/output so a
-     * divergence between them is visible at 10-tick resolution.
-     */
-    private static void diagLook(float partialTick, Vec3 follow, Vec3 focus, float age) {
-        Minecraft mc = Minecraft.getInstance();
-        long now = mc.level != null ? mc.level.getGameTime() : 0L;
-        if (now - diagLastLookLogGameTime < 10) return;
-        diagLastLookLogGameTime = now;
-        CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] lookPoint age={} impact={} hasPath={} follow=({},{},{}) focus=({},{},{})",
-            String.format("%.1f", age), String.format("%.1f", impactTime), hasPath,
-            String.format("%.0f", follow.x), String.format("%.0f", follow.y), String.format("%.0f", follow.z),
-            String.format("%.0f", focus.x), String.format("%.0f", focus.y), String.format("%.0f", focus.z));
-    }
-
-    private static long diagLastLookLogGameTime = -1L;
 
     /**
      * Where the camera settles after the shell lands. Always the FIRST
