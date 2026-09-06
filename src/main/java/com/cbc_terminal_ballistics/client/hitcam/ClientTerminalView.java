@@ -45,6 +45,12 @@ public final class ClientTerminalView {
     private static final double PLATE_FLASH_TICKS = 8.0D;
     /** Ticks the shell model lingers after reaching the end of the path. */
     private static final float SHELL_FADE_TICKS = 4.0F;
+    /** Time-warp LUT resolution for the bullet-time flight easing. */
+    private static final int LUT_STEPS = 120;
+    /** Ticks over which the camera eases into the post-impact close-up. */
+    private static final double CLOSEUP_TICKS = 20.0D;
+    /** Fraction of the orbit radius removed at the closest point of the close-up. */
+    private static final double CLOSEUP_FRACTION = 0.28D;
 
     private static ClientboundTerminalBallisticsPacket view;
     private static long startTick;
@@ -66,9 +72,12 @@ public final class ClientTerminalView {
 
     // Animation timeline, precomputed once in local space.
     private static boolean hasPath;
+    private static List<HitcamSample> trimmedPath = List.of();
     private static double[] pathCumLen;
     private static double totalLen;
     private static double flightTicks;
+    private static double impactTime;
+    private static double[] timeLut;
     private static Vec3 incomingDirLocal = Vec3.ZERO;
     private static double[] plateAppear;
     private static double spallAppear;
@@ -248,13 +257,11 @@ public final class ClientTerminalView {
         Vec3 focus = terminalFocus(partialTick);
         if (!hasPath || flightTicks <= 0.0D) return focus;
         float age = age(partialTick);
-        double impactTicks = spallAppear > 0.0D ? spallAppear
-            : (plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : flightTicks);
-        double impactFraction = Mth.clamp(impactTicks / flightTicks, 0.0D, 1.0D);
-        double progress = Math.min(Mth.clamp(age / flightTicks, 0.0D, 1.0D), impactFraction);
+        double impactFraction = Mth.clamp(impactTime / flightTicks, 0.0D, 1.0D);
+        double progress = Math.min(progressAtTime(age / flightTicks), impactFraction);
         Vec3 follow = toWorld(pathPointAt(progress), partialTick);
-        if (age >= impactTicks) {
-            double blend = Mth.clamp((age - impactTicks) / 10.0D, 0.0D, 1.0D);
+        if (age >= impactTime) {
+            double blend = Mth.clamp((age - impactTime) / 10.0D, 0.0D, 1.0D);
             blend = blend * blend * (3.0D - 2.0D * blend);
             return follow.lerp(focus, blend);
         }
@@ -281,13 +288,20 @@ public final class ClientTerminalView {
      */
     public static Vec3 cameraPos(float partialTick) {
         Vec3 c = center(partialTick);
-        double r = orbitRadius;
         double age = age(partialTick);
         double sweepEnd = Math.max(1.0D, duration() * SWEEP_END_FRACTION);
         double t = Mth.clamp(age / sweepEnd, 0.0D, 1.0D);
         double eased = t * t * (3.0D - 2.0D * t);
         double base = incomingAzimuth(partialTick);
         double angle = base + eased * SWEEP_RADIANS;
+        // War-Thunder close-up: from impact on, the orbit eases in toward the
+        // penetration point while the x-ray and spall play out.
+        double r = orbitRadius;
+        if (impactTime > 0.0D && age >= impactTime) {
+            double blend = Mth.clamp((age - impactTime) / CLOSEUP_TICKS, 0.0D, 1.0D);
+            blend = blend * blend * (3.0D - 2.0D * blend);
+            r *= 1.0D - CLOSEUP_FRACTION * blend;
+        }
         return new Vec3(c.x + Math.cos(angle) * r, c.y + r * 0.5D, c.z + Math.sin(angle) * r);
     }
 
@@ -303,36 +317,39 @@ public final class ClientTerminalView {
     // ---- animation timeline ------------------------------------------------------
 
     private static void buildTimeline() {
-        List<HitcamSample> path = path();
-        hasPath = path.size() >= 2;
+        trimmedPath = trimPath(path());
+        hasPath = trimmedPath.size() >= 2;
         flightTicks = 0.0D;
         totalLen = 0.0D;
         pathCumLen = null;
+        impactTime = 0.0D;
+        timeLut = null;
         incomingDirLocal = Vec3.ZERO;
         if (hasPath) {
-            pathCumLen = new double[path.size()];
+            pathCumLen = new double[trimmedPath.size()];
             double acc = 0.0D;
-            for (int i = 1; i < path.size(); i++) {
-                acc += samplePoint(path.get(i - 1)).distanceTo(samplePoint(path.get(i)));
+            for (int i = 1; i < trimmedPath.size(); i++) {
+                acc += samplePoint(trimmedPath.get(i - 1)).distanceTo(samplePoint(trimmedPath.get(i)));
                 pathCumLen[i] = acc;
             }
             totalLen = acc;
             flightTicks = Mth.clamp(totalLen * FLIGHT_TICKS_PER_BLOCK, FLIGHT_MIN_TICKS, FLIGHT_MAX_TICKS);
-            Vec3 dirIn = samplePoint(path.get(path.size() - 1)).subtract(samplePoint(path.get(0)));
+            Vec3 dirIn = samplePoint(trimmedPath.get(trimmedPath.size() - 1)).subtract(samplePoint(trimmedPath.get(0)));
             if (dirIn.lengthSqr() > 1.0e-8D) incomingDirLocal = dirIn.normalize();
+            buildTimeLut();
         }
 
         List<ClientboundTerminalBallisticsPacket.Plate> plateList = plates();
         plateAppear = new double[plateList.size()];
         for (int i = 0; i < plateList.size(); i++) {
-            plateAppear[i] = hasPath ? flightTicks * fractionOf(plateList.get(i).pos()) : 0.0D;
+            plateAppear[i] = hasPath ? flightTicks * timeAtProgress(fractionOf(plateList.get(i).pos())) : 0.0D;
         }
 
         ClientboundTerminalBallisticsPacket.Spall spall = spall();
         spallAppear = 0.0D;
         blockDistFrac = null;
         if (spall != null) {
-            double start = hasPath ? flightTicks * fractionOf(spall.origin()) : 0.0D;
+            double start = hasPath ? flightTicks * timeAtProgress(fractionOf(spall.origin())) : 0.0D;
             double lastPlate = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : 0.0D;
             spallAppear = Math.max(start, lastPlate);
             blockDistFrac = new double[spall.blocks().size()];
@@ -341,12 +358,14 @@ public final class ClientTerminalView {
                 blockDistFrac[i] = Mth.clamp(spall.blocks().get(i).pos().distanceTo(spall.origin()) / range, 0.0D, 1.0D);
             }
         }
+        impactTime = spall != null ? spallAppear
+            : (plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : (hasPath ? flightTicks : 0.0D));
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entityList = entities();
         entityAppear = new double[entityList.size()];
         for (int i = 0; i < entityList.size(); i++) {
             ClientboundTerminalBallisticsPacket.EntityHit hit = entityList.get(i);
-            double direct = hasPath ? flightTicks * fractionOf(hit.pos()) : 0.0D;
+            double direct = hasPath ? flightTicks * timeAtProgress(fractionOf(hit.pos())) : 0.0D;
             double viaSpall = 0.0D;
             if (spall != null) {
                 double range = Math.max(spall.range(), 0.5D);
@@ -357,14 +376,85 @@ public final class ClientTerminalView {
         }
     }
 
+    /**
+     * Final N blocks of the recorded flight (config {@code hitcamTerminalPathBlocks}):
+     * long shots trim their approach so the replay and the slow-motion impact
+     * dominate, War-Thunder style, instead of spending the whole flight budget
+     * crossing empty sky. Always keeps the last sample and at least two points.
+     */
+    private static List<HitcamSample> trimPath(List<HitcamSample> recorded) {
+        if (recorded.size() < 2) return recorded;
+        double budget = Math.max(10.0D, TBConfig.HITCAM_TERMINAL_PATH_BLOCKS.get());
+        int start = recorded.size() - 1;
+        double acc = 0.0D;
+        while (start > 0) {
+            double seg = samplePoint(recorded.get(start - 1)).distanceTo(samplePoint(recorded.get(start)));
+            if (acc + seg > budget && recorded.size() - start >= 2) break;
+            acc += seg;
+            start--;
+        }
+        return recorded.subList(start, recorded.size());
+    }
+
+    /**
+     * Bullet-time curve for the flight, the same shape as the manual replay's
+     * impact slow-down: full speed for the first {@code 1 - f} of the path,
+     * smoothstep deceleration to the slow-mo speed over the final {@code f}.
+     * The integral is normalized so the shell still covers the whole path in
+     * exactly {@code flightTicks}.
+     */
+    private static void buildTimeLut() {
+        double f = Mth.clamp(TBConfig.HITCAM_SLOWMO_END_FRACTION.get(), 0.0D, 1.0D);
+        double m = Mth.clamp(TBConfig.HITCAM_SLOWMO_MIN_SPEED.get(), 0.01D, 1.0D);
+        timeLut = new double[LUT_STEPS + 1];
+        // ∫ speed over the whole flight; the decel segment averages (1+m)/2.
+        double norm = f > 0.0D ? (1.0D - f) + f * (1.0D + m) * 0.5D : 1.0D;
+        for (int i = 0; i <= LUT_STEPS; i++) {
+            double u = (double) i / LUT_STEPS;
+            double raw;
+            if (f <= 0.0D || u <= 1.0D - f) {
+                raw = u;
+            } else {
+                double t = (u - (1.0D - f)) / f;
+                double ts = t * t * (3.0D - 2.0D * t);
+                raw = (1.0D - f) + f * (t - (1.0D - m) * (t * t * t - t * t * t * t * 0.5D));
+            }
+            timeLut[i] = raw / norm;
+        }
+        timeLut[LUT_STEPS] = 1.0D;
+    }
+
+    /** Path progress 0..1 the shell has reached at normalized flight time {@code u} 0..1. */
+    private static double progressAtTime(double u) {
+        if (timeLut == null) return Mth.clamp(u, 0.0D, 1.0D);
+        u = Mth.clamp(u, 0.0D, 1.0D);
+        double x = u * LUT_STEPS;
+        int i = Math.min((int) x, LUT_STEPS - 1);
+        return Mth.lerp(x - i, timeLut[i], timeLut[i + 1]);
+    }
+
+    /** Normalized flight time 0..1 at which the shell reaches path progress {@code p} 0..1. */
+    private static double timeAtProgress(double p) {
+        if (timeLut == null) return Mth.clamp(p, 0.0D, 1.0D);
+        p = Mth.clamp(p, 0.0D, 1.0D);
+        for (int i = 1; i <= LUT_STEPS; i++) {
+            if (timeLut[i] >= p) {
+                double p0 = timeLut[i - 1];
+                double p1 = timeLut[i];
+                double frac = p1 > p0 ? (p - p0) / (p1 - p0) : 0.0D;
+                return ((i - 1) + frac) / LUT_STEPS;
+            }
+        }
+        return 1.0D;
+    }
+
     /** Recorded path fraction (0..1) of a local point: nearest path sample. */
     private static double fractionOf(Vec3 local) {
         if (!hasPath || totalLen < 1.0e-6D) return 0.0D;
-        List<HitcamSample> path = path();
         int best = 0;
         double bestDist = Double.MAX_VALUE;
-        for (int i = 0; i < path.size(); i++) {
-            double d = samplePoint(path.get(i)).distanceToSqr(local);
+        for (int i = 0; i < trimmedPath.size(); i++) {
+            double d = samplePoint(trimmedPath.get(i)).distanceToSqr(local);
             if (d < bestDist) {
                 bestDist = d;
                 best = i;
@@ -375,28 +465,26 @@ public final class ClientTerminalView {
 
     /** Local path point at progress 0..1, linearly interpolated along the polyline. */
     public static Vec3 pathPointAt(double progress) {
-        List<HitcamSample> path = path();
-        if (path.isEmpty()) return Vec3.ZERO;
-        if (path.size() == 1 || totalLen < 1.0e-6D) return samplePoint(path.get(0));
+        if (trimmedPath.isEmpty()) return Vec3.ZERO;
+        if (trimmedPath.size() == 1 || totalLen < 1.0e-6D) return samplePoint(trimmedPath.get(0));
         double target = Mth.clamp(progress, 0.0D, 1.0D) * totalLen;
-        for (int i = 1; i < path.size(); i++) {
+        for (int i = 1; i < trimmedPath.size(); i++) {
             if (pathCumLen[i] >= target) {
                 double segLen = pathCumLen[i] - pathCumLen[i - 1];
                 double frac = segLen < 1.0e-6D ? 0.0D : (target - pathCumLen[i - 1]) / segLen;
-                return samplePoint(path.get(i - 1)).lerp(samplePoint(path.get(i)), frac);
+                return samplePoint(trimmedPath.get(i - 1)).lerp(samplePoint(trimmedPath.get(i)), frac);
             }
         }
-        return samplePoint(path.get(path.size() - 1));
+        return samplePoint(trimmedPath.get(trimmedPath.size() - 1));
     }
 
     /** Local path direction at progress 0..1 (segment direction). */
     public static Vec3 pathDirAt(double progress) {
-        List<HitcamSample> path = path();
-        if (path.size() < 2) return incomingDirLocal;
+        if (trimmedPath.size() < 2) return incomingDirLocal;
         double target = Mth.clamp(progress, 0.0D, 1.0D) * totalLen;
-        for (int i = 1; i < path.size(); i++) {
+        for (int i = 1; i < trimmedPath.size(); i++) {
             if (pathCumLen[i] >= target) {
-                Vec3 dir = samplePoint(path.get(i)).subtract(samplePoint(path.get(i - 1)));
+                Vec3 dir = samplePoint(trimmedPath.get(i)).subtract(samplePoint(trimmedPath.get(i - 1)));
                 return dir.lengthSqr() < 1.0e-8D ? incomingDirLocal : dir.normalize();
             }
         }
@@ -411,13 +499,13 @@ public final class ClientTerminalView {
     }
 
     public static int pathPointCount() {
-        return path().size();
+        return trimmedPath.size();
     }
 
     /** Local position of path sample {@code index}. */
     public static Vec3 pathPoint(int index) {
-        List<HitcamSample> path = path();
-        return path.isEmpty() ? Vec3.ZERO : samplePoint(path.get(Mth.clamp(index, 0, path.size() - 1)));
+        return trimmedPath.isEmpty() ? Vec3.ZERO
+            : samplePoint(trimmedPath.get(Mth.clamp(index, 0, trimmedPath.size() - 1)));
     }
 
     private static Vec3 samplePoint(HitcamSample sample) {
@@ -433,7 +521,7 @@ public final class ClientTerminalView {
             return new Timeline(age, fade, false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
                 plateAppear, spallAppear, 1.0F, blockDistFrac, entityAppear);
         }
-        double progress = Mth.clamp(age / flightTicks, 0.0D, 1.0D);
+        double progress = progressAtTime(age / flightTicks);
         Vec3 local = pathPointAt(progress);
         Vec3 world = toWorld(local, partialTick);
         Vec3 dir = toWorldDir(pathDirAt(progress), partialTick);

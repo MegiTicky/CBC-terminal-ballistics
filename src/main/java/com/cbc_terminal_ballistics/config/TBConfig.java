@@ -45,6 +45,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.BooleanValue HITCAM_ARTILLERY_CAM;
     public static final ForgeConfigSpec.BooleanValue HITCAM_TERMINAL_VIEW;
     public static final ForgeConfigSpec.IntValue HITCAM_TERMINAL_DURATION;
+    public static final ForgeConfigSpec.IntValue HITCAM_TERMINAL_PATH_BLOCKS;
     public static final ForgeConfigSpec.IntValue HITCAM_MAX_SAMPLES;
     public static final ForgeConfigSpec.DoubleValue HITCAM_SLOWMO_END_FRACTION;
     public static final ForgeConfigSpec.DoubleValue HITCAM_SLOWMO_MIN_SPEED;
@@ -110,6 +111,7 @@ public final class TBConfig {
         HITCAM_ARTILLERY_CAM = server.comment("Artillery view: automatically show a live chase-camera picture-in-picture when a projectile you fired (or are operating) spawns.").define("hitcamArtilleryCam", true);
         HITCAM_TERMINAL_VIEW = server.comment("Terminal ballistic view: after a shell engages armour, show a War-Thunder-style x-ray reconstruction (shell path, plate outcomes, spall, crew hits) in the picture-in-picture window.").define("hitcamTerminalView", true);
         HITCAM_TERMINAL_DURATION = server.comment("How long the terminal ballistic x-ray diagram stays on screen, in ticks.").defineInRange("hitcamTerminalDurationTicks", 120, 20, 600);
+        HITCAM_TERMINAL_PATH_BLOCKS = server.comment("Maximum length of the flight path, in blocks, replayed by the terminal view. Longer shots trim their approach so the impact dominates, War-Thunder style.").defineInRange("hitcamTerminalPathBlocks", 40, 10, 200);
         HITCAM_MAX_SAMPLES = server.comment("Maximum recorded flight samples per projectile. 20 samples = 1 second of flight.").defineInRange("hitcamMaxSamples", 100, 20, 600);
         HITCAM_SLOWMO_END_FRACTION = server.comment("Fraction of the replay's flight during which playback eases from normal speed into slow motion (0.3 = last 30%).").defineInRange("hitcamSlowmoEndFraction", 0.3, 0.0, 1.0);
         HITCAM_SLOWMO_MIN_SPEED = server.comment("Slowest replay playback speed reached at impact (1.0 = real time).").defineInRange("hitcamSlowmoMinSpeed", 0.12, 0.01, 1.0);
