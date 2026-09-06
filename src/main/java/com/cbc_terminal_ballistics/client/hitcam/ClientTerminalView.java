@@ -366,13 +366,16 @@ public final class ClientTerminalView {
         return new Vec3(c.x + Math.cos(angle) * r, c.y + r * 0.5D, c.z + Math.sin(angle) * r);
     }
 
-    /** World azimuth of the recorded incoming shell direction (impact face side). */
+    /** World azimuth on the approach side of the recorded incoming direction, so the sweep starts face-on to the impact face. */
     private static double incomingAzimuth(float partialTick) {
         if (incomingDirLocal.lengthSqr() < 1.0e-8D) return Math.PI * 0.25D;
         Vec3 dir = toWorldDir(incomingDirLocal, partialTick);
         double horiz = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
         if (horiz < 1.0e-6D) return Math.PI * 0.25D;
-        return Math.atan2(dir.z, dir.x);
+        // Negated: the camera must sit behind the incoming shell (approach
+        // side) to look at the impact face. Using the travel direction put it
+        // on the far side, starting at the exit face and sweeping TO the face.
+        return Math.atan2(dir.z, dir.x) + Math.PI;
     }
 
     // ---- animation timeline ------------------------------------------------------
