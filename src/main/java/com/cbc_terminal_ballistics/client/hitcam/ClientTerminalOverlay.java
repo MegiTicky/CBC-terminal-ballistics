@@ -201,20 +201,35 @@ public final class ClientTerminalOverlay {
     /**
      * One camera-facing stroke quad between two world points, half-width sized
      * for a constant {@code widthPx} width on the displayed PiP window.
+     *
+     * <p>A camera-facing ribbon is edge-on when the camera looks down the
+     * stroke, which made outlines and paths vanish at those angles ("visible
+     * from the front, gone from the side"). The ribbon is widened to offset
+     * the foreshortening down to a ~17-degree closing angle, and past that a
+     * stable perpendicular is projected instead, so the stroke reads as a
+     * short dash instead of disappearing.</p>
      */
     public static void drawThickLine(BufferBuilder buf, Ctx ctx, Vec3 from, Vec3 to, double widthPx,
                                      float r, float g, float b, float a) {
         Vec3 seg = to.subtract(from);
         if (seg.lengthSqr() < 1.0e-10D) return;
-        Vec3 perp = seg.cross(ctx.fwd);
-        double perpLen = perp.length();
-        if (perpLen < 1.0e-8D) return; // collinear with the view axis
-        perp = perp.scale(1.0D / perpLen);
 
         double depth = viewDepth(ctx, from.add(to).scale(0.5D));
         if (depth < 0.06D) return; // entirely behind the camera
         double halfW = Mth.clamp(ctx.worldHalfWidth(depth, widthPx * 0.5D), 0.01D, 0.5D);
-        perp = perp.scale(halfW);
+
+        Vec3 perp = seg.cross(ctx.fwd);
+        double sin = perp.length() / seg.length(); // sine of stroke-vs-view-axis angle
+        if (sin < 1.0e-6D) {
+            Vec3 up = Math.abs(ctx.fwd.y) < 0.9D ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
+            perp = seg.cross(up);
+            double len = perp.length();
+            if (len < 1.0e-8D) return;
+            perp = perp.scale(1.0D / len).scale(halfW);
+        } else {
+            double scale = Math.min(1.0D / Math.max(sin, 0.3D), 3.0D);
+            perp = perp.scale(1.0D / perp.length()).scale(halfW * scale);
+        }
 
         vertexWorld(buf, ctx, from.subtract(perp), r, g, b, a);
         vertexWorld(buf, ctx, from.add(perp), r, g, b, a);
