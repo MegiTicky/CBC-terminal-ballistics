@@ -368,9 +368,12 @@ public final class TerminalBallisticsRecorder {
     public static void onServerTick(net.minecraft.server.MinecraftServer server) {
         if (!TBConfig.HITCAM_ENABLED.get() || !TBConfig.HITCAM_ARTILLERY_CAM.get()) return;
         if (SESSIONS.isEmpty() || server.getTickCount() % 2 != 0) return;
-        // Rebinds mutate Session fields only (bound/pending), never the map, so
-        // iteration is safe; session-ending paths remove only the current key.
-        for (java.util.Map.Entry<UUID, Session> entry : SESSIONS.entrySet()) {
+        // Rebinds mutate Session fields only (bound/pending), never the map.
+        // Session-ending paths remove the current key via it.remove() — a
+        // map.remove() during iteration would corrupt the iterator's modCount
+        // and crash the next loop step with ConcurrentModificationException.
+        for (java.util.Iterator<java.util.Map.Entry<UUID, Session>> it = SESSIONS.entrySet().iterator(); it.hasNext(); ) {
+            java.util.Map.Entry<UUID, Session> entry = it.next();
             Session session = entry.getValue();
             Entity projectile = session.bound;
             if (projectile == null || session.audience == null) continue;
@@ -397,7 +400,7 @@ public final class TerminalBallisticsRecorder {
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
                 session.audience = null;
-                SESSIONS.remove(entry.getKey());
+                it.remove();
                 continue;
             }
             // Stuck-shell watchdog: a projectile that has not moved for ~5 s
@@ -419,7 +422,7 @@ public final class TerminalBallisticsRecorder {
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", posNow, Vec3.ZERO, true));
                 session.audience = null;
-                SESSIONS.remove(entry.getKey());
+                it.remove();
                 continue;
             }
             send(session.audience, new ClientboundArtilleryUpdatePacket(
