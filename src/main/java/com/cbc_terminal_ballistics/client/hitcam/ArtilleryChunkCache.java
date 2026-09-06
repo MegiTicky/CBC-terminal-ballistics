@@ -82,6 +82,25 @@ public final class ArtilleryChunkCache {
         return CHUNKS.get(ChunkPos.asLong(chunkX, chunkZ));
     }
 
+    /**
+     * True only for chunks vanilla would discard: strictly outside the
+     * player-centered view square (vanilla keeps
+     * {@code max(2, renderDistance) + 3} chunks of radius around the player),
+     * plus one extra chunk of slack so chunks near that boundary always take
+     * the vanilla path even while the client's view center lags the player by
+     * a tick. Without this check the capture would steal the player's own
+     * first-arrival chunk packets out of the client storage ring — vanilla
+     * never re-sends them, so clearing the cache later punched permanent holes
+     * into the world.
+     */
+    public static boolean outsideViewRange(int chunkX, int chunkZ) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null) return false;
+        ChunkPos center = mc.player.chunkPosition();
+        int radius = Math.max(2, mc.options.renderDistance().get()) + 3 + 1;
+        return Math.abs(chunkX - center.x) > radius || Math.abs(chunkZ - center.z) > radius;
+    }
+
     public static void put(LevelChunk chunk) {
         CHUNKS.put(chunk.getPos().toLong(), chunk);
         empty = false;

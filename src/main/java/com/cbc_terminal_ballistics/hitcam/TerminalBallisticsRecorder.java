@@ -66,6 +66,9 @@ public final class TerminalBallisticsRecorder {
         boolean dirty;
         /** Chunks already streamed to the audience for the artillery cam's client-side terrain. */
         final it.unimi.dsi.fastutil.longs.LongOpenHashSet streamedChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        /** Stuck-shell watchdog: last relayed position and count of unmoved relays. */
+        Vec3 lastRelayPos;
+        int stuckRelays;
     }
 
     /**
@@ -317,15 +320,39 @@ public final class TerminalBallisticsRecorder {
                 session.audience = null;
                 continue;
             }
+            // Stuck-shell watchdog: a projectile that has not moved for ~5 s
+            // (any jam cause) must not keep the relay, preflight and terrain
+            // streaming armed forever — the client's capture window stays open
+            // the whole time, and ending it later clears far-chunk caches.
+            // Announce removal and drop the session instead.
+            Vec3 posNow = projectile.position();
+            if (session.lastRelayPos != null && posNow.distanceToSqr(session.lastRelayPos) < 1.0e-4) {
+                session.stuckRelays += 2;
+            } else {
+                session.stuckRelays = 0;
+                session.lastRelayPos = posNow;
+            }
+            if (session.stuckRelays >= STUCK_SESSION_RELAYS) {
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-HITCAM] session for shell {} ended: stationary {} ticks at {}",
+                    projectile.getId(), session.stuckRelays, posNow);
+                send(session.audience, new ClientboundArtilleryUpdatePacket(
+                    projectile.getId(), "", posNow, Vec3.ZERO, true));
+                SESSIONS.remove(projectile);
+                continue;
+            }
             send(session.audience, new ClientboundArtilleryUpdatePacket(
                 projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
-                projectile.position(), projectile.getDeltaMovement(), false));
+                posNow, projectile.getDeltaMovement(), false));
             if (projectile.level() instanceof ServerLevel slevel) {
                 preflightChunkload(slevel, projectile);
             }
             streamTerrain(session, projectile, session.audience);
         }
     }
+
+    /** Relays (each = 2 ticks) after which a stationary shell's session is ended. */
+    private static final int STUCK_SESSION_RELAYS = 50;
 
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
     private static final int TERRAIN_STREAM_BUDGET_PER_RELAY = 6;

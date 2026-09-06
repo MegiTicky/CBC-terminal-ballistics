@@ -60,6 +60,21 @@ public final class TBImpactService {
     private static final org.slf4j.Logger CTB_LOG = org.slf4j.LoggerFactory.getLogger("CBCTB/ImpactService");
     private static final Map<Long, LastImpact> LAST_IMPACTS = new HashMap<>();
     private static final Set<Entity> DEFERRED_MASS_RESETS = Collections.newSetFromMap(new WeakHashMap<>());
+    /** Consecutive same-block impacts before a projectile is declared jammed and terminated. */
+    private static final int MAX_CONSECUTIVE_SAME_IMPACTS = 4;
+    private static final java.util.Map<Entity, ImpactJam> IMPACT_JAMS =
+        java.util.Collections.synchronizedMap(new WeakHashMap<>());
+
+    private static final class ImpactJam {
+        final BlockPos pos;
+        final BlockState state;
+        int count = 1;
+
+        ImpactJam(BlockPos pos, BlockState state) {
+            this.pos = pos;
+            this.state = state;
+        }
+    }
     private static final double MIN_SPALL_VISUAL_CLEARANCE = 0.85D;
     private static final double RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES = 40.0D;
     private static final double RICOCHET_MARK_MAX_INCIDENCE = Math.cos(Math.toRadians(RICOCHET_MARK_MIN_ANGLE_FROM_NORMAL_DEGREES));
@@ -90,6 +105,27 @@ public final class TBImpactService {
         try {
             Level level = projectile.level();
             BlockPos pos = hit.getBlockPos();
+            // Jam breaker: a projectile hitting the exact same block state on
+            // consecutive impacts is not advancing (observed as a shell
+            // re-penetrating one block forever when a contraption or clip edge
+            // traps it). A real shell always moves on to different blocks, so
+            // terminate it as a STOP instead of looping — the loop also kept
+            // the hitcam session and relay alive indefinitely.
+            ImpactJam jam = IMPACT_JAMS.get(projectile);
+            if (jam != null && jam.pos.equals(pos) && jam.state == state) {
+                if (++jam.count >= MAX_CONSECUTIVE_SAME_IMPACTS) {
+                    IMPACT_JAMS.remove(projectile);
+                    if (!level.isClientSide) {
+                        CBCTerminalBallistics.LOGGER.warn(
+                            "[CTB] projectile {} jammed re-impacting {} at {} for {} ticks; terminating",
+                            projectile.getType(), state.getBlock(), pos, jam.count);
+                    }
+                    return CBCReflect.newImpactResult("STOP", true);
+                }
+            } else {
+                jam = new ImpactJam(pos, state);
+                IMPACT_JAMS.put(projectile, jam);
+            }
             boolean isContraption = ContraptionCompat.isContraptionBlock(level, pos);
             // Resolve the owning contraption entity + local block position once per impact.
             // The entity drives spall blocking (snapshot raycasts); the local position anchors

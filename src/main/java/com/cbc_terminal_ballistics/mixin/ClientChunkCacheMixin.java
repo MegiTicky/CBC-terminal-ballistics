@@ -64,12 +64,14 @@ public abstract class ClientChunkCacheMixin {
                                     Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
                                     CallbackInfoReturnable<LevelChunk> cir) {
         if (!ArtilleryChunkCache.probeCaptureHook()) return;
-        // Anything vanilla would keep itself (inside the view square) takes the
-        // normal path; we only rescue the discard branch.
-        ClientChunkCache self = (ClientChunkCache) (Object) this;
-        if (self.getChunk(x, z, ChunkStatus.FULL, false) != null) return;
+        // Only rescue chunks vanilla would discard (strictly outside the
+        // player's view square, plus slack for the view-center's one-tick
+        // lag). Stealing nearer chunks empties the client storage ring, which
+        // vanilla never refills from — permanent world holes when the cache
+        // clears.
+        if (!ArtilleryChunkCache.outsideViewRange(x, z)) return;
 
-        ClientLevel level = (ClientLevel) self.getLevel();
+        ClientLevel level = (ClientLevel) ((ClientChunkCache) (Object) this).getLevel();
         ChunkPos pos = new ChunkPos(x, z);
         LevelChunk chunk = new LevelChunk(level, pos);
         chunk.replaceWithPacketData(buf, tag, consumer);
