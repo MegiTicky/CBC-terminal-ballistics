@@ -420,17 +420,42 @@ public final class ClientTerminalOverlay {
         List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = ClientTerminalView.entities();
         // Every cone renders; secondary cones (later plates, a second ship)
         // start growing later in the timeline but never take the camera.
+        diagRaysDrawn = 0;
+        diagRaysZeroLen = 0;
+        diagRaysNoGrowth = 0;
+        diagDotsDrawn = 0;
+        if (tl.age < diagLastLogAge) diagLastLogAge = -100.0F;
         for (int cone = 0; cone < tl.spallCount(); cone++) {
             drawSpallCone(buffer, ctx, tl, partialTick, cone, entityHits);
         }
+        // DIAGNOSTIC (multi-cone spall investigation): why rays skip.
+        if (diagLastLogAge < 0.0F || tl.age - diagLastLogAge >= 10.0F) {
+            diagLastLogAge = tl.age;
+            StringBuilder growths = new StringBuilder();
+            for (int c = 0; c < tl.spallCount(); c++) {
+                growths.append(String.format("%.2f ", tl.spallGrowth(c)));
+            }
+            com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] spall draw age={} growths={} raysDrawn={} zeroLen={} noGrowth={} dots={}",
+                String.format("%.1f", tl.age), growths, diagRaysDrawn, diagRaysZeroLen, diagRaysNoGrowth, diagDotsDrawn);
+        }
     }
+
+    private static int diagRaysDrawn;
+    private static int diagRaysZeroLen;
+    private static int diagRaysNoGrowth;
+    private static int diagDotsDrawn;
+    private static float diagLastLogAge = -100.0F;
 
     private static void drawSpallCone(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl,
                                       float partialTick, int coneIndex,
                                       List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits) {
         ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spalls().get(coneIndex);
         float growth = tl.spallGrowth(coneIndex);
-        if (spall.fragments() <= 0 || growth <= 0.0F) return;
+        if (spall.fragments() <= 0 || growth <= 0.0F) {
+            diagRaysNoGrowth += Math.min(12, Math.max(3, spall.fragments() / 2));
+            return;
+        }
         Vec3 origin = ClientTerminalView.toWorld(spall.origin(), partialTick);
         // The recorded direction is vehicle-local; re-anchor it to world like
         // every position, or the cone points the wrong way on rotated ships.
@@ -453,7 +478,11 @@ public final class ClientTerminalOverlay {
             // And at recorded entity hits (crew) along the ray.
             len = clipRayToEntities(entityHits, origin, rayDir, len, partialTick);
             len *= growth;
-            if (len < 0.05D) continue;
+            if (len < 0.05D) {
+                diagRaysZeroLen++;
+                continue;
+            }
+            diagRaysDrawn++;
             drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), SPALL_LINE_PX, 1.0F, 0.62F, 0.1F,
                 tl.fade * 0.75F * (0.35F + 0.65F * growth));
         }
@@ -467,6 +496,7 @@ public final class ClientTerminalOverlay {
             if (growth < distFrac) continue;
             float pop = Mth.clamp((growth - (float) distFrac) * 8.0F, 0.0F, 1.0F);
             if (pop <= 0.01F) continue;
+            diagDotsDrawn++;
             Vec3 blockPos = ClientTerminalView.toWorld(block.pos(), partialTick);
             Vec3 toOrigin = origin.subtract(blockPos);
             Vec3 surface = toOrigin.lengthSqr() < 1.0e-8D

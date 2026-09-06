@@ -219,6 +219,22 @@ public final class ClientTerminalView {
             reason, packet.projectileId(), packet.path().size(), trimmedPath.size(),
             String.format("%.1f", flightTicks), String.format("%.1f", impactTime),
             String.format("%.1f", animationEndTicks), anchorKind, vsShip != null);
+        // DIAGNOSTIC (multi-cone spall investigation): where the diagram and
+        // camera actually land in the world for this view.
+        Vec3 diagPlate0 = plates().isEmpty() ? Vec3.ZERO : toWorld(plates().get(0).pos(), 0.0F);
+        Vec3 diagCam = cameraPos(0.0F);
+        StringBuilder coneInfo = new StringBuilder();
+        for (int i = 0; i < spallAppear.length; i++) {
+            coneInfo.append(String.format("[c%d appear=%.1f origin=%s range=%.1f blocks=%d] ", i,
+                spallAppear[i], spalls().get(i).origin(), spalls().get(i).range(),
+                spalls().get(i).blocks().size()));
+        }
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] view geometry shell={} plate0World=({},{},{}) camera=({},{},{}) orbit={} cones={}",
+            packet.projectileId(),
+            String.format("%.0f", diagPlate0.x), String.format("%.0f", diagPlate0.y), String.format("%.0f", diagPlate0.z),
+            String.format("%.0f", diagCam.x), String.format("%.0f", diagCam.y), String.format("%.0f", diagCam.z),
+            String.format("%.1f", orbitRadius), coneInfo);
         ClientHitcam.startTerminalView();
     }
 
