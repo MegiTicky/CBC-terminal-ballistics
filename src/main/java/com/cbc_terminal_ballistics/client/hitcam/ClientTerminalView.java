@@ -36,9 +36,16 @@ public final class ClientTerminalView {
     private static final double SWEEP_END_FRACTION = 0.8D;
     /** Total camera turn over the sweep, radians (~115 degrees). */
     private static final double SWEEP_RADIANS = 2.0D;
+    /**
+     * Starting offset of the sweep from the incoming-shell axis, radians (~46
+     * degrees). Starting exactly on the axis looks straight down the trajectory:
+     * the shell recedes instead of approaching, the look direction barely yaws,
+     * and every stroke is end-on (invisible) until the sweep opens.
+     */
+    private static final double SWEEP_START_OFFSET = 0.8D;
     /** Replay speed: flight duration in ticks per block of recorded path. */
     private static final double FLIGHT_TICKS_PER_BLOCK = 0.6D;
-    private static final double FLIGHT_MIN_TICKS = 12.0D;
+    private static final double FLIGHT_MIN_TICKS = 20.0D;
     private static final double FLIGHT_MAX_TICKS = 40.0D;
     /** Ticks for the spall cone to reach its full extent. */
     private static final double SPALL_GROW_TICKS = 14.0D;
@@ -354,7 +361,7 @@ public final class ClientTerminalView {
         double t = Mth.clamp(age / sweepEnd, 0.0D, 1.0D);
         double eased = t * t * (3.0D - 2.0D * t);
         double base = incomingAzimuth(partialTick);
-        double angle = base + eased * SWEEP_RADIANS;
+        double angle = base + SWEEP_START_OFFSET + eased * (SWEEP_RADIANS - SWEEP_START_OFFSET);
         // War-Thunder close-up: from impact on, the orbit eases in toward the
         // penetration point while the x-ray and spall play out.
         double r = orbitRadius;
@@ -415,15 +422,19 @@ public final class ClientTerminalView {
         if (spall != null) {
             double start = hasPath ? flightTicks * timeAtProgress(fractionOf(spall.origin())) : 0.0D;
             double lastPlate = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : 0.0D;
-            spallAppear = Math.max(start, lastPlate);
+            // The spall waits for the struck plate's flash to finish, so the
+            // beats read in order: shell travels, block highlights, spall travels.
+            spallAppear = Math.max(start, lastPlate + PLATE_FLASH_TICKS + 2.0D);
             blockDistFrac = new double[spall.blocks().size()];
             double range = Math.max(spall.range(), 0.5D);
             for (int i = 0; i < spall.blocks().size(); i++) {
                 blockDistFrac[i] = Mth.clamp(spall.blocks().get(i).pos().distanceTo(spall.origin()) / range, 0.0D, 1.0D);
             }
         }
-        impactTime = spall != null ? spallAppear
-            : (plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : (hasPath ? flightTicks : 0.0D));
+        // The impact moment (camera close-up start, look easing) is when the
+        // shell lands on the last plate — not the delayed spall start.
+        impactTime = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1]
+            : (spall != null ? spallAppear : (hasPath ? flightTicks : 0.0D));
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entityList = entities();
         entityAppear = new double[entityList.size()];
@@ -441,8 +452,8 @@ public final class ClientTerminalView {
 
         // Tick at which the animation has fully played: last plate flashed,
         // spall fully grown, entity pops done. Until then the view is sticky.
-        double end = impactTime;
-        if (spall != null) end += SPALL_GROW_TICKS;
+        double end = 0.0D;
+        if (spall != null) end = Math.max(end, spallAppear + SPALL_GROW_TICKS);
         for (double a : entityAppear) end = Math.max(end, a + 8.0D);
         if (plateAppear.length > 0) {
             end = Math.max(end, plateAppear[plateAppear.length - 1] + PLATE_FLASH_TICKS);

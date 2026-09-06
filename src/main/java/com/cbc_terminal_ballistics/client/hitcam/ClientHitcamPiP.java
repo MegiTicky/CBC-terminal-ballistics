@@ -134,6 +134,10 @@ public final class ClientHitcamPiP {
     private static boolean shouldSkipFarFrame(Minecraft mc) {
         int interval = Mth.clamp(TBConfig.HITCAM_PIP_FAR_FRAME_INTERVAL.get(), 1, 10);
         if (interval <= 1) return false;
+        // The terminal x-ray is short (~6 s) and its whole point is a smooth
+        // progressive animation; the chunk-grid thrash this throttle protects
+        // against matters on long artillery flights, not here.
+        if (ClientHitcam.isTerminal()) return false;
         net.minecraft.world.level.ChunkPos pipChunk = new net.minecraft.world.level.ChunkPos(
             net.minecraft.core.BlockPos.containing(ClientHitcam.cameraPos(0.0F)));
         if (pipChunk.equals(mc.gameRenderer.getMainCamera().getBlockPosition())) return false;
