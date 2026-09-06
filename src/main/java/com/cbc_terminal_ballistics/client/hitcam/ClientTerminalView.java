@@ -73,8 +73,6 @@ public final class ClientTerminalView {
     private static Vec3 vsLocalRef = Vec3.ZERO;
     private static Vec3 vsWorldRef = Vec3.ZERO;
     private static Vec3 vsOffset = Vec3.ZERO;
-    private static long shipCacheTick = Long.MIN_VALUE;
-    private static boolean shipLookedUp;
     private static Object vsShip;
 
     private static Vec3 anchorCenter = Vec3.ZERO;
@@ -178,8 +176,6 @@ public final class ClientTerminalView {
         contraptionUuid = null;
         anchorEntity = null;
         vsShip = null;
-        shipLookedUp = false;
-        shipCacheTick = Long.MIN_VALUE;
         if (anchor != null && "CONTRAPTION".equals(anchor.kind()) && anchor.uuid() != null) {
             contraptionUuid = UUID.fromString(anchor.uuid());
         } else if (anchor != null && "VS".equals(anchor.kind())
@@ -206,7 +202,6 @@ public final class ClientTerminalView {
         anchorKind = null;
         contraptionUuid = null;
         vsShip = null;
-        shipLookedUp = false;
         ghostShell = null;
         ghostKeyUsed = "";
         // {@link #pending} deliberately survives: it is flushed by
@@ -681,16 +676,16 @@ public final class ClientTerminalView {
         if (!"VS".equals(anchorKind)) return null;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) return null;
-        ClientLevel clientLevel = mc.level;
-        long tick = mc.level.getGameTime();
-        if (tick != shipCacheTick) {
-            shipCacheTick = tick;
-            shipLookedUp = false;
-            vsShip = null;
-        }
-        if (!shipLookedUp) {
-            shipLookedUp = true;
-            vsShip = VSClientCompat.shipForReanchor(clientLevel, vsWorldRef, vsLocalRef);
+        // Once resolved, the ship object stays valid for the view's whole
+        // lifetime; re-validating every tick against the snapshot world point
+        // would drop a sailing ship after a few seconds (the snapshot point
+        // goes stale and the diagram would snap to the static fallback).
+        // Retry the lookup only while unresolved.
+        if (vsShip != null) return vsShip;
+        vsShip = VSClientCompat.shipForReanchor(mc.level, vsWorldRef, vsLocalRef);
+        if (vsShip != null) {
+            CBCTerminalBallistics.LOGGER.info("[CTB-HITCAM] ship reanchor resolved for shell {}",
+                view != null ? view.projectileId() : -1);
         }
         return vsShip;
     }

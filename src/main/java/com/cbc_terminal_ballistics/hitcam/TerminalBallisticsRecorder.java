@@ -37,6 +37,12 @@ public final class TerminalBallisticsRecorder {
     private static final int MAX_SPALL_BLOCKS = 16;
     private static final int STALE_FLUSH_TICKS = 30;
     private static final double AUDIENCE_SEARCH_RADIUS = 32.0D;
+    /**
+     * Max sane distance of a converted point from the shipyard anchor. A failed
+     * VS conversion leaves world coordinates ~100000 blocks away; a real
+     * ship-local point is the anchor plus ship size plus the flight tail.
+     */
+    private static final double FRAME_SANITY_LIMIT = 16384.0D;
 
     private static final WeakHashMap<Entity, Session> SESSIONS = new WeakHashMap<>();
 
@@ -340,6 +346,31 @@ public final class TerminalBallisticsRecorder {
         ShipFrame frame = resolveFrame(level, session);
 
         List<HitcamSample> rawPath = HitcamRecorder.samplesOf(projectile);
+
+        // Frame sanity: if the shipyard conversion silently failed, the points
+        // stay in world coordinates — ~100000 blocks from the shipyard anchor —
+        // while the packet still claims a VS anchor, and the client would place
+        // the entire diagram (and camera) in the void. Downgrade to a plain
+        // world anchor instead; the points are already consistent world coords.
+        if (frame.vsShipyardPos != null) {
+            double limitSq = FRAME_SANITY_LIMIT * FRAME_SANITY_LIMIT;
+            Vec3 anchorCenterLocal = Vec3.atCenterOf(frame.vsShipyardPos);
+            Vec3 probePlate = frame.toItemLocal(session.plates.get(0).pos());
+            boolean plateSane = probePlate.distanceToSqr(anchorCenterLocal) <= limitSq;
+            boolean pathSane = true;
+            if (!rawPath.isEmpty()) {
+                HitcamSample last = rawPath.get(rawPath.size() - 1);
+                Vec3 probePath = frame.toLocal(new Vec3(last.x(), last.y(), last.z()));
+                pathSane = probePath.distanceToSqr(anchorCenterLocal) <= limitSq;
+            }
+            if (!plateSane || !pathSane) {
+                CBCTerminalBallistics.LOGGER.warn(
+                    "[CTB-HITCAM] ship frame conversion failed (plateSane={} pathSane={}) — falling back to world frame",
+                    plateSane, pathSane);
+                frame = ShipFrame.world();
+            }
+        }
+
         List<HitcamSample> path = new ArrayList<>(rawPath.size());
         for (HitcamSample sample : rawPath) {
             path.add(anchoredSample(frame, sample));
@@ -371,11 +402,13 @@ public final class TerminalBallisticsRecorder {
         }
 
         String summary = buildSummary(session);
+        Vec3 plate0 = plates.get(0).pos();
         CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spall={} entities={} summary=\"{}\"",
+            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spall={} entities={} plate0=({},{},{}) summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
             frame.anchor == null ? "world" : frame.anchor.kind(),
-            path.size(), plates.size(), spall == null ? 0 : spall.fragments(), entities.size(), summary);
+            path.size(), plates.size(), spall == null ? 0 : spall.fragments(), entities.size(),
+            (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z), summary);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
             summary, frame.anchor, path, plates, spall, entities));

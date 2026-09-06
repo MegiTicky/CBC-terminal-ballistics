@@ -176,13 +176,23 @@ public final class VSClientCompat {
      */
     public static Object shipForReanchor(ClientLevel level, Vec3 worldRef, Vec3 shipyardRef) {
         if (!isLoaded() || level == null) return null;
-        // Wide search box so a ship that moved between the impact and this
-        // frame is still found; the transform error check below rejects ships
-        // that merely overlap the box without matching the reference point.
+        // Primary route: the ship managing the exact world block the snapshot
+        // was anchored to. Exact-position lookup cannot match a wrong ship, and
+        // unlike the box scan below it does not degrade as the ship sails away
+        // from the snapshot point.
+        Object direct = getLoadedShipManagingPos(level, BlockPos.containing(worldRef));
+        if (direct != null && shipMatches(direct, worldRef, shipyardRef, 256.0D)) {
+            return direct;
+        }
+        // Fallback: scan ships intersecting a box around the snapshot point.
         AABB box = new AABB(worldRef.x - 64.0D, worldRef.y - 64.0D, worldRef.z - 64.0D,
             worldRef.x + 64.0D, worldRef.y + 64.0D, worldRef.z + 64.0D);
         Iterable<?> ships = getShipsIntersectingBox(level, box);
-        if (ships == null) return null;
+        if (ships == null) {
+            LOG.info("[CTB-HITCAM] ship reanchor: box scan unavailable (direct={} worldRef={})",
+                direct != null, worldRef);
+            return null;
+        }
         Object best = null;
         double bestError = Double.MAX_VALUE;
         for (Object ship : ships) {
@@ -200,7 +210,17 @@ public final class VSClientCompat {
         // snapshot world position (allows for the ship moving between the
         // impact and this frame, but rejects a wrong/unrelated ship).
         if (best != null && bestError < 48.0D * 48.0D) return best;
+        LOG.info("[CTB-HITCAM] ship reanchor: no match (direct={} bestError={} worldRef={})",
+            direct != null, best == null ? "none" : String.format("%.1f", Math.sqrt(bestError)), worldRef);
         return null;
+    }
+
+    /** Sanity check: the ship's matrix must map the shipyard ref near the snapshot world ref. */
+    private static boolean shipMatches(Object ship, Vec3 worldRef, Vec3 shipyardRef, double tolerance) {
+        Object matrix = shipToWorld(ship);
+        if (matrix == null) return false;
+        Vec3 candidate = transformPosition(matrix, shipyardRef);
+        return candidate != null && candidate.distanceToSqr(worldRef) <= tolerance * tolerance;
     }
 
     /** Map a shipyard-space point to the world using the live ship transform. */
