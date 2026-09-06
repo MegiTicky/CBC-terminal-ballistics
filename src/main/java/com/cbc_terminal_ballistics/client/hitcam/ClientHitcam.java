@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.client.hitcam;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.hitcam.HitcamSample;
 import net.minecraft.client.Minecraft;
@@ -69,6 +70,15 @@ public final class ClientHitcam {
     /** Artillery view: follow this live projectile entity until it is gone. */
     public static void startArtillery(int entityId) {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
+        // A newly fired shell must not wipe a terminal animation that is still
+        // playing (salvo fire made the x-ray flash for a moment, then vanish
+        // when the next gun's track packet arrived). Its own terminal packet
+        // parks and plays when the current animation finishes.
+        if (mode == Mode.TERMINAL && ClientTerminalView.animationInProgress()) {
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] ignoring track packet for shell {} — terminal animation in progress", entityId);
+            return;
+        }
         mode = Mode.ARTILLERY;
         artilleryEntityId = entityId;
         clearArtilleryGhost();
@@ -215,11 +225,17 @@ public final class ClientHitcam {
                 }
             }
             case TERMINAL -> {
+                // Parked packets play the moment the animation completes; run
+                // this before the expiry check so a queued engagement is never
+                // lost to the view timing out.
+                ClientTerminalView.clientTick();
                 if (ClientTerminalView.expired()) {
                     stop();
                 }
             }
-            default -> {}
+            default -> {
+                ClientTerminalView.clientTick();
+            }
         }
     }
 

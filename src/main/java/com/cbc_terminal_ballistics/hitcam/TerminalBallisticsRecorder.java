@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.hitcam;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
@@ -168,8 +169,12 @@ public final class TerminalBallisticsRecorder {
         // when the shell finally stops or bounces (terminal flush in
         // onClipAndDamageTail), so mid-flight snapshots never cut the
         // animation short. The never-sent sentinel is compared by equality —
-        // subtracting Long.MIN_VALUE would overflow.
-        if ("PENETRATE".equals(outcome) && session.lastSnapshotGameTime == Long.MIN_VALUE) {
+        // subtracting Long.MIN_VALUE would overflow. Skipped on the spawn
+        // tick itself: a muzzle-area graze would snapshot a one-sample path,
+        // which the client can only play as a static flash.
+        if ("PENETRATE".equals(outcome)
+            && session.lastSnapshotGameTime == Long.MIN_VALUE
+            && projectile.tickCount >= 2) {
             sendSnapshot(projectile, session);
         }
     }
@@ -366,6 +371,11 @@ public final class TerminalBallisticsRecorder {
         }
 
         String summary = buildSummary(session);
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spall={} entities={} summary=\"{}\"",
+            projectile.getId(), projectile.tickCount,
+            frame.anchor == null ? "world" : frame.anchor.kind(),
+            path.size(), plates.size(), spall == null ? 0 : spall.fragments(), entities.size(), summary);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
             summary, frame.anchor, path, plates, spall, entities));

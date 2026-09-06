@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.client.hitcam;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.client.VSClientCompat;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.hitcam.HitcamSample;
@@ -54,6 +55,15 @@ public final class ClientTerminalView {
 
     private static ClientboundTerminalBallisticsPacket view;
     private static long startTick;
+    /**
+     * Tick (relative to the current view's start) at which the active animation
+     * — shell flight, plate flashes, spall growth — has fully played. Until
+     * then the view is sticky: packets about other shells and mid-flight
+     * restarts wait in {@link #pending} instead of cutting the animation.
+     */
+    private static double animationEndTicks = 20.0D;
+    /** Newest packet parked while the current animation plays; plays when it ends. */
+    private static ClientboundTerminalBallisticsPacket pending;
 
     // Anchor: null kind = world space, CONTRAPTION = Create entity by UUID,
     // VS = Valkyrien ship identified by localRef (shipyard) + worldRef (world).
@@ -135,6 +145,33 @@ public final class ClientTerminalView {
     }
 
     public static void accept(ClientboundTerminalBallisticsPacket packet) {
+        if (view != null && ageTicks() < duration()) {
+            double age = ageTicks();
+            boolean sameShell = view.projectileId() == packet.projectileId();
+            // A finalize that lands while the first-hit animation has barely
+            // started (shell stopped on the next plate a tick or two later)
+            // replaces it outright — the stub is invisible. Anything else that
+            // would cut a playing animation parks until the animation ends.
+            if (sameShell && (age < 10.0D || age >= animationEndTicks)) {
+                start(packet, "replace same-shell stub");
+                return;
+            }
+            if (!sameShell && age >= animationEndTicks) {
+                start(packet, "previous animation finished");
+                return;
+            }
+            pending = packet;
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] parked terminal packet shell={} summary=\"{}\" plates={} (view shell={} age={} animEnd={})",
+                packet.projectileId(), packet.summary(), packet.plates().size(),
+                view.projectileId(), age, animationEndTicks);
+            return;
+        }
+        start(packet, "no active view");
+    }
+
+    private static void start(ClientboundTerminalBallisticsPacket packet, String reason) {
+        pending = null;
         view = packet;
         ClientboundTerminalBallisticsPacket.Anchor anchor = packet.anchor();
         anchorKind = anchor == null ? null : anchor.kind();
@@ -155,6 +192,11 @@ public final class ClientTerminalView {
         startTick = mc.level != null ? mc.level.getGameTime() : 0L;
         recomputeBounds();
         buildTimeline();
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] terminal view {} shell={} pathPts={} trimmed={} flight={} impact={} animEnd={} anchor={} ship={}",
+            reason, packet.projectileId(), packet.path().size(), trimmedPath.size(),
+            String.format("%.1f", flightTicks), String.format("%.1f", impactTime),
+            String.format("%.1f", animationEndTicks), anchorKind, vsShip != null);
         ClientHitcam.startTerminalView();
     }
 
@@ -167,6 +209,30 @@ public final class ClientTerminalView {
         shipLookedUp = false;
         ghostShell = null;
         ghostKeyUsed = "";
+        // {@link #pending} deliberately survives: it is flushed by
+        // {@link #clientTick()} the moment the current view is gone.
+    }
+
+    /** True while a terminal animation is actively playing (not yet a static hold). */
+    public static boolean animationInProgress() {
+        return view != null && ageTicks() < animationEndTicks;
+    }
+
+    /** Plays a parked packet once the current animation has finished. Call once per client tick. */
+    public static void clientTick() {
+        if (pending == null) return;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null) {
+            pending = null;
+            return;
+        }
+        if (view == null || ageTicks() >= animationEndTicks || ageTicks() >= duration()) {
+            ClientboundTerminalBallisticsPacket packet = pending;
+            pending = null;
+            CBCTerminalBallistics.LOGGER.info("[CTB-HITCAM] playing parked terminal packet shell={} plates={}",
+                packet.projectileId(), packet.plates().size());
+            accept(packet);
+        }
     }
 
     public static boolean active() {
@@ -374,6 +440,17 @@ public final class ClientTerminalView {
             }
             entityAppear[i] = Math.max(direct, viaSpall);
         }
+
+        // Tick at which the animation has fully played: last plate flashed,
+        // spall fully grown, entity pops done. Until then the view is sticky.
+        double end = impactTime;
+        if (spall != null) end += SPALL_GROW_TICKS;
+        for (double a : entityAppear) end = Math.max(end, a + 8.0D);
+        if (plateAppear.length > 0) {
+            end = Math.max(end, plateAppear[plateAppear.length - 1] + PLATE_FLASH_TICKS);
+        }
+        if (!hasPath) end = Math.max(end, 30.0D); // static diagram still deserves a beat
+        animationEndTicks = Math.max(end + 4.0D, 10.0D);
     }
 
     /**
