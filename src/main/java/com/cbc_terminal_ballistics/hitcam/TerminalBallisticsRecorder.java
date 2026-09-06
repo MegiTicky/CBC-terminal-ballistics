@@ -70,10 +70,15 @@ public final class TerminalBallisticsRecorder {
         int streamTotal;
         int streamSentLast;
         int streamNullLast;
-        long lastStreamLogGameTime = Long.MIN_VALUE;
+        long lastStreamLogGameTime = -1L;
         /** Stuck-shell watchdog: last relayed position and count of unmoved relays. */
         Vec3 lastRelayPos;
         int stuckRelays;
+        /** Chunk-unload rebind: the shell's UUID while waiting for its re-created entity. */
+        UUID pendingUuid;
+        long pendingSinceTick = -1L;
+        /** Last relayed velocity; drives synthetic relay packets during a rebind wait. */
+        Vec3 lastRelayVel;
     }
 
     /**
@@ -304,8 +309,16 @@ public final class TerminalBallisticsRecorder {
 
     /** Projectile left the level: final flush for pass-through shells. */
     public static void onEntityRemoved(Entity projectile) {
-        Session session = SESSIONS.remove(projectile);
+        Session session = SESSIONS.get(projectile);
         if (session == null) return;
+        if (projectile.getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
+            // The shell's chunk unloaded with it. RPL re-loads that chunk within
+            // ticks and the shell comes back as a new entity (same UUID, new id);
+            // the relay's rebind logic owns this cycle — do not tear anything
+            // down here or the artillery view (and terrain streaming) dies.
+            return;
+        }
+        SESSIONS.remove(projectile);
         if (session.audience != null) {
             // Tell the artillery cam the shell is gone. Without this the client
             // sits out its 10-tick relay timeout and ends the view on pure
@@ -333,11 +346,27 @@ public final class TerminalBallisticsRecorder {
     public static void onServerTick(net.minecraft.server.MinecraftServer server) {
         if (!TBConfig.HITCAM_ENABLED.get() || !TBConfig.HITCAM_ARTILLERY_CAM.get()) return;
         if (SESSIONS.isEmpty() || server.getTickCount() % 2 != 0) return;
+        // Map mutations that ADD keys must wait until after iteration (a put
+        // during WeakHashMap iteration can rehash under the iterator).
+        java.util.List<Entity[]> rebinds = null;
         for (java.util.Map.Entry<Entity, Session> entry : SESSIONS.entrySet()) {
             Entity projectile = entry.getKey();
             Session session = entry.getValue();
             if (session.audience == null) continue;
             if (projectile.isRemoved()) {
+                if (projectile.getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
+                    // The shell's chunk was expired and unloaded with the entity
+                    // (RPL ticket expiry). RPL reloads the chunk within ticks and
+                    // vanilla re-creates the shell from it with a new entity id
+                    // and the same UUID — this is NOT the shell dying. Hold the
+                    // session open and rebind when it re-appears.
+                    Entity reborn = handleChunkUnload(session, projectile, server);
+                    if (reborn != null) {
+                        if (rebinds == null) rebinds = new ArrayList<>(2);
+                        rebinds.add(new Entity[]{projectile, reborn});
+                    }
+                    continue;
+                }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
                 session.audience = null;
@@ -368,19 +397,91 @@ public final class TerminalBallisticsRecorder {
                 projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
                 posNow, projectile.getDeltaMovement(), false));
             if (projectile.level() instanceof ServerLevel slevel) {
-                preflightChunkload(slevel, projectile);
+                Vec3 velNow = projectile.getDeltaMovement();
+                preflightChunkload(slevel, posNow, velNow);
+                streamTerrain(session, slevel, posNow, velNow, session.audience);
             }
-            streamTerrain(session, projectile, session.audience);
+        }
+        if (rebinds != null) {
+            for (Entity[] rebind : rebinds) {
+                Session session = SESSIONS.remove(rebind[0]);
+                if (session != null) SESSIONS.put(rebind[1], session);
+            }
         }
     }
 
     /** Relays (each = 2 ticks) after which a stationary shell's session is ended. */
     private static final int STUCK_SESSION_RELAYS = 50;
 
+    /** Ticks to wait for a chunk-unloaded shell to re-appear before giving up. */
+    private static final int REBIND_TIMEOUT_TICKS = 100;
+
+    /**
+     * A chunk unload took the shell entity with it (RPL forced-ticket expiry);
+     * the shell itself is fine — RPL still has the chunk queued, reloads it
+     * within ticks, and vanilla re-creates the shell from the chunk data with
+     * a new entity id and the same UUID. Keep the relay alive across the cycle:
+     * re-queue the shell's last chunk (that is what brings the entity back),
+     * send extrapolated relay packets so the client's ghost never hits its
+     * silence timeout, and stream terrain for the extrapolated position. When
+     * the shell re-appears, send its new id to the client (a track packet makes
+     * the view retarget) and let the caller re-key the session. Returns the
+     * re-created entity, or null while still waiting / after giving up.
+     */
+    private static Entity handleChunkUnload(Session session, Entity removed, net.minecraft.server.MinecraftServer server) {
+        if (session.pendingUuid == null) {
+            session.pendingUuid = removed.getUUID();
+            session.pendingSinceTick = server.getTickCount();
+            session.lastRelayVel = removed.getDeltaMovement();
+            if (session.lastRelayPos == null) session.lastRelayPos = removed.position();
+            session.stuckRelays = 0;
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-CHUNKSTREAM] shell {} lost to chunk unload; waiting for its re-created entity",
+                removed.getId());
+        }
+        if (!(removed.level() instanceof ServerLevel level)) return null;
+        preflightChunkload(level, session.lastRelayPos, session.lastRelayVel);
+        Entity reborn = findEntityByUuid(level, session.pendingUuid);
+        if (reborn != null && reborn != removed && !reborn.isRemoved()) {
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-CHUNKSTREAM] shell rebind: oldId={} newId={} after={} ticks",
+                removed.getId(), reborn.getId(), server.getTickCount() - session.pendingSinceTick);
+            session.pendingUuid = null;
+            session.pendingSinceTick = -1L;
+            session.lastRelayPos = null;
+            session.stuckRelays = 0;
+            if (TBConfig.HITCAM_ARTILLERY_CAM.get()) {
+                send(session.audience, new ClientboundTrackProjectilePacket(reborn.getId()));
+            }
+            return reborn;
+        }
+        if (server.getTickCount() - session.pendingSinceTick >= REBIND_TIMEOUT_TICKS) {
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-CHUNKSTREAM] shell {} never re-created after chunk unload; ending session", removed.getId());
+            send(session.audience, new ClientboundArtilleryUpdatePacket(
+                removed.getId(), "", session.lastRelayPos, Vec3.ZERO, true));
+            session.audience = null;
+            SESSIONS.remove(removed);
+            return null;
+        }
+        // Synthetic relay: extrapolate from the last known state. The client
+        // extrapolates per-tick from whatever arrives, so feeding it an
+        // advancing position keeps its ghost fresh without double extrapolation.
+        Vec3 sendPos = session.lastRelayPos.add(session.lastRelayVel.scale(2.0));
+        session.lastRelayPos = sendPos;
+        send(session.audience, new ClientboundArtilleryUpdatePacket(
+            removed.getId(), EntityType.getKey(removed.getType()).toString(),
+            sendPos, session.lastRelayVel, false));
+        streamTerrain(session, level, sendPos, session.lastRelayVel, session.audience);
+        return null;
+    }
+
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
     private static final int TERRAIN_STREAM_BUDGET_PER_RELAY = 16;
     /** Cached handle for RPL's {@code queueForceLoad} — resolved once, null if unavailable. */
     private static volatile java.lang.reflect.Method rplQueueForceLoad;
+    /** One-shot warning when RPL's chunk loader cannot be reached reflectively. */
+    private static boolean preflightReflectionWarned;
 
     /**
      * Preflight the shell's path through CBC's own projectile chunk loader.
@@ -392,7 +493,7 @@ public final class TerminalBallisticsRecorder {
      * tick, loads them before the shell arrives. Called reflectively because
      * RitchiesProjectileLib is not on this mod's compile classpath.
      */
-    private static void preflightChunkload(ServerLevel level, Entity projectile) {
+    private static void preflightChunkload(ServerLevel level, net.minecraft.world.phys.Vec3 pos, net.minecraft.world.phys.Vec3 vel) {
         if (!TBConfig.HITCAM_PREFLIGHT_CHUNKLOAD.get()) return;
         java.lang.reflect.Method queue = rplQueueForceLoad;
         if (queue == null) {
@@ -402,11 +503,14 @@ public final class TerminalBallisticsRecorder {
                 rplQueueForceLoad = queue;
             } catch (ReflectiveOperationException ex) {
                 rplQueueForceLoad = null;
+                if (!preflightReflectionWarned) {
+                    preflightReflectionWarned = true;
+                    CBCTerminalBallistics.LOGGER.warn(
+                        "[CTB-CHUNKSTREAM] RPL queueForceLoad not resolvable; preflight chunk loading disabled", ex);
+                }
                 return;
             }
         }
-        net.minecraft.world.phys.Vec3 pos = projectile.position();
-        net.minecraft.world.phys.Vec3 vel = projectile.getDeltaMovement();
         // The shell's own chunk plus the two chunks it is most likely to enter
         // next. RPL re-queueing refreshes the age timer, so refreshing every
         // relay tick keeps them loaded as long as RPL's age setting is >= 2.
@@ -446,15 +550,14 @@ public final class TerminalBallisticsRecorder {
      * are skipped; CBC force-loads each shell chunk just before the shell
      * enters it, at which point this relay picks it up.
      */
-    private static void streamTerrain(Session session, Entity projectile, ServerPlayer player) {
+    private static void streamTerrain(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
+                                      net.minecraft.world.phys.Vec3 vel, ServerPlayer player) {
         if (!TBConfig.HITCAM_TERRAIN_STREAM.get()) return;
-        if (!(projectile.level() instanceof ServerLevel level) || player.level() != level) return;
+        if (player.level() != level) return;
         net.minecraft.server.level.ServerChunkCache chunks = level.getChunkSource();
         int radius = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get(), 1, 4);
         int lead = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_LEAD_TICKS.get(), 0, 40);
 
-        net.minecraft.world.phys.Vec3 pos = projectile.position();
-        net.minecraft.world.phys.Vec3 vel = projectile.getDeltaMovement();
         ChunkPos center = new ChunkPos(net.minecraft.core.BlockPos.containing(pos));
         it.unimi.dsi.fastutil.longs.LongOpenHashSet candidates = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
         for (int dx = -radius; dx <= radius; dx++) {
@@ -502,8 +605,8 @@ public final class TerminalBallisticsRecorder {
         if (level.getGameTime() - session.lastStreamLogGameTime >= 40) {
             session.lastStreamLogGameTime = level.getGameTime();
             CBCTerminalBallistics.LOGGER.info(
-                "[CTB-CHUNKSTREAM] server stream: shell=[{},{}] total={} sentLast={} nullLast={}",
-                center.x, center.z, session.streamTotal, sentLast, nullLast);
+                "[CTB-CHUNKSTREAM] server stream: shell=[{},{}] total={} sentLast={} nullLast={} pending={}",
+                center.x, center.z, session.streamTotal, sentLast, nullLast, session.pendingUuid != null);
         }
     }
 

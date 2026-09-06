@@ -51,6 +51,10 @@ public final class ClientHitcam {
     private static boolean artilleryGhostAlive;
     /** Ticks of silence after which the relay is considered lost. */
     private static final int ARTILLERY_GHOST_TIMEOUT_TICKS = 10;
+    /** Ticks after {@link #startArtillery} during which the view cannot end, bridging
+     * the gap until the first relay for a retargeted (e.g. rebind) shell arrives. */
+    private static final int ARTILLERY_START_GRACE_TICKS = 5;
+    private static int artilleryGraceTicks;
     /** Game time of the last relay packet with live data; keeps streamed terrain cached a moment past view-mode flickers. */
     private static long lastArtilleryRelayGameTime = Long.MIN_VALUE;
 
@@ -83,6 +87,7 @@ public final class ClientHitcam {
         }
         mode = Mode.ARTILLERY;
         artilleryEntityId = entityId;
+        artilleryGraceTicks = ARTILLERY_START_GRACE_TICKS;
         clearArtilleryGhost();
         ClientTerminalView.clear();
         resetReplay();
@@ -99,6 +104,7 @@ public final class ClientHitcam {
     public static void stop() {
         mode = Mode.NONE;
         artilleryEntityId = -1;
+        artilleryGraceTicks = 0;
         clearArtilleryGhost();
         ArtilleryChunkCache.setActive(false);
         ClientTerminalView.clear();
@@ -116,6 +122,10 @@ public final class ClientHitcam {
     public static void onArtilleryUpdate(int entityId, String typeKey, Vec3 pos, Vec3 vel, boolean removed) {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
         if (removed) {
+            // Only the followed shell's death may end the view. Removal notices
+            // for other shells (e.g. an older one expiring somewhere else) must
+            // not kill the current chase cam.
+            if (mode == Mode.ARTILLERY && artilleryEntityId >= 0 && entityId != artilleryEntityId) return;
             artilleryGhostAlive = false;
             return;
         }
@@ -204,6 +214,7 @@ public final class ClientHitcam {
 
     /** True while the cam has something to follow: a tracked entity or fresh relay data. */
     private static boolean hasLiveArtilleryTarget() {
+        if (artilleryGraceTicks > 0) return true;
         if (artilleryTarget() != null) return true;
         if (!artilleryGhostAlive) return false;
         Minecraft mc = Minecraft.getInstance();
@@ -246,6 +257,7 @@ public final class ClientHitcam {
             return;
         }
         updateTerrainCache(mc);
+        if (artilleryGraceTicks > 0) artilleryGraceTicks--;
         switch (mode) {
             case REPLAY -> {
                 if (playHead >= span && ++holdTicks >= HOLD_TICKS) {

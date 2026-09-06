@@ -41,7 +41,7 @@ public final class ArtilleryChunkCache {
     /** Capture/serve counters for the periodic health summary. */
     private static int capturesSinceLog;
     private static int servesSinceLog;
-    private static long lastCacheLogGameTime = Long.MIN_VALUE;
+    private static long lastCacheLogGameTime = -1L;
 
     /**
      * Called by the mixin's capture handler on every chunk packet. Logs once
