@@ -48,8 +48,10 @@ import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
@@ -205,7 +207,8 @@ public final class TBImpactService {
                     syncImpactOutcome(server, projectile, "BOUNCE", projectile.position(), authoritativeVelocity, false, pos);
                     if (tbArmorHit) {
                         TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), "BOUNCE",
-                            0.0D, baseArmorToughness, false, net.minecraft.world.level.block.Block.getId(state), contraptionEntity);
+                            0.0D, baseArmorToughness, false, net.minecraft.world.level.block.Block.getId(state),
+                            captureShapeBoxes(level, pos, state), contraptionEntity);
                     }
                 }
                 return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
@@ -308,7 +311,8 @@ public final class TBImpactService {
                     new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason, shatterDecision.chance(), projectileShatter));
                 if (tbArmorHit) {
                     TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), outcome,
-                        appliedDamage, baseArmorToughness, blockBreakPending, net.minecraft.world.level.block.Block.getId(state), contraptionEntity);
+                        appliedDamage, baseArmorToughness, blockBreakPending, net.minecraft.world.level.block.Block.getId(state),
+                        captureShapeBoxes(level, pos, state), contraptionEntity);
                 } else if (perforates || blockBreakPending) {
                     // Shell body chewed through a non-armour block; only counts as
                     // internal damage after real armour was hit (recorder-side check).
@@ -1106,6 +1110,26 @@ public final class TBImpactService {
 
     private static boolean isDurableIntegrityMaterial(BlockState state) {
         return isArmorLike(state) || isMetalLike(state) || isSoilLike(state) || isMasonryLike(state);
+    }
+
+    /**
+     * Captures the struck block's voxel shape at the impact site. Copycat and
+     * framed blocks derive their shape from their block entity, which needs
+     * real level+pos context the client rarely has (ship blocks especially),
+     * so the boxes travel with the terminal packet. Empty array = not captured.
+     */
+    private static float[][] captureShapeBoxes(Level level, BlockPos pos, BlockState state) {
+        try {
+            List<float[]> boxes = new ArrayList<>();
+            state.getShape(level, pos).forAllBoxes((x0, y0, z0, x1, y1, z1) -> {
+                if (boxes.size() < 8) {
+                    boxes.add(new float[]{(float) x0, (float) y0, (float) z0, (float) x1, (float) y1, (float) z1});
+                }
+            });
+            return boxes.toArray(new float[0][]);
+        } catch (Throwable ignored) {
+            return new float[0][];
+        }
     }
 
     private static boolean isArmorLike(BlockState state) {

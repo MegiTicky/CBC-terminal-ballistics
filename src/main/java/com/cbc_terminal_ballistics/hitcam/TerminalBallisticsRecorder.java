@@ -156,7 +156,7 @@ public final class TerminalBallisticsRecorder {
      * are reported; terrain hits are ignored.
      */
     public static void onPlateImpact(Entity projectile, Vec3 worldPos, String outcome, double damage,
-                                     double toughness, boolean broken, int blockStateId,
+                                     double toughness, boolean broken, int blockStateId, float[][] shapeBoxes,
                                      @Nullable Entity contraptionEntity) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile);
@@ -167,7 +167,8 @@ public final class TerminalBallisticsRecorder {
                 session.vsAnchorPos = BlockPos.containing(worldPos);
             }
             session.plates.add(new ClientboundTerminalBallisticsPacket.Plate(
-                normalizePoint(projectile, worldPos), outcome, damage, toughness, broken, blockStateId));
+                normalizePoint(projectile, worldPos), outcome, damage, toughness, broken, blockStateId,
+                shapeBoxes == null ? new float[0][] : shapeBoxes));
         }
         if (contraptionEntity != null && session.anchorUuid == null) session.anchorUuid = contraptionEntity.getUUID();
         if (!"PENETRATE".equals(outcome)) session.hasTerminalOutcome = true;
@@ -493,7 +494,8 @@ public final class TerminalBallisticsRecorder {
         List<ClientboundTerminalBallisticsPacket.Plate> plates = new ArrayList<>(session.plates.size());
         for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
             plates.add(new ClientboundTerminalBallisticsPacket.Plate(frame.toItemLocal(plate.pos()),
-                plate.outcome(), plate.damage(), plate.toughness(), plate.broken(), plate.blockStateId()));
+                plate.outcome(), plate.damage(), plate.toughness(), plate.broken(), plate.blockStateId(),
+                plate.shapeBoxes()));
         }
 
         ClientboundTerminalBallisticsPacket.Spall spall = null;

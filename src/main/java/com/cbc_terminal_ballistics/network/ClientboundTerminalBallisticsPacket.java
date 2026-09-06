@@ -26,8 +26,16 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
      * {@code blockStateId} is the struck block's state id ({@code Block.getId});
      * the client renders the plate highlight as that block's real shape. A
      * negative id means unknown (full-cube fallback).
+     *
+     * <p>{@code shapeBoxes} holds the block's voxel-shape boxes captured
+     * server-side at the impact site (each {@code [minX, minY, minZ, maxX,
+     * maxY, maxZ]}, block-relative 0..1). Copycat/framed blocks derive their
+     * shape from their block entity, which the client cannot always see, so
+     * the shape travels with the plate; empty means not captured and the
+     * client falls back to decoding it from the state id.</p>
      */
-    public record Plate(Vec3 pos, String outcome, double damage, double toughness, boolean broken, int blockStateId) {}
+    public record Plate(Vec3 pos, String outcome, double damage, double toughness, boolean broken,
+                        int blockStateId, float[][] shapeBoxes) {}
 
     public record EntityHit(int entityId, Vec3 pos, float damage, boolean killed) {}
 
@@ -103,6 +111,16 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             buf.writeFloat((float) p.toughness());
             buf.writeBoolean(p.broken());
             buf.writeVarInt(p.blockStateId());
+            float[][] boxes = p.shapeBoxes();
+            buf.writeVarInt(boxes == null ? 0 : Math.min(boxes.length, 8));
+            if (boxes != null) {
+                for (int i = 0; i < boxes.length && i < 8; i++) {
+                    float[] box = boxes[i];
+                    for (float v : box) {
+                        buf.writeFloat(v);
+                    }
+                }
+            }
         }
         buf.writeBoolean(spall != null);
         if (spall != null) {
@@ -155,8 +173,19 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
         int plateCount = buf.readVarInt();
         List<Plate> plates = new ArrayList<>(Math.min(plateCount, 64));
         for (int i = 0; i < plateCount; i++) {
-            plates.add(new Plate(readVec3(buf), buf.readUtf(16), buf.readDouble(), buf.readFloat(), buf.readBoolean(),
-                buf.readVarInt()));
+            Vec3 pos = readVec3(buf);
+            String outcome = buf.readUtf(16);
+            double damage = buf.readDouble();
+            float toughness = buf.readFloat();
+            boolean broken = buf.readBoolean();
+            int stateId = buf.readVarInt();
+            int boxCount = buf.readVarInt();
+            float[][] boxes = boxCount <= 0 ? new float[0][] : new float[Math.min(boxCount, 8)][];
+            for (int b = 0; b < boxes.length; b++) {
+                boxes[b] = new float[]{buf.readFloat(), buf.readFloat(), buf.readFloat(),
+                    buf.readFloat(), buf.readFloat(), buf.readFloat()};
+            }
+            plates.add(new Plate(pos, outcome, damage, toughness, broken, stateId, boxes));
         }
         Spall spall = null;
         if (buf.readBoolean()) {

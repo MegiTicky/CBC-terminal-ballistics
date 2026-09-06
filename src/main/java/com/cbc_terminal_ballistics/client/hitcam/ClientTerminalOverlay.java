@@ -17,6 +17,7 @@ import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import org.joml.Matrix4f;
 
 import java.util.ArrayList;
@@ -60,6 +61,8 @@ public final class ClientTerminalOverlay {
     /** Spall-hit marker dot diameter on the displayed PiP window, in px. */
     private static final double DOT_DISPLAY_PX = 4.5D;
     private static final float FILL_ALPHA = 0.34F;
+    /** Tolerance for treating a voxel-shape box as the full block. */
+    private static final float SHAPE_EPSILON = 1.0e-3F;
 
     /**
      * Per-frame drawing context: the PiP camera rotation pose (used as the
@@ -253,9 +256,21 @@ public final class ClientTerminalOverlay {
             // in the anchor's local space and pushed through the same per-frame
             // transform as the stored center — so it rotates with the ship and
             // matches slabs/stairs/copycats instead of a world-aligned cube.
-            Vec3[][] boxes = plateCornerBoxes(plate, partialTick);
-            if (boxes == null) continue;
-            if (isFullCube(plate)) {
+            float[][] localBoxes = plateLocalBoxes(plate);
+            boolean fullCube;
+            Vec3[][] boxes;
+            if (localBoxes.length == 0) {
+                fullCube = true;
+                boxes = new Vec3[][]{cubeCorners(plate.pos(), partialTick)};
+            } else {
+                BlockPos lpos = floorPos(plate.pos());
+                fullCube = localBoxes.length == 1 && isFullCubeBox(localBoxes[0]);
+                boxes = new Vec3[localBoxes.length][];
+                for (int b = 0; b < localBoxes.length; b++) {
+                    boxes[b] = boxCorners(lpos, localBoxes[b], partialTick);
+                }
+            }
+            if (fullCube) {
                 filledCorners(buffer, ctx, boxes[0], color[0], color[1], color[2], alpha * FILL_ALPHA);
             }
             for (Vec3[] c : boxes) {
@@ -295,52 +310,74 @@ public final class ClientTerminalOverlay {
     };
 
     /**
-     * World-space corner sets for a plate highlight: one 8-corner set per box
-     * of the block's voxel shape, or a single unit cube around the stored
-     * center when the state id is unknown or the shape cannot be resolved.
-     * Every corner is pushed through {@code toWorld} individually, so the
-     * boxes keep the ship's rotation.
+     * Local-space voxel-shape boxes (block-relative 0..1) of the plate. The
+     * server-captured boxes come first — copycat and framed blocks derive
+     * their shape from their block entity, which the client usually cannot
+     * see. Fallback: decode the state and query its shape with whatever
+     * context the client can offer; empty array = full cube.
      */
-    private static Vec3[][] plateCornerBoxes(ClientboundTerminalBallisticsPacket.Plate plate, float partialTick) {
-        Vec3 center = plate.pos();
-        if (plate.blockStateId() >= 0) {
-            BlockState state = Block.stateById(plate.blockStateId());
-            if (state != null) {
-                BlockPos lpos = new BlockPos(Mth.floor(center.x), Mth.floor(center.y), Mth.floor(center.z));
-                // getShape on exotic blocks may query level or block entity data the
-                // packet's local coordinates cannot provide; fall back to the cube.
-                try {
-                    List<Vec3[]> boxes = new ArrayList<>();
-                    state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO).forAllBoxes((x0, y0, z0, x1, y1, z1) ->
-                        boxes.add(new Vec3[]{
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y0, lpos.getZ() + z0), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y0, lpos.getZ() + z0), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y0, lpos.getZ() + z1), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y0, lpos.getZ() + z1), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y1, lpos.getZ() + z0), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y1, lpos.getZ() + z0), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y1, lpos.getZ() + z1), partialTick),
-                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y1, lpos.getZ() + z1), partialTick)
-                        }));
-                    if (!boxes.isEmpty()) return boxes.toArray(new Vec3[0][]);
-                } catch (Throwable ignored) {
-                    // fall through to the unit cube
-                }
-            }
+    private static float[][] plateLocalBoxes(ClientboundTerminalBallisticsPacket.Plate plate) {
+        if (plate.shapeBoxes() != null && plate.shapeBoxes().length > 0) {
+            return plate.shapeBoxes();
         }
-        return new Vec3[][]{cubeCorners(center, partialTick)};
+        if (plate.blockStateId() < 0) return new float[0][];
+        BlockState state = Block.stateById(plate.blockStateId());
+        if (state == null) return new float[0][];
+        try {
+            List<float[]> boxes = new ArrayList<>();
+            shapeFor(state, floorPos(plate.pos())).forAllBoxes((x0, y0, z0, x1, y1, z1) -> {
+                if (boxes.size() < 8) {
+                    boxes.add(new float[]{(float) x0, (float) y0, (float) z0, (float) x1, (float) y1, (float) z1});
+                }
+            });
+            return boxes.toArray(new float[0][]);
+        } catch (Throwable ignored) {
+            return new float[0][];
+        }
     }
 
-    /** Whether the plate's fill (translucent faces) should be drawn: only true full cubes. */
-    private static boolean isFullCube(ClientboundTerminalBallisticsPacket.Plate plate) {
-        if (plate.blockStateId() < 0) return true;
-        BlockState state = Block.stateById(plate.blockStateId());
-        if (state == null) return true;
-        try {
-            return state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
-        } catch (Throwable ignored) {
-            return true;
+    /**
+     * Block-entity-dependent shapes (copycat/framed) need a real level and
+     * position; try the client's own level first — it holds ship blocks at
+     * shipyard coordinates on VS builds that expose them — then a context-free
+     * lookup.
+     */
+    private static VoxelShape shapeFor(BlockState state, BlockPos lpos) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level != null) {
+            try {
+                return state.getShape(mc.level, lpos);
+            } catch (Throwable ignored) {
+                // fall through
+            }
         }
+        return state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+    }
+
+    private static BlockPos floorPos(Vec3 center) {
+        return new BlockPos(Mth.floor(center.x), Mth.floor(center.y), Mth.floor(center.z));
+    }
+
+    /** True when one box spans the whole block — only true cubes get the translucent fill. */
+    private static boolean isFullCubeBox(float[] box) {
+        return box[0] <= SHAPE_EPSILON && box[1] <= SHAPE_EPSILON && box[2] <= SHAPE_EPSILON
+            && box[3] >= 1.0F - SHAPE_EPSILON && box[4] >= 1.0F - SHAPE_EPSILON && box[5] >= 1.0F - SHAPE_EPSILON;
+    }
+
+    /** World-space corners of one local box, each re-anchored through the vehicle transform. */
+    private static Vec3[] boxCorners(BlockPos lpos, float[] box, float partialTick) {
+        double x0 = lpos.getX() + box[0], y0 = lpos.getY() + box[1], z0 = lpos.getZ() + box[2];
+        double x1 = lpos.getX() + box[3], y1 = lpos.getY() + box[4], z1 = lpos.getZ() + box[5];
+        return new Vec3[]{
+            ClientTerminalView.toWorld(new Vec3(x0, y0, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y0, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y0, z1), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x0, y0, z1), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x0, y1, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y1, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y1, z1), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x0, y1, z1), partialTick)
+        };
     }
 
     /** One box outlined as 12 camera-facing strokes between transformed corners. */
