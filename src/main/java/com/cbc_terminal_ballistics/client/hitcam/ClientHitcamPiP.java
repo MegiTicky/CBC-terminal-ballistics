@@ -52,6 +52,8 @@ public final class ClientHitcamPiP {
     private static boolean shaderWarningShown;
     private static boolean failureLogged;
     private static Method irisApiShaderPackInUse;
+    /** Counts rendered frames while the far-view throttle is engaged. */
+    private static int farFrameCounter;
 
     public static boolean isRenderingPip() {
         return RENDERING_PIP.get();
@@ -78,6 +80,15 @@ public final class ClientHitcamPiP {
         }
 
         ClientHitcam.advance(event.getPartialTick());
+
+        if (shouldSkipFarFrame(mc)) {
+            // The private framebuffer still holds the previous frame; the HUD
+            // blits it untouched. Skipping is the point: every full pass
+            // recenters the shared chunk grid onto the PiP camera and back,
+            // which resets every chunk section mesh and forces both views to
+            // recompile constantly (holes in the main view's terrain).
+            return;
+        }
 
         Matrix4f mainProjection = RenderSystem.getProjectionMatrix();
         com.mojang.blaze3d.vertex.VertexSorting mainSorting = RenderSystem.getVertexSorting();
@@ -109,6 +120,24 @@ public final class ClientHitcamPiP {
             }
             mc.getMainRenderTarget().bindWrite(true);
         }
+    }
+
+    /**
+     * True on frames where the far-view throttle says to hold the last PiP
+     * frame instead of re-rendering the world. Only engages when the PiP
+     * camera sits in a different chunk from the main camera: that is when the
+     * nested world pass would recenter the shared chunk grid onto the shell
+     * (and the main pass recenter it back), resetting every section mesh and
+     * forcing both views to recompile constantly. Near views keep rendering
+     * every frame.
+     */
+    private static boolean shouldSkipFarFrame(Minecraft mc) {
+        int interval = Mth.clamp(TBConfig.HITCAM_PIP_FAR_FRAME_INTERVAL.get(), 1, 10);
+        if (interval <= 1) return false;
+        net.minecraft.world.level.ChunkPos pipChunk = new net.minecraft.world.level.ChunkPos(
+            net.minecraft.core.BlockPos.containing(ClientHitcam.cameraPos(0.0F)));
+        if (pipChunk.equals(mc.gameRenderer.getMainCamera().getBlockPosition())) return false;
+        return farFrameCounter++ % interval != 0;
     }
 
     private static void renderPipScene(Minecraft mc, float partialTick, boolean fullScene, boolean minimal) {

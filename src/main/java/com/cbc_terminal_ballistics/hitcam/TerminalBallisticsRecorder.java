@@ -319,12 +319,67 @@ public final class TerminalBallisticsRecorder {
             send(session.audience, new ClientboundArtilleryUpdatePacket(
                 projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
                 projectile.position(), projectile.getDeltaMovement(), false));
+            if (projectile.level() instanceof ServerLevel slevel) {
+                preflightChunkload(slevel, projectile);
+            }
             streamTerrain(session, projectile, session.audience);
         }
     }
 
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
     private static final int TERRAIN_STREAM_BUDGET_PER_RELAY = 6;
+    /** Cached handle for RPL's {@code queueForceLoad} — resolved once, null if unavailable. */
+    private static volatile java.lang.reflect.Method rplQueueForceLoad;
+
+    /**
+     * Preflight the shell's path through CBC's own projectile chunk loader.
+     * CBC queues only the shell's current chunk each tick and RPL unloads
+     * chunks after a few ticks (default age 3), so a fast shell constantly
+     * arrives at a not-yet-generated chunk and freezes there until generation
+     * catches up — the "holes" that stop the shell (and the artillery cam with
+     * it). Queueing the chunks just ahead of the shell, refreshed every relay
+     * tick, loads them before the shell arrives. Called reflectively because
+     * RitchiesProjectileLib is not on this mod's compile classpath.
+     */
+    private static void preflightChunkload(ServerLevel level, Entity projectile) {
+        if (!TBConfig.HITCAM_PREFLIGHT_CHUNKLOAD.get()) return;
+        java.lang.reflect.Method queue = rplQueueForceLoad;
+        if (queue == null) {
+            try {
+                queue = Class.forName("rbasamoyai.ritchiesprojectilelib.RitchiesProjectileLib")
+                    .getMethod("queueForceLoad", ServerLevel.class, int.class, int.class);
+                rplQueueForceLoad = queue;
+            } catch (ReflectiveOperationException ex) {
+                rplQueueForceLoad = null;
+                return;
+            }
+        }
+        net.minecraft.world.phys.Vec3 pos = projectile.position();
+        net.minecraft.world.phys.Vec3 vel = projectile.getDeltaMovement();
+        // The shell's own chunk plus the two chunks it is most likely to enter
+        // next. RPL re-queueing refreshes the age timer, so refreshing every
+        // relay tick keeps them loaded as long as RPL's age setting is >= 2.
+        long[] chunks = new long[3];
+        int count = 0;
+        chunks[count++] = new ChunkPos(net.minecraft.core.BlockPos.containing(pos)).toLong();
+        for (int i = 1; i <= 2; i++) {
+            net.minecraft.world.phys.Vec3 ahead = pos.add(vel.scale(i * 3));
+            long packed = new ChunkPos(net.minecraft.core.BlockPos.containing(ahead)).toLong();
+            boolean duplicate = false;
+            for (int j = 0; j < count; j++) {
+                if (chunks[j] == packed) { duplicate = true; break; }
+            }
+            if (!duplicate) chunks[count++] = packed;
+        }
+        try {
+            for (int i = 0; i < count; i++) {
+                queue.invoke(null, level, ChunkPos.getX(chunks[i]), ChunkPos.getZ(chunks[i]));
+            }
+        } catch (ReflectiveOperationException | RuntimeException ex) {
+            // Loading shells is CBC's business anyway; a failed preflight just
+            // reintroduces the vanilla CBC hitching behaviour.
+        }
+    }
 
     /**
      * Stream the chunks around (and, predictively, ahead of) the shell to the

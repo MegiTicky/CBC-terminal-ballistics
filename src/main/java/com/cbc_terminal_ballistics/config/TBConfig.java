@@ -57,6 +57,8 @@ public final class TBConfig {
     public static final ForgeConfigSpec.BooleanValue HITCAM_TERRAIN_STREAM;
     public static final ForgeConfigSpec.IntValue HITCAM_TERRAIN_STREAM_RADIUS;
     public static final ForgeConfigSpec.IntValue HITCAM_TERRAIN_STREAM_LEAD_TICKS;
+    public static final ForgeConfigSpec.BooleanValue HITCAM_PREFLIGHT_CHUNKLOAD;
+    public static final ForgeConfigSpec.IntValue HITCAM_PIP_FAR_FRAME_INTERVAL;
 
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
@@ -126,6 +128,8 @@ public final class TBConfig {
         HITCAM_TERRAIN_STREAM = server.comment("Artillery/terminal view terrain streaming: send the chunks around the flying shell to the viewer's client so the picture-in-picture world pass keeps showing terrain past the chunk render distance boundary (the client normally discards chunks beyond its view range).").define("hitcamTerrainStream", true);
         HITCAM_TERRAIN_STREAM_RADIUS = server.comment("Chunk radius around the shell streamed to the artillery/terminal viewer.").defineInRange("hitcamTerrainStreamRadius", 2, 1, 4);
         HITCAM_TERRAIN_STREAM_LEAD_TICKS = server.comment("How far ahead (in ticks along the shell's current velocity) to also stream chunks, so terrain arrives before the shell does.").defineInRange("hitcamTerrainStreamLeadTicks", 15, 0, 40);
+        HITCAM_PREFLIGHT_CHUNKLOAD = server.comment("Preflight shell chunk loading: while the artillery cam tracks a shell, queue the chunks ahead of it through CBC's own projectile chunk loader (RitchiesProjectileLib) so they are generated before the shell arrives. Without this a fast shell stalls at every not-yet-generated chunk boundary.").define("hitcamPreflightChunkload", true);
+        HITCAM_PIP_FAR_FRAME_INTERVAL = server.comment("When the hitcam camera is far from the player (different chunk), the nested world render recenters the shared chunk grid every frame, which makes both views recompile all their chunk sections constantly and can leave holes in the main view's terrain. This throttles the far-view picture-in-picture to render every Nth frame instead (the window holds its last frame in between). 1 = render every frame (old behaviour).").defineInRange("hitcamPipFarFrameInterval", 3, 1, 10);
         server.pop();
 
         SERVER_SPEC = server.build();
