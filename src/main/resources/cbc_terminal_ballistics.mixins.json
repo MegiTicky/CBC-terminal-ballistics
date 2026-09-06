@@ -25,6 +25,9 @@
     "CBCMSAntiairMachineGunProjectileMixin",
     "CBCATHeavyAutocannonProjectileMixin"
   ],
+  "client": [
+    "ParticleEngineMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   }
