@@ -205,7 +205,7 @@ public final class TBImpactService {
                     syncImpactOutcome(server, projectile, "BOUNCE", projectile.position(), authoritativeVelocity, false, pos);
                     if (tbArmorHit) {
                         TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), "BOUNCE",
-                            0.0D, baseArmorToughness, false, contraptionEntity);
+                            0.0D, baseArmorToughness, false, net.minecraft.world.level.block.Block.getId(state), contraptionEntity);
                     }
                 }
                 return autocannon ? bounceResult : CBCReflect.newImpactResult("BOUNCE", onImpactRemove);
@@ -308,7 +308,7 @@ public final class TBImpactService {
                     new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason, shatterDecision.chance(), projectileShatter));
                 if (tbArmorHit) {
                     TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), outcome,
-                        appliedDamage, baseArmorToughness, blockBreakPending, contraptionEntity);
+                        appliedDamage, baseArmorToughness, blockBreakPending, net.minecraft.world.level.block.Block.getId(state), contraptionEntity);
                 } else if (perforates || blockBreakPending) {
                     // Shell body chewed through a non-armour block; only counts as
                     // internal damage after real armour was hit (recorder-side check).

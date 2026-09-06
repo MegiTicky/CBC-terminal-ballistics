@@ -35,8 +35,6 @@ public final class TerminalBallisticsRecorder {
     private static final int MAX_ENTITY_HITS = 8;
     private static final int MAX_SPALL_BLOCKS = 16;
     private static final int STALE_FLUSH_TICKS = 30;
-    /** Minimum interval between immediate snapshots sent mid-flight, in ticks. */
-    private static final int SNAPSHOT_INTERVAL_TICKS = 10;
     private static final double AUDIENCE_SEARCH_RADIUS = 32.0D;
 
     private static final WeakHashMap<Entity, Session> SESSIONS = new WeakHashMap<>();
@@ -148,7 +146,8 @@ public final class TerminalBallisticsRecorder {
      * are reported; terrain hits are ignored.
      */
     public static void onPlateImpact(Entity projectile, Vec3 worldPos, String outcome, double damage,
-                                     double toughness, boolean broken, @Nullable Entity contraptionEntity) {
+                                     double toughness, boolean broken, int blockStateId,
+                                     @Nullable Entity contraptionEntity) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile);
         if (session == null) return;
@@ -158,22 +157,19 @@ public final class TerminalBallisticsRecorder {
                 session.vsAnchorPos = BlockPos.containing(worldPos);
             }
             session.plates.add(new ClientboundTerminalBallisticsPacket.Plate(
-                normalizePoint(projectile, worldPos), outcome, damage, toughness, broken));
+                normalizePoint(projectile, worldPos), outcome, damage, toughness, broken, blockStateId));
         }
         if (contraptionEntity != null && session.anchorUuid == null) session.anchorUuid = contraptionEntity.getUUID();
         if (!"PENETRATE".equals(outcome)) session.hasTerminalOutcome = true;
         session.dirty = true;
-        // Start (or restart) the terminal animation the instant a plate is hit
-        // while the shell keeps flying, so the view switches from the artillery
-        // cam at first armour contact instead of when the shell finally stops
-        // or goes stale. Rate-limited so chewing through a thick wall does not
-        // restart the animation every tick; each snapshot carries all plates
-        // recorded so far, so nothing is lost between sends.
-        // The never-sent sentinel must be checked explicitly: gameTime minus
-        // Long.MIN_VALUE overflows and would wrongly fail the interval test.
-        boolean snapshotDue = session.lastSnapshotGameTime == Long.MIN_VALUE
-            || projectile.level().getGameTime() - session.lastSnapshotGameTime >= SNAPSHOT_INTERVAL_TICKS;
-        if ("PENETRATE".equals(outcome) && snapshotDue) {
+        // Play the first armour hit: one snapshot when the first plate is
+        // struck starts the terminal animation while the shell keeps flying.
+        // Later plates only accumulate; the view restarts exactly once more,
+        // when the shell finally stops or bounces (terminal flush in
+        // onClipAndDamageTail), so mid-flight snapshots never cut the
+        // animation short. The never-sent sentinel is compared by equality —
+        // subtracting Long.MIN_VALUE would overflow.
+        if ("PENETRATE".equals(outcome) && session.lastSnapshotGameTime == Long.MIN_VALUE) {
             sendSnapshot(projectile, session);
         }
     }
@@ -259,17 +255,19 @@ public final class TerminalBallisticsRecorder {
 
     /**
      * End of one {@code clipAndDamage} pass. Flush immediately when the shell
-     * died at the armour (STOP/BOUNCE — CBC removes it). Pass-through shells
-     * already sent an immediate snapshot at their first plate; flush on
-     * staleness only when new events arrived since, so a final quiet stretch
-     * of flight does not restart the animation with an identical packet.
+     * died at the armour (STOP/BOUNCE — CBC removes it): that terminal packet
+     * is the one full-engagement replay, carrying every plate and the final
+     * outcome. Pass-through shells have already started the animation with
+     * their first-hit snapshot; flush on staleness only when no snapshot has
+     * gone out, so a quiet stretch of flight never restarts the animation.
      */
     public static void onClipAndDamageTail(Entity projectile) {
         Session session = SESSIONS.get(projectile);
         if (session == null) return;
         boolean stale = session.firstEventGameTime >= 0L
             && projectile.level().getGameTime() - session.firstEventGameTime >= STALE_FLUSH_TICKS;
-        if (session.hasTerminalOutcome || (stale && session.dirty)) {
+        boolean neverSnapshotted = session.lastSnapshotGameTime == Long.MIN_VALUE;
+        if (session.hasTerminalOutcome || (stale && session.dirty && neverSnapshotted)) {
             finalizeAndSend(projectile, session);
         }
     }
@@ -277,7 +275,7 @@ public final class TerminalBallisticsRecorder {
     /** Projectile left the level: final flush for pass-through shells. */
     public static void onEntityRemoved(Entity projectile) {
         Session session = SESSIONS.remove(projectile);
-        if (session != null && session.dirty) {
+        if (session != null && session.dirty && session.lastSnapshotGameTime == Long.MIN_VALUE) {
             finalizeAndSend(projectile, session);
         }
     }
@@ -345,7 +343,7 @@ public final class TerminalBallisticsRecorder {
         List<ClientboundTerminalBallisticsPacket.Plate> plates = new ArrayList<>(session.plates.size());
         for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
             plates.add(new ClientboundTerminalBallisticsPacket.Plate(frame.toItemLocal(plate.pos()),
-                plate.outcome(), plate.damage(), plate.toughness(), plate.broken()));
+                plate.outcome(), plate.damage(), plate.toughness(), plate.broken(), plate.blockStateId()));
         }
 
         ClientboundTerminalBallisticsPacket.Spall spall = null;

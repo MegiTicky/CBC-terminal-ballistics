@@ -11,10 +11,15 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
+import net.minecraft.world.level.EmptyBlockGetter;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -44,7 +49,6 @@ public final class ClientTerminalOverlay {
     private static final float[] BOUNCE_COLOR = {1.0F, 0.72F, 0.15F};
     private static final float[] SPALL_BROKEN_COLOR = {1.0F, 0.3F, 0.12F};
     private static final float[] SPALL_INTERNAL_COLOR = {1.0F, 0.55F, 0.1F};
-    private static final double PLATE_HALF = 0.62D;
     /** Default stroke width on the displayed PiP window, in scaled GUI pixels. */
     private static final double LINE_DISPLAY_PX = 2.8D;
     /** Trajectory trail strokes are slightly thinner than the default. */
@@ -242,20 +246,26 @@ public final class ClientTerminalOverlay {
             ClientboundTerminalBallisticsPacket.Plate plate = plates.get(i);
             double appear = tl.plateAppear != null && i < tl.plateAppear.length ? tl.plateAppear[i] : 0.0D;
             if (tl.age < appear) continue; // not struck yet in the replay
-            Vec3 pos = ClientTerminalView.toWorld(plate.pos(), partialTick);
             float[] color = colorFor(plate.outcome());
             float flash = tl.plateFlash(i);
             float alpha = Math.min(1.0F, tl.fade * (1.0F + flash * 0.9F));
-            Vec3 min = pos.subtract(PLATE_HALF, PLATE_HALF, PLATE_HALF);
-            Vec3 max = pos.add(PLATE_HALF, PLATE_HALF, PLATE_HALF);
-            // Translucent filled faces first, bright outline on top.
-            filledBox(buffer, ctx, min, max, color[0], color[1], color[2], alpha * FILL_ALPHA);
-            drawThickBox(buffer, ctx, min, max, PLATE_LINE_PX, color[0], color[1], color[2], alpha);
+            // The highlight hugs the struck block's real voxel shape, expressed
+            // in the anchor's local space and pushed through the same per-frame
+            // transform as the stored center — so it rotates with the ship and
+            // matches slabs/stairs/copycats instead of a world-aligned cube.
+            Vec3[][] boxes = plateCornerBoxes(plate, partialTick);
+            if (boxes == null) continue;
+            if (isFullCube(plate)) {
+                filledCorners(buffer, ctx, boxes[0], color[0], color[1], color[2], alpha * FILL_ALPHA);
+            }
+            for (Vec3[] c : boxes) {
+                drawThickCorners(buffer, ctx, c, PLATE_LINE_PX, color[0], color[1], color[2], alpha);
+            }
             if (plate.broken()) {
-                // Destroyed plate: diagonal cross over the box.
-                drawThickLine(buffer, ctx, min, max, PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
-                drawThickLine(buffer, ctx, new Vec3(max.x, max.y, min.z), new Vec3(min.x, min.y, max.z),
-                    PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
+                // Destroyed plate: diagonal cross over the shape's bounds.
+                Vec3[] c = boxes[0];
+                drawThickLine(buffer, ctx, c[0], c[6], PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
+                drawThickLine(buffer, ctx, c[5], c[3], PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
             }
         }
         // Bright cross at the final impact point, once reached.
@@ -271,6 +281,101 @@ public final class ClientTerminalOverlay {
                 drawThickLine(buffer, ctx, last.add(0, 0, -s), last.add(0, 0, s), color[0], color[1], color[2], tl.fade);
             }
         }
+    }
+
+    /**
+     * Corner index layout of one axis-aligned box: bottom ring 0-1-2-3, top
+     * ring 4-5-6-7 (same x/z order), so the outline edges are 0-1-2-3-0 /
+     * 4-5-6-7-4 / verticals 0-4,1-5,2-6,3-7, and the broken-plate cross runs
+     * 0-6 and 5-3.
+     */
+    private static final int[][] BOX_EDGES = {
+        {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4},
+        {0, 4}, {1, 5}, {2, 6}, {3, 7}
+    };
+
+    /**
+     * World-space corner sets for a plate highlight: one 8-corner set per box
+     * of the block's voxel shape, or a single unit cube around the stored
+     * center when the state id is unknown or the shape cannot be resolved.
+     * Every corner is pushed through {@code toWorld} individually, so the
+     * boxes keep the ship's rotation.
+     */
+    private static Vec3[][] plateCornerBoxes(ClientboundTerminalBallisticsPacket.Plate plate, float partialTick) {
+        Vec3 center = plate.pos();
+        if (plate.blockStateId() >= 0) {
+            BlockState state = Block.stateById(plate.blockStateId());
+            if (state != null) {
+                BlockPos lpos = new BlockPos(Mth.floor(center.x), Mth.floor(center.y), Mth.floor(center.z));
+                // getShape on exotic blocks may query level or block entity data the
+                // packet's local coordinates cannot provide; fall back to the cube.
+                try {
+                    List<Vec3[]> boxes = new ArrayList<>();
+                    state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO).forAllBoxes((x0, y0, z0, x1, y1, z1) ->
+                        boxes.add(new Vec3[]{
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y0, lpos.getZ() + z0), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y0, lpos.getZ() + z0), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y0, lpos.getZ() + z1), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y0, lpos.getZ() + z1), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y1, lpos.getZ() + z0), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y1, lpos.getZ() + z0), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x1, lpos.getY() + y1, lpos.getZ() + z1), partialTick),
+                            ClientTerminalView.toWorld(new Vec3(lpos.getX() + x0, lpos.getY() + y1, lpos.getZ() + z1), partialTick)
+                        }));
+                    if (!boxes.isEmpty()) return boxes.toArray(new Vec3[0][]);
+                } catch (Throwable ignored) {
+                    // fall through to the unit cube
+                }
+            }
+        }
+        return new Vec3[][]{cubeCorners(center, partialTick)};
+    }
+
+    /** Whether the plate's fill (translucent faces) should be drawn: only true full cubes. */
+    private static boolean isFullCube(ClientboundTerminalBallisticsPacket.Plate plate) {
+        if (plate.blockStateId() < 0) return true;
+        BlockState state = Block.stateById(plate.blockStateId());
+        if (state == null) return true;
+        try {
+            return state.isCollisionShapeFullBlock(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
+    /** One box outlined as 12 camera-facing strokes between transformed corners. */
+    private static void drawThickCorners(BufferBuilder buf, Ctx ctx, Vec3[] c, double widthPx,
+                                         float r, float g, float b, float a) {
+        for (int[] e : BOX_EDGES) {
+            drawThickLine(buf, ctx, c[e[0]], c[e[1]], widthPx, r, g, b, a);
+        }
+    }
+
+    /** Six translucent faces of a box given transformed corners; fills are surfaces, so overlapping plates do not double-blend. */
+    private static void filledCorners(BufferBuilder buf, Ctx ctx, Vec3[] c,
+                                      float r, float g, float b, float a) {
+        quadWorld(buf, ctx, c[0], c[3], c[7], c[4], r, g, b, a); // -X
+        quadWorld(buf, ctx, c[2], c[1], c[5], c[6], r, g, b, a); // +X
+        quadWorld(buf, ctx, c[0], c[1], c[2], c[3], r, g, b, a); // -Y
+        quadWorld(buf, ctx, c[7], c[6], c[5], c[4], r, g, b, a); // +Y
+        quadWorld(buf, ctx, c[0], c[4], c[5], c[1], r, g, b, a); // -Z
+        quadWorld(buf, ctx, c[2], c[6], c[7], c[3], r, g, b, a); // +Z
+    }
+
+    /** Corners of the unit cube around a local center, each re-anchored individually. */
+    private static Vec3[] cubeCorners(Vec3 center, float partialTick) {
+        double x0 = center.x - 0.5D, y0 = center.y - 0.5D, z0 = center.z - 0.5D;
+        double x1 = center.x + 0.5D, y1 = center.y + 0.5D, z1 = center.z + 0.5D;
+        return new Vec3[]{
+            ClientTerminalView.toWorld(new Vec3(x0, y0, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y0, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y0, z1), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x0, y0, z1), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x0, y1, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y1, z0), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x1, y1, z1), partialTick),
+            ClientTerminalView.toWorld(new Vec3(x0, y1, z1), partialTick)
+        };
     }
 
     private static void drawSpall(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
@@ -370,23 +475,6 @@ public final class ClientTerminalOverlay {
         vertexWorld(buf, ctx, at.subtract(right.scale(half)).add(up.scale(half)), r, g, b, a);
         vertexWorld(buf, ctx, at.subtract(right.scale(half)).subtract(up.scale(half)), r, g, b, a);
         vertexWorld(buf, ctx, at.add(right.scale(half)).subtract(up.scale(half)), r, g, b, a);
-    }
-
-    /** Six translucent faces of a box; fills are surfaces, so overlapping plates do not double-blend. */
-    private static void filledBox(BufferBuilder buf, Ctx ctx, Vec3 min, Vec3 max,
-                                  float r, float g, float b, float a) {
-        double x0 = min.x, y0 = min.y, z0 = min.z;
-        double x1 = max.x, y1 = max.y, z1 = max.z;
-        // -X face
-        quadWorld(buf, ctx, new Vec3(x0, y0, z0), new Vec3(x0, y0, z1), new Vec3(x0, y1, z1), new Vec3(x0, y1, z0), r, g, b, a);
-        // +X face
-        quadWorld(buf, ctx, new Vec3(x1, y0, z1), new Vec3(x1, y0, z0), new Vec3(x1, y1, z0), new Vec3(x1, y1, z1), r, g, b, a);
-        // Bottom (-Y) and top (+Y)
-        quadWorld(buf, ctx, new Vec3(x0, y0, z0), new Vec3(x1, y0, z0), new Vec3(x1, y0, z1), new Vec3(x0, y0, z1), r, g, b, a);
-        quadWorld(buf, ctx, new Vec3(x0, y1, z1), new Vec3(x1, y1, z1), new Vec3(x1, y1, z0), new Vec3(x0, y1, z0), r, g, b, a);
-        // -Z face and +Z face
-        quadWorld(buf, ctx, new Vec3(x0, y0, z0), new Vec3(x0, y1, z0), new Vec3(x1, y1, z0), new Vec3(x1, y0, z0), r, g, b, a);
-        quadWorld(buf, ctx, new Vec3(x1, y0, z1), new Vec3(x1, y1, z1), new Vec3(x0, y1, z1), new Vec3(x0, y0, z1), r, g, b, a);
     }
 
     private static void quadWorld(BufferBuilder buf, Ctx ctx, Vec3 p0, Vec3 p1, Vec3 p2, Vec3 p3,

@@ -22,7 +22,12 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
                                                   List<HitcamSample> path, List<Plate> plates,
                                                   Spall spall, List<EntityHit> entities) {
 
-    public record Plate(Vec3 pos, String outcome, double damage, double toughness, boolean broken) {}
+    /**
+     * {@code blockStateId} is the struck block's state id ({@code Block.getId});
+     * the client renders the plate highlight as that block's real shape. A
+     * negative id means unknown (full-cube fallback).
+     */
+    public record Plate(Vec3 pos, String outcome, double damage, double toughness, boolean broken, int blockStateId) {}
 
     public record EntityHit(int entityId, Vec3 pos, float damage, boolean killed) {}
 
@@ -97,6 +102,7 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             buf.writeDouble(p.damage());
             buf.writeFloat((float) p.toughness());
             buf.writeBoolean(p.broken());
+            buf.writeVarInt(p.blockStateId());
         }
         buf.writeBoolean(spall != null);
         if (spall != null) {
@@ -149,7 +155,8 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
         int plateCount = buf.readVarInt();
         List<Plate> plates = new ArrayList<>(Math.min(plateCount, 64));
         for (int i = 0; i < plateCount; i++) {
-            plates.add(new Plate(readVec3(buf), buf.readUtf(16), buf.readDouble(), buf.readFloat(), buf.readBoolean()));
+            plates.add(new Plate(readVec3(buf), buf.readUtf(16), buf.readDouble(), buf.readFloat(), buf.readBoolean(),
+                buf.readVarInt()));
         }
         Spall spall = null;
         if (buf.readBoolean()) {
