@@ -143,9 +143,10 @@ public final class ClientTerminalOverlay {
         List<ClientboundTerminalBallisticsPacket.Plate> plateList = ClientTerminalView.plates();
         if (!plateList.isEmpty()) {
             long now = mc.level != null ? mc.level.getGameTime() : 0L;
-            if (now - diagLastNdcLogGameTime >= 40) {
+            if (now - diagLastNdcLogGameTime >= 10) {
                 diagLastNdcLogGameTime = now;
                 Vec3 plate0World = ClientTerminalView.toWorld(plateList.get(0).pos(), partialTick);
+                Vec3 look = ClientTerminalView.lookPoint(partialTick);
                 org.joml.Matrix4f full = new org.joml.Matrix4f(RenderSystem.getProjectionMatrix());
                 full.mul(new org.joml.Matrix4f(RenderSystem.getModelViewMatrix()));
                 full.mul(new org.joml.Matrix4f(ctx.view));
@@ -156,8 +157,11 @@ public final class ClientTerminalOverlay {
                 float ndcX = p.x() / p.w();
                 float ndcY = p.y() / p.w();
                 com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
-                    "[CTB-HITCAM] overlay ndc plate0=({},{}) w={} fwd=({},{},{}) depth={}",
-                    String.format("%.2f", ndcX), String.format("%.2f", ndcY), String.format("%.1f", p.w()),
+                    "[CTB-HITCAM] overlay ndc age={} plate0=({},{}) look=({},{},{}) lookDist={} fwd=({},{},{}) depth={}",
+                    String.format("%.1f", tl.age),
+                    String.format("%.2f", ndcX), String.format("%.2f", ndcY),
+                    String.format("%.0f", look.x), String.format("%.0f", look.y), String.format("%.0f", look.z),
+                    String.format("%.1f", look.subtract(camera.getPosition()).length()),
                     String.format("%.2f", ctx.fwd.x), String.format("%.2f", ctx.fwd.y), String.format("%.2f", ctx.fwd.z),
                     String.format("%.1f", viewDepth(ctx, plate0World)));
             }

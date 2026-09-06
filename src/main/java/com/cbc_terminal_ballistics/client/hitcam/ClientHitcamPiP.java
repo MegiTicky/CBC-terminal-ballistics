@@ -173,7 +173,7 @@ public final class ClientHitcamPiP {
         // and where its camera actually points.
         if (ClientHitcam.isTerminal()) {
             long now = mc.level != null ? mc.level.getGameTime() : 0L;
-            if (now - diagLastPipLogGameTime >= 40) {
+            if (now - diagLastPipLogGameTime >= 20) {
                 diagLastPipLogGameTime = now;
                 com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
                     "[CTB-HITCAM] pip render path={} camPos=({},{},{}) yaw={} pitch={} look=({},{},{})",
