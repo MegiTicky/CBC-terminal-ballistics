@@ -169,8 +169,11 @@ public final class TerminalBallisticsRecorder {
         // or goes stale. Rate-limited so chewing through a thick wall does not
         // restart the animation every tick; each snapshot carries all plates
         // recorded so far, so nothing is lost between sends.
-        if ("PENETRATE".equals(outcome)
-            && projectile.level().getGameTime() - session.lastSnapshotGameTime >= SNAPSHOT_INTERVAL_TICKS) {
+        // The never-sent sentinel must be checked explicitly: gameTime minus
+        // Long.MIN_VALUE overflows and would wrongly fail the interval test.
+        boolean snapshotDue = session.lastSnapshotGameTime == Long.MIN_VALUE
+            || projectile.level().getGameTime() - session.lastSnapshotGameTime >= SNAPSHOT_INTERVAL_TICKS;
+        if ("PENETRATE".equals(outcome) && snapshotDue) {
             sendSnapshot(projectile, session);
         }
     }
