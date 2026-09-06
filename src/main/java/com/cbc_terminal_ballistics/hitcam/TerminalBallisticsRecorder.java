@@ -21,16 +21,18 @@ import net.minecraftforge.network.NetworkDirection;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.WeakHashMap;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * Server-side collector behind the terminal-ballistics hitcam. While a
  * projectile works through armour it accumulates per-plate outcomes, a spall
  * summary and entity hits; when the engagement ends the whole x-ray diagram is
- * sent to the shooter's client as one packet. Sessions are keyed weakly by the
- * projectile entity, so they vanish with it if never finalized.
+ * sent to the shooter's client as one packet. Sessions are keyed by the
+ * projectile's UUID (it survives the chunk-unload re-creation cycle), each
+ * holding a reference to the currently bound entity.
  */
 public final class TerminalBallisticsRecorder {
     private static final int MAX_PLATES = 16;
@@ -45,9 +47,18 @@ public final class TerminalBallisticsRecorder {
      */
     private static final double FRAME_SANITY_LIMIT = 16384.0D;
 
-    private static final WeakHashMap<Entity, Session> SESSIONS = new WeakHashMap<>();
+    /**
+     * Sessions keyed by the shell's UUID, not the entity object. A shell whose
+     * chunk unloads (RPL ticket expiry) is re-created by vanilla with a new
+     * entity id but the same UUID; a weakly-keyed map let the removed entity's
+     * garbage collection silently swallow the session before the relay could
+     * rebind it. Strong refs here, cleaned up on every session end path.
+     */
+    private static final Map<UUID, Session> SESSIONS = new HashMap<>();
 
     private static final class Session {
+        /** The live projectile entity this session is currently bound to (changes on rebind). */
+        Entity bound;
         final List<ClientboundTerminalBallisticsPacket.Plate> plates = new ArrayList<>();
         final List<ClientboundTerminalBallisticsPacket.EntityHit> entities = new ArrayList<>();
         final List<ClientboundTerminalBallisticsPacket.SpallBlock> spallBlocks = new ArrayList<>();
@@ -91,8 +102,6 @@ public final class TerminalBallisticsRecorder {
         /** Chunk-unload rebind: the shell's UUID while waiting for its re-created entity. */
         UUID pendingUuid;
         long pendingSinceTick = -1L;
-        /** Last relayed velocity; drives synthetic relay packets during a rebind wait. */
-        Vec3 lastRelayVel;
     }
 
     /**
@@ -165,13 +174,41 @@ public final class TerminalBallisticsRecorder {
 
     // ---- hooks -----------------------------------------------------------------
 
-    /** First tick of a CBC projectile: resolve the audience and start the artillery cam. */
+    /**
+     * First tick of a CBC projectile: resolve the audience and start the
+     * artillery cam. A UUID match with an existing session means this is the
+     * same shell re-created after its chunk unloaded (new entity id, same
+     * UUID): rebind the session in place — keeping its plates, terrain dedup
+     * set and audience — and tell the client to follow the new id.
+     */
     public static void onProjectileSpawned(Entity projectile) {
         if (!(projectile.level() instanceof ServerLevel level)) return;
         if (!TBConfig.HITCAM_ENABLED.get()) return;
+        Session existing = SESSIONS.get(projectile.getUUID());
+        if (existing != null) {
+            if (existing.bound == projectile) return;
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-CHUNKSTREAM] shell rebind: newId={} oldId={} uuid={}",
+                projectile.getId(), existing.bound == null ? -1 : existing.bound.getId(), projectile.getUUID());
+            existing.bound = projectile;
+            existing.pendingUuid = null;
+            existing.pendingSinceTick = -1L;
+            existing.lastRelayPos = null;
+            existing.stuckRelays = 0;
+            if (existing.audience == null) {
+                existing.audience = resolveAudience(level, projectile);
+            }
+            if (existing.audience != null && TBConfig.HITCAM_ARTILLERY_CAM.get()) {
+                send(existing.audience, new ClientboundTrackProjectilePacket(projectile.getId()));
+            }
+            return;
+        }
         ServerPlayer audience = resolveAudience(level, projectile);
         if (audience == null) return;
-        SESSIONS.computeIfAbsent(projectile, e -> new Session()).audience = audience;
+        Session session = new Session();
+        session.bound = projectile;
+        session.audience = audience;
+        SESSIONS.put(projectile.getUUID(), session);
         if (TBConfig.HITCAM_ARTILLERY_CAM.get()) {
             send(audience, new ClientboundTrackProjectilePacket(projectile.getId()));
         }
@@ -190,7 +227,7 @@ public final class TerminalBallisticsRecorder {
      * pass, so splitting there could thrash the ship key.
      */
     private static Session sessionFor(Entity projectile, Vec3 worldPos) {
-        Session session = SESSIONS.get(projectile);
+        Session session = SESSIONS.get(projectile.getUUID());
         if (session == null) return null;
         if (!(projectile.level() instanceof ServerLevel level)) return session;
         Object ship = VSCompat.shipManaging(level, worldPos);
@@ -204,9 +241,10 @@ public final class TerminalBallisticsRecorder {
             "[CTB-HITCAM] session split shell={} oldPlates={} oldSpallBlocks={}",
             projectile.getId(), session.plates.size(), session.spallBlocks.size());
         Session next = new Session();
+        next.bound = projectile;
         next.audience = session.audience;
         next.vsShipKey = ship;
-        SESSIONS.put(projectile, next);
+        SESSIONS.put(projectile.getUUID(), next);
         dispatch(projectile, session);
         return next;
     }
@@ -310,7 +348,7 @@ public final class TerminalBallisticsRecorder {
      */
     public static void onInternalBlockDamage(Entity projectile) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
-        Session session = SESSIONS.get(projectile);
+        Session session = SESSIONS.get(projectile.getUUID());
         if (session == null || session.plates.isEmpty()) return;
         session.internalDamage = true;
     }
@@ -331,7 +369,7 @@ public final class TerminalBallisticsRecorder {
 
     private static void recordEntityHit(Entity projectile, LivingEntity target, float damage, boolean killed) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
-        Session session = SESSIONS.get(projectile);
+        Session session = SESSIONS.get(projectile.getUUID());
         if (session == null) return;
         session.dirty = true;
         for (int i = 0; i < session.entities.size(); i++) {
@@ -357,7 +395,7 @@ public final class TerminalBallisticsRecorder {
      * gone out, so a quiet stretch of flight never restarts the animation.
      */
     public static void onClipAndDamageTail(Entity projectile) {
-        Session session = SESSIONS.get(projectile);
+        Session session = SESSIONS.get(projectile.getUUID());
         if (session == null) return;
         boolean stale = session.firstEventGameTime >= 0L
             && projectile.level().getGameTime() - session.firstEventGameTime >= STALE_FLUSH_TICKS;
@@ -369,7 +407,7 @@ public final class TerminalBallisticsRecorder {
 
     /** Projectile left the level: final flush for pass-through shells. */
     public static void onEntityRemoved(Entity projectile) {
-        Session session = SESSIONS.get(projectile);
+        Session session = SESSIONS.get(projectile.getUUID());
         if (session == null) return;
         if (projectile.getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
             // The shell's chunk unloaded with it. RPL re-loads that chunk within
@@ -378,7 +416,7 @@ public final class TerminalBallisticsRecorder {
             // down here or the artillery view (and terrain streaming) dies.
             return;
         }
-        SESSIONS.remove(projectile);
+        SESSIONS.remove(projectile.getUUID());
         if (session.audience != null) {
             // Tell the artillery cam the shell is gone. Without this the client
             // sits out its 10-tick relay timeout and ends the view on pure
@@ -406,30 +444,27 @@ public final class TerminalBallisticsRecorder {
     public static void onServerTick(net.minecraft.server.MinecraftServer server) {
         if (!TBConfig.HITCAM_ENABLED.get() || !TBConfig.HITCAM_ARTILLERY_CAM.get()) return;
         if (SESSIONS.isEmpty() || server.getTickCount() % 2 != 0) return;
-        // Map mutations that ADD keys must wait until after iteration (a put
-        // during WeakHashMap iteration can rehash under the iterator).
-        java.util.List<Entity[]> rebinds = null;
-        for (java.util.Map.Entry<Entity, Session> entry : SESSIONS.entrySet()) {
-            Entity projectile = entry.getKey();
+        // Rebinds mutate Session fields only (bound/pending), never the map, so
+        // iteration is safe; session-ending paths remove only the current key.
+        for (java.util.Map.Entry<UUID, Session> entry : SESSIONS.entrySet()) {
             Session session = entry.getValue();
-            if (session.audience == null) continue;
+            Entity projectile = session.bound;
+            if (projectile == null || session.audience == null) continue;
             if (projectile.isRemoved()) {
                 if (projectile.getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
                     // The shell's chunk was expired and unloaded with the entity
                     // (RPL ticket expiry). RPL reloads the chunk within ticks and
                     // vanilla re-creates the shell from it with a new entity id
                     // and the same UUID — this is NOT the shell dying. Hold the
-                    // session open and rebind when it re-appears.
-                    Entity reborn = handleChunkUnload(session, projectile, server);
-                    if (reborn != null) {
-                        if (rebinds == null) rebinds = new ArrayList<>(2);
-                        rebinds.add(new Entity[]{projectile, reborn});
-                    }
+                    // session open and rebind when it re-appears (via
+                    // onProjectileSpawned, or the UUID scan below).
+                    handleChunkUnload(session, projectile, server);
                     continue;
                 }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
                 session.audience = null;
+                SESSIONS.remove(entry.getKey());
                 continue;
             }
             // Stuck-shell watchdog: a projectile that has not moved for ~5 s
@@ -450,7 +485,8 @@ public final class TerminalBallisticsRecorder {
                     projectile.getId(), session.stuckRelays, posNow);
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", posNow, Vec3.ZERO, true));
-                SESSIONS.remove(projectile);
+                session.audience = null;
+                SESSIONS.remove(entry.getKey());
                 continue;
             }
             send(session.audience, new ClientboundArtilleryUpdatePacket(
@@ -462,50 +498,43 @@ public final class TerminalBallisticsRecorder {
                 streamTerrain(session, slevel, posNow, velNow, session.audience);
             }
         }
-        if (rebinds != null) {
-            for (Entity[] rebind : rebinds) {
-                Session session = SESSIONS.remove(rebind[0]);
-                if (session != null) SESSIONS.put(rebind[1], session);
-            }
-        }
     }
 
     /** Relays (each = 2 ticks) after which a stationary shell's session is ended. */
     private static final int STUCK_SESSION_RELAYS = 50;
 
     /** Ticks to wait for a chunk-unloaded shell to re-appear before giving up. */
-    private static final int REBIND_TIMEOUT_TICKS = 100;
+    private static final int REBIND_TIMEOUT_TICKS = 200;
 
     /**
      * A chunk unload took the shell entity with it (RPL forced-ticket expiry);
      * the shell itself is fine — RPL still has the chunk queued, reloads it
      * within ticks, and vanilla re-creates the shell from the chunk data with
-     * a new entity id and the same UUID. Keep the relay alive across the cycle:
-     * re-queue the shell's last chunk (that is what brings the entity back),
-     * send extrapolated relay packets so the client's ghost never hits its
-     * silence timeout, and stream terrain for the extrapolated position. When
-     * the shell re-appears, send its new id to the client (a track packet makes
-     * the view retarget) and let the caller re-key the session. Returns the
-     * re-created entity, or null while still waiting / after giving up.
+     * a new entity id and the same UUID (which re-enters through
+     * {@link #onProjectileSpawned} and rebinds). Keep the relay alive across
+     * the cycle: re-queue the shell's last chunk (that is what brings the
+     * entity back), send frozen relay packets — the shell genuinely stops
+     * ticking while its chunk is unloaded, so a frozen ghost is accurate —
+     * and stream terrain for the last position.
      */
-    private static Entity handleChunkUnload(Session session, Entity removed, net.minecraft.server.MinecraftServer server) {
+    private static void handleChunkUnload(Session session, Entity removed, net.minecraft.server.MinecraftServer server) {
         if (session.pendingUuid == null) {
             session.pendingUuid = removed.getUUID();
             session.pendingSinceTick = server.getTickCount();
-            session.lastRelayVel = removed.getDeltaMovement();
             if (session.lastRelayPos == null) session.lastRelayPos = removed.position();
             session.stuckRelays = 0;
             CBCTerminalBallistics.LOGGER.info(
                 "[CTB-CHUNKSTREAM] shell {} lost to chunk unload; waiting for its re-created entity",
                 removed.getId());
         }
-        if (!(removed.level() instanceof ServerLevel level)) return null;
-        preflightChunkload(level, session.lastRelayPos, session.lastRelayVel);
+        if (!(removed.level() instanceof ServerLevel level)) return;
+        preflightChunkload(level, session.lastRelayPos, Vec3.ZERO);
         Entity reborn = findEntityByUuid(level, session.pendingUuid);
         if (reborn != null && reborn != removed && !reborn.isRemoved()) {
             CBCTerminalBallistics.LOGGER.info(
-                "[CTB-CHUNKSTREAM] shell rebind: oldId={} newId={} after={} ticks",
+                "[CTB-CHUNKSTREAM] shell rebind (scan): oldId={} newId={} after={} ticks",
                 removed.getId(), reborn.getId(), server.getTickCount() - session.pendingSinceTick);
+            session.bound = reborn;
             session.pendingUuid = null;
             session.pendingSinceTick = -1L;
             session.lastRelayPos = null;
@@ -513,7 +542,7 @@ public final class TerminalBallisticsRecorder {
             if (TBConfig.HITCAM_ARTILLERY_CAM.get()) {
                 send(session.audience, new ClientboundTrackProjectilePacket(reborn.getId()));
             }
-            return reborn;
+            return;
         }
         if (server.getTickCount() - session.pendingSinceTick >= REBIND_TIMEOUT_TICKS) {
             CBCTerminalBallistics.LOGGER.info(
@@ -521,19 +550,16 @@ public final class TerminalBallisticsRecorder {
             send(session.audience, new ClientboundArtilleryUpdatePacket(
                 removed.getId(), "", session.lastRelayPos, Vec3.ZERO, true));
             session.audience = null;
-            SESSIONS.remove(removed);
-            return null;
+            SESSIONS.remove(session.pendingUuid);
+            return;
         }
-        // Synthetic relay: extrapolate from the last known state. The client
-        // extrapolates per-tick from whatever arrives, so feeding it an
-        // advancing position keeps its ghost fresh without double extrapolation.
-        Vec3 sendPos = session.lastRelayPos.add(session.lastRelayVel.scale(2.0));
-        session.lastRelayPos = sendPos;
+        // Frozen synthetic relay: keeps the client's ghost from timing out
+        // while the chunk regenerates. The client extrapolates with the relayed
+        // velocity, so zero velocity parks the ghost at the last real position.
         send(session.audience, new ClientboundArtilleryUpdatePacket(
             removed.getId(), EntityType.getKey(removed.getType()).toString(),
-            sendPos, session.lastRelayVel, false));
-        streamTerrain(session, level, sendPos, session.lastRelayVel, session.audience);
-        return null;
+            session.lastRelayPos, Vec3.ZERO, false));
+        streamTerrain(session, level, session.lastRelayPos, Vec3.ZERO, session.audience);
     }
 
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
@@ -673,7 +699,7 @@ public final class TerminalBallisticsRecorder {
     // ---- finalize ----------------------------------------------------------------
 
     private static void finalizeAndSend(Entity projectile, Session session) {
-        SESSIONS.remove(projectile);
+        SESSIONS.remove(projectile.getUUID());
         dispatch(projectile, session);
     }
 
