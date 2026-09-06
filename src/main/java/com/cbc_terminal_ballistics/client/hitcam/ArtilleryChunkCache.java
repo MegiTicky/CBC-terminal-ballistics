@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.client.hitcam;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
@@ -32,11 +33,39 @@ public final class ArtilleryChunkCache {
     private static boolean active;
     /** Cheap short-circuit for the hot {@code getChunk} fallback. */
     private static boolean empty = true;
+    /** One-shot diagnostics: prove which links of the streaming chain run. */
+    private static boolean captureHookProbed;
+    private static boolean serveHookProbed;
+    private static boolean activationLogged;
+    private static boolean captureLogged;
+
+    /**
+     * Called by the mixin's capture handler on every chunk packet. Logs once
+     * that the injection actually applied (its absence in a log means the
+     * injector never matched), and gates on the capturing flag.
+     */
+    public static boolean probeCaptureHook() {
+        if (!captureHookProbed) {
+            captureHookProbed = true;
+            CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] ClientChunkCache capture hook applied, capturing={}", capturing());
+        }
+        return capturing();
+    }
+
+    public static void probeServeHook(int chunkX, int chunkZ) {
+        if (serveHookProbed) return;
+        serveHookProbed = true;
+        CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] first chunk served to renderer at {}, {}", chunkX, chunkZ);
+    }
 
     public static void setActive(boolean value) {
         boolean enabled = value && TBConfig.HITCAM_ENABLED.get() && TBConfig.HITCAM_TERRAIN_STREAM.get();
         if (active == enabled) return;
         active = enabled;
+        if (active && !activationLogged) {
+            activationLogged = true;
+            CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] terrain retention activated");
+        }
         if (!active) clear();
     }
 
@@ -56,6 +85,10 @@ public final class ArtilleryChunkCache {
     public static void put(LevelChunk chunk) {
         CHUNKS.put(chunk.getPos().toLong(), chunk);
         empty = false;
+        if (!captureLogged) {
+            captureLogged = true;
+            CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] first chunk captured at {}", chunk.getPos());
+        }
     }
 
     /**

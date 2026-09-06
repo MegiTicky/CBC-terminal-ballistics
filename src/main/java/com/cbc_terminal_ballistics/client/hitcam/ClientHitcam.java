@@ -51,6 +51,8 @@ public final class ClientHitcam {
     private static boolean artilleryGhostAlive;
     /** Ticks of silence after which the relay is considered lost. */
     private static final int ARTILLERY_GHOST_TIMEOUT_TICKS = 10;
+    /** Game time of the last relay packet with live data; keeps streamed terrain cached a moment past view-mode flickers. */
+    private static long lastArtilleryRelayGameTime = Long.MIN_VALUE;
 
     public static void start(String typeKey, List<HitcamSample> recorded, String summary) {
         if (recorded.size() < 2) return;
@@ -130,15 +132,28 @@ public final class ClientHitcam {
         artilleryGhostAlive = true;
         Minecraft mc = Minecraft.getInstance();
         artilleryGhostUpdateGameTime = mc.level != null ? mc.level.getGameTime() : 0L;
+        lastArtilleryRelayGameTime = artilleryGhostUpdateGameTime;
+    }
+
+    /**
+     * True while a server relay with live shell data arrived recently. Streamed
+     * terrain stays cached through this window even if the view mode flickers,
+     * so captured chunks are not wiped the instant the view ends.
+     */
+    private static boolean relayFresh() {
+        if (lastArtilleryRelayGameTime == Long.MIN_VALUE) return false;
+        Minecraft mc = Minecraft.getInstance();
+        return mc.level != null && mc.level.getGameTime() - lastArtilleryRelayGameTime <= 40;
     }
 
     /**
      * Keeps the streamed-terrain retention in {@link ArtilleryChunkCache} in
      * step with the view: active while the artillery cam or terminal view is
-     * live, with a periodic sweep dropping chunks the shell left far behind.
+     * live (or the server relay is still flowing), with a periodic sweep
+     * dropping chunks the shell left far behind.
      */
     private static void updateTerrainCache(Minecraft mc) {
-        boolean live = mode == Mode.ARTILLERY || mode == Mode.TERMINAL;
+        boolean live = mode == Mode.ARTILLERY || mode == Mode.TERMINAL || relayFresh();
         ArtilleryChunkCache.setActive(live);
         if (live && mc.level.getGameTime() % 20 == 0) {
             Vec3 shell = shellPos();
@@ -238,6 +253,16 @@ public final class ClientHitcam {
             }
             case ARTILLERY -> {
                 if (!hasLiveArtilleryTarget()) {
+                    // One-shot diagnostic: the tracked entity is despawned
+                    // beyond tracking range and the relay went quiet, so say
+                    // which half failed if the view ends mid-flight.
+                    Minecraft mc2 = Minecraft.getInstance();
+                    Entity target = artilleryTarget();
+                    long silence = mc2.level != null && lastArtilleryRelayGameTime != Long.MIN_VALUE
+                        ? mc2.level.getGameTime() - lastArtilleryRelayGameTime : -1L;
+                    CBCTerminalBallistics.LOGGER.info(
+                        "[CTB-HITCAM] artillery view ended: entity={}, ghostAlive={}, relaySilenceTicks={}",
+                        target != null, artilleryGhostAlive, silence);
                     stop();
                 }
             }

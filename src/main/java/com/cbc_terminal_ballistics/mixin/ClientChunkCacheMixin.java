@@ -63,7 +63,7 @@ public abstract class ClientChunkCacheMixin {
     private void ctb$retainFarChunk(int x, int z, FriendlyByteBuf buf, CompoundTag tag,
                                     Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
                                     CallbackInfoReturnable<LevelChunk> cir) {
-        if (!ArtilleryChunkCache.capturing()) return;
+        if (!ArtilleryChunkCache.probeCaptureHook()) return;
         // Anything vanilla would keep itself (inside the view square) takes the
         // normal path; we only rescue the discard branch.
         ClientChunkCache self = (ClientChunkCache) (Object) this;
@@ -84,7 +84,7 @@ public abstract class ClientChunkCacheMixin {
         cir.setReturnValue(chunk);
     }
 
-    @Inject(method = "m_104451_" + GET_CHUNK_DESCRIPTOR, remap = false, require = 0,
+    @Inject(method = "m_7587_" + GET_CHUNK_DESCRIPTOR, remap = false, require = 0,
         at = @At("TAIL"), cancellable = true)
     private void ctb$serveFarChunkSrg(int x, int z, ChunkStatus status, boolean requireChunk,
                                       CallbackInfoReturnable<LevelChunk> cir) {
@@ -107,6 +107,7 @@ public abstract class ClientChunkCacheMixin {
         if (current != null && !(current instanceof EmptyLevelChunk)) return;
         LevelChunk aux = ArtilleryChunkCache.get(x, z);
         if (aux != null) {
+            ArtilleryChunkCache.probeServeHook(x, z);
             cir.setReturnValue(aux);
         }
     }
