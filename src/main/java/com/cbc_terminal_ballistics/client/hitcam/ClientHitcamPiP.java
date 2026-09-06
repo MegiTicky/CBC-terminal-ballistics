@@ -131,8 +131,9 @@ public final class ClientHitcamPiP {
      * forcing both views to recompile constantly. Near views keep rendering
      * every frame.
      */
-    private static boolean shouldSkipFarFrame(Minecraft mc) {
-        int interval = Mth.clamp(TBConfig.HITCAM_PIP_FAR_FRAME_INTERVAL.get(), 1, 10);
+    private static long diagLastPipLogGameTime = -1L;
+
+    private static boolean shouldSkipFarFrame(Minecraft mc) {        int interval = Mth.clamp(TBConfig.HITCAM_PIP_FAR_FRAME_INTERVAL.get(), 1, 10);
         if (interval <= 1) return false;
         // The terminal x-ray is short (~6 s) and its whole point is a smooth
         // progressive animation; the chunk-grid thrash this throttle protects
@@ -167,6 +168,21 @@ public final class ClientHitcamPiP {
         camera.setup(mc.level, setupEntity, false, false, 1.0F);
         invokeSetPosition(camera, camPos);
         invokeSetRotation(camera, yaw, pitch);
+
+        // DIAGNOSTIC (missing x-ray on some ship shots): which PiP path runs
+        // and where its camera actually points.
+        if (ClientHitcam.isTerminal()) {
+            long now = mc.level != null ? mc.level.getGameTime() : 0L;
+            if (now - diagLastPipLogGameTime >= 40) {
+                diagLastPipLogGameTime = now;
+                com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-HITCAM] pip render path={} camPos=({},{},{}) yaw={} pitch={} look=({},{},{})",
+                    fullScene ? "full" : "MINIMAL",
+                    String.format("%.0f", camPos.x), String.format("%.0f", camPos.y), String.format("%.0f", camPos.z),
+                    String.format("%.1f", yaw), String.format("%.1f", pitch),
+                    String.format("%.1f", look.x), String.format("%.1f", look.y), String.format("%.1f", look.z));
+            }
+        }
 
         // Rotation-only pose that maps world space into the PiP camera's view
         // space, built the same way GameRenderer builds it. 1.20.1 never pushes

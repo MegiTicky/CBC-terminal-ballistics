@@ -137,6 +137,32 @@ public final class ClientTerminalOverlay {
         if (tl.fade <= 0.02F) return;
         Ctx ctx = Ctx.of(mc, camera, viewPose);
 
+        // DIAGNOSTIC (missing x-ray on some ship shots): project plate 0's
+        // world position through the CURRENT RenderSystem matrices exactly as
+        // a stroke vertex would be, and log the NDC result.
+        List<ClientboundTerminalBallisticsPacket.Plate> plateList = ClientTerminalView.plates();
+        if (!plateList.isEmpty()) {
+            long now = mc.level != null ? mc.level.getGameTime() : 0L;
+            if (now - diagLastNdcLogGameTime >= 40) {
+                diagLastNdcLogGameTime = now;
+                Vec3 plate0World = ClientTerminalView.toWorld(plateList.get(0).pos(), partialTick);
+                org.joml.Matrix4f full = new org.joml.Matrix4f(RenderSystem.getProjectionMatrix());
+                full.mul(new org.joml.Matrix4f(RenderSystem.getModelViewMatrix()));
+                full.mul(new org.joml.Matrix4f(ctx.view));
+                org.joml.Vector4f p = full.transform(new org.joml.Vector4f(
+                    (float) (plate0World.x - ctx.cam.x),
+                    (float) (plate0World.y - ctx.cam.y),
+                    (float) (plate0World.z - ctx.cam.z), 1.0F));
+                float ndcX = p.x() / p.w();
+                float ndcY = p.y() / p.w();
+                com.cbc_terminal_ballistics.CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-HITCAM] overlay ndc plate0=({},{}) w={} fwd=({},{},{}) depth={}",
+                    String.format("%.2f", ndcX), String.format("%.2f", ndcY), String.format("%.1f", p.w()),
+                    String.format("%.2f", ctx.fwd.x), String.format("%.2f", ctx.fwd.y), String.format("%.2f", ctx.fwd.z),
+                    String.format("%.1f", viewDepth(ctx, plate0World)));
+            }
+        }
+
         // X-ray: draw over the rendered world, never hidden behind it.
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
@@ -446,6 +472,7 @@ public final class ClientTerminalOverlay {
     private static int diagRaysNoGrowth;
     private static int diagDotsDrawn;
     private static float diagLastLogAge = -100.0F;
+    private static long diagLastNdcLogGameTime = -1L;
 
     private static void drawSpallCone(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl,
                                       float partialTick, int coneIndex,
