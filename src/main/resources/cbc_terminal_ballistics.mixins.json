@@ -26,6 +26,7 @@
     "CBCATHeavyAutocannonProjectileMixin"
   ],
   "client": [
+    "ClientChunkCacheMixin",
     "ParticleEngineMixin"
   ],
   "injectors": {

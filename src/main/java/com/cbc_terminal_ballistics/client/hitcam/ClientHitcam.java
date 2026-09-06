@@ -98,6 +98,7 @@ public final class ClientHitcam {
         mode = Mode.NONE;
         artilleryEntityId = -1;
         clearArtilleryGhost();
+        ArtilleryChunkCache.setActive(false);
         ClientTerminalView.clear();
         resetReplay();
     }
@@ -129,6 +130,20 @@ public final class ClientHitcam {
         artilleryGhostAlive = true;
         Minecraft mc = Minecraft.getInstance();
         artilleryGhostUpdateGameTime = mc.level != null ? mc.level.getGameTime() : 0L;
+    }
+
+    /**
+     * Keeps the streamed-terrain retention in {@link ArtilleryChunkCache} in
+     * step with the view: active while the artillery cam or terminal view is
+     * live, with a periodic sweep dropping chunks the shell left far behind.
+     */
+    private static void updateTerrainCache(Minecraft mc) {
+        boolean live = mode == Mode.ARTILLERY || mode == Mode.TERMINAL;
+        ArtilleryChunkCache.setActive(live);
+        if (live && mc.level.getGameTime() % 20 == 0) {
+            Vec3 shell = shellPos();
+            ArtilleryChunkCache.sweep(shell.x, shell.z);
+        }
     }
 
     private static void resetReplay() {
@@ -211,8 +226,10 @@ public final class ClientHitcam {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
             if (mode != Mode.NONE) stop();
+            ArtilleryChunkCache.setActive(false);
             return;
         }
+        updateTerrainCache(mc);
         switch (mode) {
             case REPLAY -> {
                 if (playHead >= span && ++holdTicks >= HOLD_TICKS) {

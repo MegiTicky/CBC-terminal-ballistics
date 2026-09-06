@@ -11,6 +11,7 @@ import com.cbc_terminal_ballistics.util.VSCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
@@ -63,6 +64,8 @@ public final class TerminalBallisticsRecorder {
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
         boolean dirty;
+        /** Chunks already streamed to the audience for the artillery cam's client-side terrain. */
+        final it.unimi.dsi.fastutil.longs.LongOpenHashSet streamedChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
     }
 
     /**
@@ -316,6 +319,62 @@ public final class TerminalBallisticsRecorder {
             send(session.audience, new ClientboundArtilleryUpdatePacket(
                 projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
                 projectile.position(), projectile.getDeltaMovement(), false));
+            streamTerrain(session, projectile, session.audience);
+        }
+    }
+
+    /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
+    private static final int TERRAIN_STREAM_BUDGET_PER_RELAY = 6;
+
+    /**
+     * Stream the chunks around (and, predictively, ahead of) the shell to the
+     * artillery cam's viewer. CBC's projectile chunk loading
+     * ({@code projectilesCanChunkload} / RitchiesProjectileLib) keeps chunks
+     * loaded on the <b>server</b> only; vanilla never sends chunks beyond the
+     * player's view distance, and the client discards out-of-range chunk
+     * packets, so past the render distance boundary the PiP world pass has no
+     * terrain to draw. Sending the shell-neighbourhood chunks directly via
+     * {@link ServerPlayer#trackChunk}, paired with the client-side retention in
+     * {@code ClientChunkCacheMixin}, gives the nested render real terrain all
+     * the way to impact. Chunks the server has not loaded yet (too far ahead)
+     * are skipped; CBC force-loads each shell chunk just before the shell
+     * enters it, at which point this relay picks it up.
+     */
+    private static void streamTerrain(Session session, Entity projectile, ServerPlayer player) {
+        if (!TBConfig.HITCAM_TERRAIN_STREAM.get()) return;
+        if (!(projectile.level() instanceof ServerLevel level) || player.level() != level) return;
+        net.minecraft.server.level.ServerChunkCache chunks = level.getChunkSource();
+        int radius = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get(), 1, 4);
+        int lead = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_LEAD_TICKS.get(), 0, 40);
+
+        net.minecraft.world.phys.Vec3 pos = projectile.position();
+        net.minecraft.world.phys.Vec3 vel = projectile.getDeltaMovement();
+        ChunkPos center = new ChunkPos(net.minecraft.core.BlockPos.containing(pos));
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet candidates = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                candidates.add(ChunkPos.asLong(center.x + dx, center.z + dz));
+            }
+        }
+        for (int t = 10; t <= lead; t += 5) {
+            net.minecraft.world.phys.Vec3 ahead = pos.add(vel.scale(t));
+            ChunkPos cp = new ChunkPos(net.minecraft.core.BlockPos.containing(ahead));
+            candidates.add(cp.toLong());
+        }
+
+        int budget = TERRAIN_STREAM_BUDGET_PER_RELAY;
+        for (it.unimi.dsi.fastutil.longs.LongIterator it = candidates.iterator(); it.hasNext(); ) {
+            long packed = it.nextLong();
+            if (session.streamedChunks.contains(packed)) continue;
+            int cx = ChunkPos.getX(packed);
+            int cz = ChunkPos.getZ(packed);
+            net.minecraft.world.level.chunk.LevelChunk chunk = chunks.getChunkNow(cx, cz);
+            if (chunk == null) continue;
+            player.trackChunk(new ChunkPos(cx, cz),
+                new net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket(
+                    chunk, chunks.getLightEngine(), null, null));
+            session.streamedChunks.add(packed);
+            if (--budget <= 0) break;
         }
     }
 

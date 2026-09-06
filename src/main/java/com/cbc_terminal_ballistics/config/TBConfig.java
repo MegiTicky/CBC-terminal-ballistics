@@ -54,6 +54,9 @@ public final class TBConfig {
     public static final ForgeConfigSpec.IntValue HITCAM_PIP_DISPLAY_HEIGHT;
     public static final ForgeConfigSpec.ConfigValue<String> HITCAM_PIP_ANCHOR;
     public static final ForgeConfigSpec.ConfigValue<String> HITCAM_SHADER_MODE;
+    public static final ForgeConfigSpec.BooleanValue HITCAM_TERRAIN_STREAM;
+    public static final ForgeConfigSpec.IntValue HITCAM_TERRAIN_STREAM_RADIUS;
+    public static final ForgeConfigSpec.IntValue HITCAM_TERRAIN_STREAM_LEAD_TICKS;
 
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
@@ -120,6 +123,9 @@ public final class TBConfig {
         HITCAM_PIP_DISPLAY_HEIGHT = server.comment("Picture-in-picture replay window height in GUI-scaled pixels.").defineInRange("hitcamPipDisplayHeight", 135, 50, 540);
         HITCAM_PIP_ANCHOR = server.comment("Corner of the screen the replay window is pinned to. One of TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT.").defineInList("hitcamPipAnchor", "TOP_RIGHT", List.of("TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"));
         HITCAM_SHADER_MODE = server.comment("Picture-in-picture behaviour when a shader pack is actively rendering: AUTO = lightweight fallback (ghost shell over live view, no nested world render), SKIP = disable with a chat notice, ATTEMPT = try the full nested render anyway. When no shader pack is active the full render is always used.").defineInList("hitcamShaderMode", "AUTO", List.of("AUTO", "SKIP", "ATTEMPT"));
+        HITCAM_TERRAIN_STREAM = server.comment("Artillery/terminal view terrain streaming: send the chunks around the flying shell to the viewer's client so the picture-in-picture world pass keeps showing terrain past the chunk render distance boundary (the client normally discards chunks beyond its view range).").define("hitcamTerrainStream", true);
+        HITCAM_TERRAIN_STREAM_RADIUS = server.comment("Chunk radius around the shell streamed to the artillery/terminal viewer.").defineInRange("hitcamTerrainStreamRadius", 2, 1, 4);
+        HITCAM_TERRAIN_STREAM_LEAD_TICKS = server.comment("How far ahead (in ticks along the shell's current velocity) to also stream chunks, so terrain arrives before the shell does.").defineInRange("hitcamTerrainStreamLeadTicks", 15, 0, 40);
         server.pop();
 
         SERVER_SPEC = server.build();
