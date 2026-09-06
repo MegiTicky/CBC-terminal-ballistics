@@ -11,7 +11,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.registries.ForgeRegistries;
@@ -78,10 +77,14 @@ public final class CommonForgeEvents {
         }
     }
 
-    @SubscribeEvent
-    public static void onEntityLeaveLevel(EntityLeaveLevelEvent event) {
-        TerminalBallisticsRecorder.onEntityRemoved(event.getEntity());
-    }
+    // NOTE: EntityLeaveLevelEvent is deliberately NOT handled here. It fires on
+    // the CLIENT side too (ClientLevel despawns the shell's mirror copy once it
+    // leaves entity-tracking range), and in single player the recorder's static
+    // session map is shared with the client thread — the client's routine
+    // mirror-copy despawn was tearing down the live session and sending the
+    // artillery view a removed packet, cutting the chase cam at exactly
+    // tracking range while the server shell kept flying. The relay's own
+    // server-thread isRemoved() check is the single authoritative teardown.
 
     private static boolean clearWelderData(ServerLevel level, BlockPos pos, boolean shellsOnly) {
         return shellsOnly ? TBImpactService.clearEmbeddedShellsOnly(level, pos)

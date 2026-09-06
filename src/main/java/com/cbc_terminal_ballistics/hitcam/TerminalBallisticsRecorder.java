@@ -405,33 +405,6 @@ public final class TerminalBallisticsRecorder {
         }
     }
 
-    /** Projectile left the level: final flush for pass-through shells. */
-    public static void onEntityRemoved(Entity projectile) {
-        Session session = SESSIONS.get(projectile.getUUID());
-        if (session == null) return;
-        if (projectile.getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
-            // The shell's chunk unloaded with it. RPL re-loads that chunk within
-            // ticks and the shell comes back as a new entity (same UUID, new id);
-            // the relay's rebind logic owns this cycle — do not tear anything
-            // down here or the artillery view (and terrain streaming) dies.
-            return;
-        }
-        SESSIONS.remove(projectile.getUUID());
-        if (session.audience != null) {
-            // Tell the artillery cam the shell is gone. Without this the client
-            // sits out its 10-tick relay timeout and ends the view on pure
-            // extrapolation (the ghostAlive=true / silence≈11 log signature).
-            if (TBConfig.HITCAM_ENABLED.get() && TBConfig.HITCAM_ARTILLERY_CAM.get()) {
-                send(session.audience, new ClientboundArtilleryUpdatePacket(
-                    projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
-            }
-            session.audience = null;
-        }
-        if (session.dirty && session.lastSnapshotGameTime == Long.MIN_VALUE) {
-            dispatch(projectile, session);
-        }
-    }
-
     // ---- artillery cam relay -----------------------------------------------------
 
     /**
@@ -460,6 +433,15 @@ public final class TerminalBallisticsRecorder {
                     // onProjectileSpawned, or the UUID scan below).
                     handleChunkUnload(session, projectile, server);
                     continue;
+                }
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-CHUNKSTREAM] shell {} removed server-side: reason={} at {}",
+                    projectile.getId(), projectile.getRemovalReason(), projectile.position());
+                // Pass-through terminal flush (formerly on the entity-leave
+                // event, which also fires client-side): a shell that recorded
+                // events but never snapshotted gets its x-ray here.
+                if (session.dirty && session.lastSnapshotGameTime == Long.MIN_VALUE) {
+                    dispatch(projectile, session);
                 }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
