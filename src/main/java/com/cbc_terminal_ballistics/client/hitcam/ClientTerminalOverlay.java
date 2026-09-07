@@ -172,7 +172,16 @@ public final class ClientTerminalOverlay {
                 drawPlates(buffer, ctx, actor, tl, partialTick);
                 drawSpall(buffer, ctx, actor, tl, partialTick);
                 drawEntityHits(buffer, ctx, actor, tl, partialTick);
-                drawBlast(buffer, ctx, actor, tl, partialTick);
+                try {
+                    drawBlast(buffer, ctx, actor, tl, partialTick);
+                } catch (Throwable t) {
+                    // A broken blast draw must never tear the whole view down
+                    // (the PiP's outer catch stops the replay entirely).
+                    if (blastDrawWarned.add(t.getClass().getName())) {
+                        com.mojang.logging.LogUtils.getLogger()
+                            .warn("[CTB-HITCAM] blast draw failed, skipping it for this session", t);
+                    }
+                }
             }
         } finally {
             tesselator.end();
@@ -562,6 +571,9 @@ public final class ClientTerminalOverlay {
         vertexWorld(buf, ctx, p2, r, g, b, a);
         vertexWorld(buf, ctx, p3, r, g, b, a);
     }
+
+    /** One-shot warn classes for blast draw failures. */
+    private static final java.util.Set<String> blastDrawWarned = new java.util.HashSet<>();
 
     /**
      * The shell's own detonation, drawn as a stylized x-ray animation: a

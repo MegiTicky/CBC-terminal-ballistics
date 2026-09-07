@@ -97,25 +97,31 @@ public final class ClientHitcam {
     /** Artillery view: follow this live projectile entity until it is gone. */
     public static void startArtillery(int entityId) {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
-        // A newly fired shell must not wipe a terminal animation that is still
-        // playing (salvo fire made the x-ray flash for a moment, then vanish
+        // A newly fired shell must not cut a terminal animation that is still
+        // on screen (salvo fire made the x-ray flash for a moment, then vanish
         // when the next gun's track packet arrived). Its own terminal packet
-        // parks and plays when the current animation finishes. While burst
-        // accumulation is on, the whole live stage is protected: a follow-up
-        // shell from the same vehicle should merge into the running x-ray, not
-        // yank the view into an artillery chase cam.
-        if (mode == Mode.TERMINAL && (ClientTerminalView.animationInProgress()
-            || (TBConfig.HITCAM_TERMINAL_BURST.get() && !ClientTerminalView.expired()))) {
+        // parks and plays when the animation finishes.
+        if (mode == Mode.TERMINAL && ClientTerminalView.animationInProgress()) {
             CBCTerminalBallistics.LOGGER.info(
-                "[CTB-HITCAM] ignoring track packet for shell {} — terminal {} in progress", entityId,
-                ClientTerminalView.animationInProgress() ? "animation" : "burst hold");
+                "[CTB-HITCAM] ignoring track packet for shell {} — terminal animation in progress", entityId);
             return;
         }
+        // A burst stage merely in its quiet hold no longer blocks the chase
+        // cam: since HE shells dispatch a terminal packet on every removal, a
+        // stage is alive during almost the whole engagement and the old
+        // blanket guard suppressed the artillery view for every salvo shell.
+        // Preempt it instead, KEEPING the stage parked so this shell's own
+        // terminal packet still merges into it on arrival.
+        boolean keepStage = mode == Mode.TERMINAL
+            && TBConfig.HITCAM_TERMINAL_BURST.get()
+            && !ClientTerminalView.expired();
         mode = Mode.ARTILLERY;
         artilleryEntityId = entityId;
         artilleryGraceTicks = ARTILLERY_START_GRACE_TICKS;
         clearArtilleryGhost();
-        ClientTerminalView.clear();
+        if (!keepStage) {
+            ClientTerminalView.clear();
+        }
         resetReplay();
     }
 
