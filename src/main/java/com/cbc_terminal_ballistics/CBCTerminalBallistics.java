@@ -55,6 +55,7 @@ public class CBCTerminalBallistics {
 
         ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, TBConfig.SERVER_SPEC);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, TBConfig.COMMON_SPEC);
+        ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, TBConfig.CLIENT_SPEC);
         TBNetwork.register();
         MinecraftForge.EVENT_BUS.register(this);
         TBDebug.startupDiagnostics();

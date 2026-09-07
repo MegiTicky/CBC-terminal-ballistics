@@ -52,17 +52,27 @@ public final class ClientTerminalOverlay {
     private static final float[] SPALL_INTERNAL_COLOR = {1.0F, 0.55F, 0.1F};
     /** Default stroke width on the displayed PiP window, in scaled GUI pixels. */
     private static final double LINE_DISPLAY_PX = 2.8D;
-    /** Trajectory trail strokes are slightly thinner than the default. */
-    private static final double PATH_LINE_PX = 2.2D;
-    /** Plate and entity-hit box outlines. */
-    private static final double PLATE_LINE_PX = 1.8D;
-    /** Spall cone rays, the thinnest strokes. */
-    private static final double SPALL_LINE_PX = 1.6D;
-    /** Spall-hit marker dot diameter on the displayed PiP window, in px. */
-    private static final double DOT_DISPLAY_PX = 4.5D;
     private static final float FILL_ALPHA = 0.34F;
     /** Tolerance for treating a voxel-shape box as the full block. */
     private static final float SHAPE_EPSILON = 1.0e-3F;
+
+    // Stroke thicknesses are live-editable client config (GUI px on the PiP
+    // window); read per use — the render path is a few dozen calls per frame.
+    private static double pathPx() {
+        return Mth.clamp(TBConfig.XRAY_PATH_THICKNESS.get(), 0.5D, 8.0D);
+    }
+
+    private static double platePx() {
+        return Mth.clamp(TBConfig.XRAY_PLATE_THICKNESS.get(), 0.5D, 8.0D);
+    }
+
+    private static double spallPx() {
+        return Mth.clamp(TBConfig.XRAY_SPALL_THICKNESS.get(), 0.5D, 8.0D);
+    }
+
+    private static double markerPx() {
+        return Mth.clamp(TBConfig.XRAY_MARKER_SIZE.get(), 0.5D, 12.0D);
+    }
 
     /**
      * Per-frame drawing context: the PiP camera rotation pose (used as the
@@ -243,14 +253,14 @@ public final class ClientTerminalOverlay {
             Vec3 point = ClientTerminalView.toWorld(ClientTerminalView.actorPathPoint(actor, i), partialTick);
             if (ClientTerminalView.actorPathFraction(actor, i) <= tl.shellProgress) {
                 // Already flown: bright trail.
-                drawThickLine(buffer, ctx, prev, point, PATH_LINE_PX, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
+                drawThickLine(buffer, ctx, prev, point, pathPx(), 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
             } else {
                 // Segment the shell is currently on: bright up to the shell.
                 if (tl.shellPos != null && ClientTerminalView.actorPathFraction(actor, i - 1) < tl.shellProgress) {
-                    drawThickLine(buffer, ctx, prev, tl.shellPos, PATH_LINE_PX, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
+                    drawThickLine(buffer, ctx, prev, tl.shellPos, pathPx(), 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
                 }
                 // Still ahead: faint full path so the trajectory reads.
-                drawThickLine(buffer, ctx, prev, point, PATH_LINE_PX, 0.8F, 0.85F, 1.0F, tl.fade * 0.22F);
+                drawThickLine(buffer, ctx, prev, point, pathPx(), 0.8F, 0.85F, 1.0F, tl.fade * 0.22F);
             }
             prev = point;
         }
@@ -288,13 +298,13 @@ public final class ClientTerminalOverlay {
                 filledCorners(buffer, ctx, boxes[0], color[0], color[1], color[2], alpha * FILL_ALPHA);
             }
             for (Vec3[] c : boxes) {
-                drawThickCorners(buffer, ctx, c, PLATE_LINE_PX, color[0], color[1], color[2], alpha);
+                drawThickCorners(buffer, ctx, c, platePx(), color[0], color[1], color[2], alpha);
             }
             if (plate.broken()) {
                 // Destroyed plate: diagonal cross over the shape's bounds.
                 Vec3[] c = boxes[0];
-                drawThickLine(buffer, ctx, c[0], c[6], PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
-                drawThickLine(buffer, ctx, c[5], c[3], PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
+                drawThickLine(buffer, ctx, c[0], c[6], platePx(), color[0], color[1], color[2], alpha * 0.8F);
+                drawThickLine(buffer, ctx, c[5], c[3], platePx(), color[0], color[1], color[2], alpha * 0.8F);
             }
         }
         // Bright cross at the final impact point, once reached. Only the
@@ -306,10 +316,11 @@ public final class ClientTerminalOverlay {
             if (tl.age >= lastAppear) {
                 Vec3 last = ClientTerminalView.toWorld(plates.get(plates.size() - 1).pos(), partialTick);
                 float[] color = colorFor(plates.get(plates.size() - 1).outcome());
-                double s = 0.45D;
-                drawThickLine(buffer, ctx, last.add(-s, 0, 0), last.add(s, 0, 0), color[0], color[1], color[2], tl.fade);
-                drawThickLine(buffer, ctx, last.add(0, -s, 0), last.add(0, s, 0), color[0], color[1], color[2], tl.fade);
-                drawThickLine(buffer, ctx, last.add(0, 0, -s), last.add(0, 0, s), color[0], color[1], color[2], tl.fade);
+                double s = Mth.clamp(TBConfig.XRAY_IMPACT_CROSS_SIZE.get(), 0.1D, 1.5D);
+                double w = Mth.clamp(TBConfig.XRAY_IMPACT_CROSS_THICKNESS.get(), 0.5D, 8.0D);
+                drawThickLine(buffer, ctx, last.add(-s, 0, 0), last.add(s, 0, 0), w, color[0], color[1], color[2], tl.fade);
+                drawThickLine(buffer, ctx, last.add(0, -s, 0), last.add(0, s, 0), w, color[0], color[1], color[2], tl.fade);
+                drawThickLine(buffer, ctx, last.add(0, 0, -s), last.add(0, 0, s), w, color[0], color[1], color[2], tl.fade);
             }
         }
     }
@@ -470,7 +481,7 @@ public final class ClientTerminalOverlay {
             len = clipRayToEntities(entityHits, origin, rayDir, len, partialTick);
             len *= growth;
             if (len < 0.05D) continue;
-            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), SPALL_LINE_PX, 1.0F, 0.62F, 0.1F,
+            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), spallPx(), 1.0F, 0.62F, 0.1F,
                 tl.fade * 0.75F * (0.35F + 0.65F * growth));
         }
 
@@ -489,7 +500,7 @@ public final class ClientTerminalOverlay {
                 ? blockPos : blockPos.add(toOrigin.normalize().scale(0.5D));
             float[] color = block.broken() ? SPALL_BROKEN_COLOR
                 : (block.armorLike() ? new float[]{0.75F, 0.75F, 0.8F} : SPALL_INTERNAL_COLOR);
-            drawDot(buffer, ctx, surface, DOT_DISPLAY_PX * 0.5D * pop,
+            drawDot(buffer, ctx, surface, markerPx() * 0.5D * pop,
                 color[0], color[1], color[2], tl.fade * (block.broken() ? 0.95F : 0.6F) * pop);
         }
     }
@@ -520,7 +531,7 @@ public final class ClientTerminalOverlay {
             float[] color = hit.killed() ? STOP_COLOR : BOUNCE_COLOR;
             Vec3 min = pos.subtract(0.4D, 0.0D, 0.4D);
             Vec3 max = pos.add(0.4D, 1.8D, 0.4D);
-            drawThickBox(buffer, ctx, min, max, PLATE_LINE_PX, color[0], color[1], color[2], tl.fade * pop);
+            drawThickBox(buffer, ctx, min, max, platePx(), color[0], color[1], color[2], tl.fade * pop);
         }
     }
 

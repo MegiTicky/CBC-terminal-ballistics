@@ -8,6 +8,7 @@ import java.util.List;
 public final class TBConfig {
     public static final ForgeConfigSpec SERVER_SPEC;
     public static final ForgeConfigSpec COMMON_SPEC;
+    public static final ForgeConfigSpec CLIENT_SPEC;
 
     public static final ForgeConfigSpec.BooleanValue ENABLED;
     public static final ForgeConfigSpec.BooleanValue HIT_CREATE_CONTRAPTIONS;
@@ -68,6 +69,14 @@ public final class TBConfig {
     public static final ForgeConfigSpec.ConfigValue<String> HITCAM_PIP_PARTICLES;
     public static final ForgeConfigSpec.DoubleValue HITCAM_PIP_TERRAIN_ALPHA;
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_TERRAIN_XRAY;
+
+    public static final ForgeConfigSpec.DoubleValue XRAY_PATH_THICKNESS;
+    public static final ForgeConfigSpec.DoubleValue XRAY_PLATE_THICKNESS;
+    public static final ForgeConfigSpec.DoubleValue XRAY_SPALL_THICKNESS;
+    public static final ForgeConfigSpec.DoubleValue XRAY_MARKER_SIZE;
+    public static final ForgeConfigSpec.DoubleValue XRAY_IMPACT_CROSS_THICKNESS;
+    public static final ForgeConfigSpec.DoubleValue XRAY_IMPACT_CROSS_SIZE;
+    public static final ForgeConfigSpec.BooleanValue XRAY_VIEW_ENABLED;
 
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
@@ -154,6 +163,20 @@ public final class TBConfig {
 
         ForgeConfigSpec.Builder common = new ForgeConfigSpec.Builder();
         COMMON_SPEC = common.build();
+
+        ForgeConfigSpec.Builder client = new ForgeConfigSpec.Builder();
+        client.push("hitcam_xray");
+        // Stroke widths are in GUI-scaled pixels on the displayed PiP window,
+        // matching the previous hard-coded ClientTerminalOverlay constants.
+        XRAY_VIEW_ENABLED = client.comment("Master client-side switch for the automatic hitcam picture-in-picture views (artillery chase cam and terminal x-ray). When false no view opens on your client and any running view closes; recordings/criticals are unaffected server-side. The manual /cbctb hitcam replay is not affected.").define("viewEnabled", true);
+        XRAY_PATH_THICKNESS = client.comment("Terminal x-ray: flight trajectory stroke thickness (GUI px on the PiP window).").defineInRange("pathThickness", 2.2, 0.5, 8.0);
+        XRAY_PLATE_THICKNESS = client.comment("Terminal x-ray: plate block wireframe and entity-hit box stroke thickness (GUI px).").defineInRange("plateThickness", 1.8, 0.5, 8.0);
+        XRAY_SPALL_THICKNESS = client.comment("Terminal x-ray: spall cone ray stroke thickness (GUI px).").defineInRange("spallThickness", 1.6, 0.5, 8.0);
+        XRAY_MARKER_SIZE = client.comment("Terminal x-ray: spall-hit marker dot diameter (GUI px). Lower for smaller hit particles.").defineInRange("markerSize", 4.5, 0.5, 12.0);
+        XRAY_IMPACT_CROSS_THICKNESS = client.comment("Terminal x-ray: final-impact cross stroke thickness (GUI px).").defineInRange("impactCrossThickness", 2.8, 0.5, 8.0);
+        XRAY_IMPACT_CROSS_SIZE = client.comment("Terminal x-ray: final-impact cross arm length in blocks.").defineInRange("impactCrossSize", 0.45, 0.1, 1.5);
+        client.pop();
+        CLIENT_SPEC = client.build();
     }
 
     private TBConfig() {}

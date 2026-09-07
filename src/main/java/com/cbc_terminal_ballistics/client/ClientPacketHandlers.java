@@ -85,6 +85,7 @@ public final class ClientPacketHandlers {
     }
 
     public static void handleTrackProjectile(ClientboundTrackProjectilePacket packet) {
+        if (!com.cbc_terminal_ballistics.config.TBConfig.XRAY_VIEW_ENABLED.get()) return;
         com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.startArtillery(packet.entityId());
     }
 
@@ -95,6 +96,7 @@ public final class ClientPacketHandlers {
 
     public static void handleTerminalBallistics(ClientboundTerminalBallisticsPacket packet) {
         if (Minecraft.getInstance().level == null) return;
+        if (!com.cbc_terminal_ballistics.config.TBConfig.XRAY_VIEW_ENABLED.get()) return;
         com.cbc_terminal_ballistics.client.hitcam.ClientTerminalView.accept(packet);
     }
 

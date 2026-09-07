@@ -269,6 +269,15 @@ public final class ClientHitcam {
             return;
         }
         updateTerrainCache(mc);
+        // Live toggle-off: the client master switch closes any running
+        // automatic view immediately (the replay view is user-initiated and
+        // unaffected).
+        if (mode == Mode.ARTILLERY || mode == Mode.TERMINAL) {
+            if (!TBConfig.XRAY_VIEW_ENABLED.get()) {
+                stop();
+                return;
+            }
+        }
         if (artilleryGraceTicks > 0) artilleryGraceTicks--;
         switch (mode) {
             case REPLAY -> {
