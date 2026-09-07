@@ -68,6 +68,7 @@ public final class CommonForgeEvents {
     @SubscribeEvent
     public static void onLivingHurt(LivingHurtEvent event) {
         Entity direct = event.getSource().getDirectEntity();
+        if (direct == null) direct = event.getSource().getEntity();
         if (direct != null) {
             TerminalBallisticsRecorder.onDirectEntityHit(direct, event.getEntity(), event.getAmount());
         }
@@ -84,6 +85,7 @@ public final class CommonForgeEvents {
     @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public static void onLivingDeath(LivingDeathEvent event) {
         Entity direct = event.getSource().getDirectEntity();
+        if (direct == null) direct = event.getSource().getEntity();
         if (direct != null) {
             TerminalBallisticsRecorder.onDirectEntityKill(direct, event.getEntity());
         }

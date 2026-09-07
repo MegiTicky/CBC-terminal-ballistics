@@ -1052,7 +1052,10 @@ public final class TBImpactService {
             int directHits = rayHits.getOrDefault(entity, 0);
             double coneStrength = cone * cone;
             float damage = (float) (Mth.clamp((massRatio * 15.0 + fragments * 1.15) * coneStrength / Math.sqrt(dist) + directHits * 3.5, 4.0, 48.0) * damageModifier);
-            entity.hurt(level.damageSources().generic(), damage);
+            // Attribute the kill to the shell so LivingDeathEvent carries the
+            // projectile as direct entity (generic() has none and crew-kill
+            // criticals would never fire).
+            entity.hurt(level.damageSources().mobProjectile(projectile, null), damage);
             TerminalBallisticsRecorder.onSpallEntityHit(projectile, entity, damage);
         }
         return fragments;
