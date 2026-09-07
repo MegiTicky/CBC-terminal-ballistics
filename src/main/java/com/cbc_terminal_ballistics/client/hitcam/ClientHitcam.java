@@ -79,10 +79,15 @@ public final class ClientHitcam {
         // A newly fired shell must not wipe a terminal animation that is still
         // playing (salvo fire made the x-ray flash for a moment, then vanish
         // when the next gun's track packet arrived). Its own terminal packet
-        // parks and plays when the current animation finishes.
-        if (mode == Mode.TERMINAL && ClientTerminalView.animationInProgress()) {
+        // parks and plays when the current animation finishes. While burst
+        // accumulation is on, the whole live stage is protected: a follow-up
+        // shell from the same vehicle should merge into the running x-ray, not
+        // yank the view into an artillery chase cam.
+        if (mode == Mode.TERMINAL && (ClientTerminalView.animationInProgress()
+            || (TBConfig.HITCAM_TERMINAL_BURST.get() && !ClientTerminalView.expired()))) {
             CBCTerminalBallistics.LOGGER.info(
-                "[CTB-HITCAM] ignoring track packet for shell {} — terminal animation in progress", entityId);
+                "[CTB-HITCAM] ignoring track packet for shell {} — terminal {} in progress", entityId,
+                ClientTerminalView.animationInProgress() ? "animation" : "burst hold");
             return;
         }
         mode = Mode.ARTILLERY;
@@ -242,7 +247,14 @@ public final class ClientHitcam {
                 yield base + "  ·  " + String.format("%.2fx", currentSpeed);
             }
             case ARTILLERY -> "Artillery cam  ·  LIVE";
-            case TERMINAL -> "X-RAY  ·  " + ClientTerminalView.summary();
+            case TERMINAL -> {
+                // Merged burst shells show as a small (+N); the summary line is
+                // the first shell's outcome, the critical list covers the rest.
+                String s = "X-RAY  \u00b7  " + ClientTerminalView.summary();
+                int extra = ClientTerminalView.actorCount() - 1;
+                if (extra > 0) s += "  (+" + extra + ")";
+                yield s;
+            }
             default -> "";
         };
     }

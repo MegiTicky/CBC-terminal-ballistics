@@ -137,8 +137,6 @@ public final class ClientTerminalOverlay {
 
     public static void render(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         if (!ClientTerminalView.active()) return;
-        ClientTerminalView.Timeline tl = ClientTerminalView.snapshot(partialTick);
-        if (tl.fade <= 0.02F) return;
         Ctx ctx = Ctx.of(mc, camera, viewPose);
 
         // X-ray: draw over the rendered world, never hidden behind it.
@@ -151,10 +149,20 @@ public final class ClientTerminalOverlay {
         BufferBuilder buffer = tesselator.getBuilder();
         buffer.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
         try {
-            drawPath(buffer, ctx, tl, partialTick);
-            drawPlates(buffer, ctx, tl, partialTick);
-            drawSpall(buffer, ctx, tl, partialTick);
-            drawEntityHits(buffer, ctx, tl, partialTick);
+            // Draw every actor on the stage with its OWN timeline: the primary
+            // first (camera framing content), then each merged burst shell as
+            // its fly-in and damage beats play. Finished actors keep their
+            // content on screen so the diagram accumulates, WT style.
+            float stageAge = ClientTerminalView.age(partialTick);
+            for (ClientTerminalView.Actor actor : ClientTerminalView.actorsView()) {
+                if (stageAge < actor.startTick) continue; // fly-in not started yet
+                ClientTerminalView.Timeline tl = ClientTerminalView.actorSnapshot(actor, partialTick);
+                if (tl == null || tl.fade <= 0.02F) continue;
+                drawPath(buffer, ctx, actor, tl, partialTick);
+                drawPlates(buffer, ctx, actor, tl, partialTick);
+                drawSpall(buffer, ctx, actor, tl, partialTick);
+                drawEntityHits(buffer, ctx, actor, tl, partialTick);
+            }
         } finally {
             tesselator.end();
             RenderSystem.enableCull();
@@ -226,18 +234,19 @@ public final class ClientTerminalOverlay {
         vertexWorld(buf, ctx, to.subtract(perp), r, g, b, a);
     }
 
-    private static void drawPath(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
-        int count = ClientTerminalView.pathPointCount();
+    private static void drawPath(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
+                                 ClientTerminalView.Timeline tl, float partialTick) {
+        int count = ClientTerminalView.actorPathCount(actor);
         if (count < 2) return;
-        Vec3 prev = ClientTerminalView.toWorld(ClientTerminalView.pathPoint(0), partialTick);
+        Vec3 prev = ClientTerminalView.toWorld(ClientTerminalView.actorPathPoint(actor, 0), partialTick);
         for (int i = 1; i < count; i++) {
-            Vec3 point = ClientTerminalView.toWorld(ClientTerminalView.pathPoint(i), partialTick);
-            if (ClientTerminalView.pathFraction(i) <= tl.shellProgress) {
+            Vec3 point = ClientTerminalView.toWorld(ClientTerminalView.actorPathPoint(actor, i), partialTick);
+            if (ClientTerminalView.actorPathFraction(actor, i) <= tl.shellProgress) {
                 // Already flown: bright trail.
                 drawThickLine(buffer, ctx, prev, point, PATH_LINE_PX, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
             } else {
                 // Segment the shell is currently on: bright up to the shell.
-                if (tl.shellPos != null && ClientTerminalView.pathFraction(i - 1) < tl.shellProgress) {
+                if (tl.shellPos != null && ClientTerminalView.actorPathFraction(actor, i - 1) < tl.shellProgress) {
                     drawThickLine(buffer, ctx, prev, tl.shellPos, PATH_LINE_PX, 0.95F, 0.95F, 1.0F, tl.fade * 0.9F);
                 }
                 // Still ahead: faint full path so the trajectory reads.
@@ -247,8 +256,9 @@ public final class ClientTerminalOverlay {
         }
     }
 
-    private static void drawPlates(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
-        List<ClientboundTerminalBallisticsPacket.Plate> plates = ClientTerminalView.plates();
+    private static void drawPlates(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
+                                   ClientTerminalView.Timeline tl, float partialTick) {
+        List<ClientboundTerminalBallisticsPacket.Plate> plates = actor.packet.plates();
         for (int i = 0; i < plates.size(); i++) {
             ClientboundTerminalBallisticsPacket.Plate plate = plates.get(i);
             double appear = tl.plateAppear != null && i < tl.plateAppear.length ? tl.plateAppear[i] : 0.0D;
@@ -287,8 +297,10 @@ public final class ClientTerminalOverlay {
                 drawThickLine(buffer, ctx, c[5], c[3], PLATE_LINE_PX, color[0], color[1], color[2], alpha * 0.8F);
             }
         }
-        // Bright cross at the final impact point, once reached.
-        if (!plates.isEmpty()) {
+        // Bright cross at the final impact point, once reached. Only the
+        // primary draws it — merged burst shells already share the diagram and
+        // their crosses would pile up around the same spot.
+        if (actor.primary && !plates.isEmpty()) {
             double lastAppear = tl.plateAppear != null && tl.plateAppear.length > 0
                 ? tl.plateAppear[tl.plateAppear.length - 1] : 0.0D;
             if (tl.age >= lastAppear) {
@@ -419,20 +431,19 @@ public final class ClientTerminalOverlay {
         };
     }
 
-    private static void drawSpall(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
+    private static void drawSpall(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
+                                  ClientTerminalView.Timeline tl, float partialTick) {
         if (tl.spallCount() == 0) return;
-        List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = ClientTerminalView.entities();
         // Every cone renders; secondary cones (later plates, a second ship)
         // start growing later in the timeline but never take the camera.
         for (int cone = 0; cone < tl.spallCount(); cone++) {
-            drawSpallCone(buffer, ctx, tl, partialTick, cone, entityHits);
+            drawSpallCone(buffer, ctx, actor, tl, partialTick, cone);
         }
     }
 
-    private static void drawSpallCone(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl,
-                                      float partialTick, int coneIndex,
-                                      List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits) {
-        ClientboundTerminalBallisticsPacket.Spall spall = ClientTerminalView.spalls().get(coneIndex);
+    private static void drawSpallCone(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
+                                      ClientTerminalView.Timeline tl, float partialTick, int coneIndex) {
+        ClientboundTerminalBallisticsPacket.Spall spall = actor.packet.spalls().get(coneIndex);
         float growth = tl.spallGrowth(coneIndex);
         if (spall.fragments() <= 0 || growth <= 0.0F) return;
         Vec3 origin = ClientTerminalView.toWorld(spall.origin(), partialTick);
@@ -442,6 +453,7 @@ public final class ClientTerminalOverlay {
         if (dir.lengthSqr() < 1.0e-8D) return;
         dir = dir.normalize();
         float[] rayStops = spall.rayStops();
+        List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = actor.packet.entities();
 
         // Deterministic golden-spiral cone sample, matching the server's spall shape.
         int rays = Math.min(12, Math.max(3, spall.fragments() / 2));
@@ -496,8 +508,9 @@ public final class ClientTerminalOverlay {
         return best;
     }
 
-    private static void drawEntityHits(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Timeline tl, float partialTick) {
-        List<ClientboundTerminalBallisticsPacket.EntityHit> entities = ClientTerminalView.entities();
+    private static void drawEntityHits(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
+                                       ClientTerminalView.Timeline tl, float partialTick) {
+        List<ClientboundTerminalBallisticsPacket.EntityHit> entities = actor.packet.entities();
         for (int i = 0; i < entities.size(); i++) {
             ClientboundTerminalBallisticsPacket.EntityHit hit = entities.get(i);
             double appear = tl.entityAppear != null && i < tl.entityAppear.length ? tl.entityAppear[i] : 0.0D;

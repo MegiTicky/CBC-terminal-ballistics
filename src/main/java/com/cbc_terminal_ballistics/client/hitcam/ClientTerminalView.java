@@ -7,13 +7,13 @@ import com.cbc_terminal_ballistics.hitcam.HitcamSample;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.phys.Vec3;
 
 import javax.annotation.Nullable;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -30,6 +30,15 @@ import java.util.UUID;
  * as it passes them, then the spall cone grows and its victims light up as the
  * fragment front passes. {@link Timeline} is the per-frame snapshot the
  * overlay and PiP renderer consume.
+ *
+ * <p>The view is a <b>stage</b> holding one {@link Actor} per shell. The first
+ * actor is the <em>primary</em>: it owns the camera (orbit center, azimuth,
+ * close-up) and the anchor, and later shells from the SAME vehicle merge in as
+ * secondary actors that play their own fly-in/spall beats into the same
+ * diagram without ever moving the camera. A shell that hits while nothing is
+ * playing starts a fresh stage. Each actor carries its own timeline arrays,
+ * offset to the stage clock so its animation plays when its own packet
+ * arrives.
  */
 public final class ClientTerminalView {
     /** Fraction of the view duration spent turning; the rest holds the framing. */
@@ -59,21 +68,66 @@ public final class ClientTerminalView {
     private static final double CLOSEUP_TICKS = 20.0D;
     /** Fraction of the orbit radius removed at the closest point of the close-up. */
     private static final double CLOSEUP_FRACTION = 0.28D;
+    /** Gap between one actor's animation ending and the next actor's fly-in starting. */
+    private static final double ACTOR_GAP_TICKS = 10.0D;
+    /** Minimum fade-out length once the stage really ends. */
+    private static final double FADE_TICKS = 20.0D;
 
-    private static ClientboundTerminalBallisticsPacket view;
+    /**
+     * One shell's contribution to the stage. {@code primary} is the first
+     * actor and owns the stage anchor and camera. {@code packet} is always the
+     * LATEST packet for this shell (a shell that passes through several plates
+     * dispatches cumulative packets under the same projectile id; each replaces
+     * the actor in place so the diagram grows, it never re-fly-ins).
+     *
+     * <p>Package-visible so {@link ClientTerminalOverlay} can draw each actor
+     * with its own packet content and timeline.
+     */
+    static final class Actor {
+        ClientboundTerminalBallisticsPacket packet;
+        final boolean primary;
+        /** Stage tick the actor's animation (shell flight, flashes, growth) starts. */
+        double startTick;
+        /** Stage tick at which this actor's animation has fully played. */
+        double animEndTick;
+
+        // Animation timeline, precomputed once in the anchor's local space.
+        // All tick fields are actor-local (0 = this actor's startTick).
+        boolean hasPath;
+        List<HitcamSample> trimmedPath = List.of();
+        double[] pathCumLen;
+        double totalLen;
+        double flightTicks;
+        double impactTime;
+        double[] timeLut;
+        Vec3 incomingDirLocal = Vec3.ZERO;
+        double[] plateAppear;
+        double[] spallAppear;
+        double[][] blockDistFrac;
+        double[] entityAppear;
+
+        Actor(ClientboundTerminalBallisticsPacket packet, boolean primary) {
+            this.packet = packet;
+            this.primary = primary;
+            this.startTick = 0.0D;
+            this.animEndTick = 20.0D;
+        }
+    }
+
+    /** All actors in arrival order; index 0 is the primary. */
+    private static final List<Actor> actors = new ArrayList<>();
     private static long startTick;
     /**
-     * Tick (relative to the current view's start) at which the active animation
-     * — shell flight, plate flashes, spall growth — has fully played. Until
-     * then the view is sticky: packets about other shells and mid-flight
-     * restarts wait in {@link #pending} instead of cutting the animation.
+     * Stage tick (game time) at which the whole view ends: the latest content's
+     * animation plus its quiet window, never before the base duration.
      */
-    private static double animationEndTicks = 20.0D;
+    private static long endTick;
     /** Newest packet parked while the current animation plays; plays when it ends. */
     private static ClientboundTerminalBallisticsPacket pending;
 
-    // Anchor: null kind = world space, CONTRAPTION = Create entity by UUID,
-    // VS = Valkyrien ship identified by localRef (shipyard) + worldRef (world).
+    // Anchor (owned by the primary actor): null kind = world space,
+    // CONTRAPTION = Create entity by UUID, VS = Valkyrien ship identified by
+    // localRef (shipyard) + worldRef (world).
     private static String anchorKind;
     private static UUID contraptionUuid;
     private static Entity anchorEntity;
@@ -85,29 +139,13 @@ public final class ClientTerminalView {
     private static Vec3 anchorCenter = Vec3.ZERO;
     private static double orbitRadius = 8.0D;
 
-    // Animation timeline, precomputed once in local space.
-    private static boolean hasPath;
-    private static List<HitcamSample> trimmedPath = List.of();
-    private static double[] pathCumLen;
-    private static double totalLen;
-    private static double flightTicks;
-    private static double impactTime;
-    private static double[] timeLut;
-    private static Vec3 incomingDirLocal = Vec3.ZERO;
-    private static double[] plateAppear;
-    private static double[] spallAppear;
-    private static double[][] blockDistFrac;
-    private static double[] entityAppear;
-
-    // Ghost shell model for the replay.
-    private static Entity ghostShell;
-    private static boolean ghostFailed;
-    private static String ghostKeyUsed = "";
-
-    /** Per-frame animation snapshot consumed by the overlay and PiP renderer. */
+    // Per-frame animation snapshot consumed by the overlay and PiP renderer.
     public static final class Timeline {
+        /** Stage age in ticks (with partial tick), same scale as every appear tick. */
         public final float age;
         public final float fade;
+        /** True while the stage may still accept more shells (burst window open). */
+        public final boolean alive;
         public final boolean hasPath;
         public final double flightTicks;
         public final double shellProgress;
@@ -116,18 +154,19 @@ public final class ClientTerminalView {
         /** 0 once the shell has passed the end of its path (plus a short linger). */
         public final float shellAlpha;
         public final double[] plateAppear;
-        /** Per-cone appear tick; index 0 is the main armour cone (camera focus). */
+        /** Per-cone appear tick (stage scale); index 0 is the main armour cone. */
         public final double[] spallStarts;
         public final float[] spallGrowths;
         public final double[][] blockDistFracs;
         public final double[] entityAppear;
 
-        Timeline(float age, float fade, boolean hasPath, double flightTicks, double shellProgress,
+        Timeline(float age, float fade, boolean alive, boolean hasPath, double flightTicks, double shellProgress,
                  @Nullable Vec3 shellPos, Vec3 shellDir, float shellAlpha,
                  double[] plateAppear, double[] spallStarts, float[] spallGrowths,
                  double[][] blockDistFracs, double[] entityAppear) {
             this.age = age;
             this.fade = fade;
+            this.alive = alive;
             this.hasPath = hasPath;
             this.flightTicks = flightTicks;
             this.shellProgress = shellProgress;
@@ -168,35 +207,137 @@ public final class ClientTerminalView {
         }
     }
 
+    // ---- packet intake ----------------------------------------------------------
+
+    /**
+     * Accept a terminal packet. A packet whose projectile id matches an actor
+     * already on stage refines that actor in place (a shell that hit several
+     * plates in a row dispatches cumulative snapshots under one id — the
+     * diagram grows, the fly-in never replays). A NEW shell whose anchor is
+     * compatible with the current primary merges as a secondary actor while the
+     * stage is alive and under the actor cap (burst accumulation, config
+     * {@code hitcamTerminalMergeBurst}); its fly-in starts after the previous
+     * actor's animation finishes. Anything else waits until the current
+     * animation finishes, then restarts the view on it.
+     */
     public static void accept(ClientboundTerminalBallisticsPacket packet) {
-        if (view != null && ageTicks() < duration()) {
-            double age = ageTicks();
-            boolean sameShell = view.projectileId() == packet.projectileId();
-            // A finalize that lands while the first-hit animation has barely
-            // started (shell stopped on the next plate a tick or two later)
-            // replaces it outright — the stub is invisible. Anything else that
-            // would cut a playing animation parks until the animation ends.
-            if (sameShell && (age < 10.0D || age >= animationEndTicks)) {
-                start(packet, "replace same-shell stub");
-                return;
+        if (!actors.isEmpty()) {
+            // Same-shell refinement: replace the actor's packet in place.
+            for (int i = 0; i < actors.size(); i++) {
+                if (actors.get(i).packet.projectileId() == packet.projectileId()) {
+                    refreshActor(i, packet);
+                    return;
+                }
             }
-            if (!sameShell && age >= animationEndTicks) {
+            if (ageTicks() < endTick) {
+                // A compatible shell from the same vehicle merges whenever the
+                // stage is open (even while another actor animates — its fly-in
+                // simply queues after the current animation, so an autocannon
+                // burst reads as shells arriving one after another).
+                boolean mergeable = TBConfig.HITCAM_TERMINAL_BURST.get()
+                    && actors.size() < burstActors()
+                    && anchorsCompatible(actors.get(0).packet.anchor(), packet.anchor());
+                if (mergeable) {
+                    addActor(packet);
+                    return;
+                }
+                if (ageTicks() < stageBusyEndTick()) {
+                    // A different-vehicle shell (or over-cap) mid-animation must
+                    // wait until every actor's fly-in has played — cutting an
+                    // animation already on screen reads as a glitch.
+                    park(packet, "animation still playing");
+                    return;
+                }
+                // Stage at rest: a new engagement restarts the view on it.
                 start(packet, "previous animation finished");
                 return;
             }
-            pending = packet;
-            CBCTerminalBallistics.LOGGER.info(
-                "[CTB-HITCAM] parked terminal packet shell={} summary=\"{}\" plates={} (view shell={} age={} animEnd={})",
-                packet.projectileId(), packet.summary(), packet.plates().size(),
-                view.projectileId(), age, animationEndTicks);
-            return;
         }
         start(packet, "no active view");
     }
 
+    /** Stage tick at which the LAST actor's animation ends; before then the stage is busy. */
+    private static double stageBusyEndTick() {
+        double end = 0.0D;
+        for (Actor a : actors) end = Math.max(end, a.animEndTick);
+        return end;
+    }
+
+    private static void park(ClientboundTerminalBallisticsPacket packet, String why) {
+        pending = packet;
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] parked terminal packet shell={} summary=\"{}\" plates={} (why: {} age={} endTick={} animEnd={})",
+            packet.projectileId(), packet.summary(), packet.plates().size(),
+            why, ageTicks(), endTick - startTick, primaryAnimEndTick());
+    }
+
+    /** Same-shell cumulative snapshot: swap in the fuller packet, rebuild its timeline. */
+    private static void refreshActor(int index, ClientboundTerminalBallisticsPacket packet) {
+        Actor actor = actors.get(index);
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] same-shell refinement shell={} plates={}->{} spalls={}->{} entities={}->{} criticals={}->{}",
+            packet.projectileId(),
+            actor.packet.plates().size(), packet.plates().size(),
+            actor.packet.spalls().size(), packet.spalls().size(),
+            actor.packet.entities().size(), packet.entities().size(),
+            actor.packet.criticals().size(), packet.criticals().size());
+        // The actor keeps its start tick: the content updates in place and the
+        // timeline arrays are rebuilt against the same stage clock, so a shell
+        // that stopped on plate 3 of 4 simply gains plate 4 mid-view.
+        actor.packet = packet;
+        buildTimeline(actor);
+        if (burstEnabled()) {
+            extendEndTick(actor);
+        }
+    }
+
+    /** A new shell merged onto the running stage. */
+    private static void addActor(ClientboundTerminalBallisticsPacket packet) {
+        Actor actor = new Actor(packet, false);
+        // This shell's replay starts once the previous actor's animation has
+        // fully played, plus a small gap so the burst reads as distinct shots.
+        double latestEnd = primaryAnimEndTick();
+        for (Actor a : actors) latestEnd = Math.max(latestEnd, a.animEndTick);
+        actor.startTick = latestEnd + ACTOR_GAP_TICKS;
+        actors.add(actor);
+        buildTimeline(actor);
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] burst merged shell={} onto view shell={} (actor {} of {})",
+            packet.projectileId(), actors.get(0).packet.projectileId(),
+            actors.size(), burstActors());
+        extendEndTick(actor);
+        ClientHitcam.startTerminalView();
+    }
+
+    /**
+     * Two packets can share one stage when they live in the same coordinate
+     * frame. World anchors are always compatible with each other. Vehicle
+     * anchors (same contraption UUID, or a VS anchor whose ship-local reference
+     * agrees) are compatible only within their own kind.
+     */
+    private static boolean anchorsCompatible(@Nullable ClientboundTerminalBallisticsPacket.Anchor a,
+                                             @Nullable ClientboundTerminalBallisticsPacket.Anchor b) {
+        if (a == null || b == null) return a == null && b == null;
+        if (!a.kind().equals(b.kind())) return false;
+        if ("CONTRAPTION".equals(a.kind())) {
+            return a.uuid() != null && a.uuid().equals(b.uuid());
+        }
+        if ("VS".equals(a.kind())) {
+            if (a.localRef() == null || b.localRef() == null) return false;
+            // The world ref drifts as the ship moves between the two impacts;
+            // compare in the ship's own frame, which is what the packet content
+            // is expressed in. A large local-frame divergence means a different ship.
+            return a.localRef().distanceToSqr(b.localRef()) < 64.0D * 64.0D;
+        }
+        return false;
+    }
+
     private static void start(ClientboundTerminalBallisticsPacket packet, String reason) {
         pending = null;
-        view = packet;
+        actors.clear();
+        Actor primary = new Actor(packet, true);
+        primary.startTick = 0.0D;
+        actors.add(primary);
         ClientboundTerminalBallisticsPacket.Anchor anchor = packet.anchor();
         anchorKind = anchor == null ? null : anchor.kind();
         contraptionUuid = null;
@@ -213,30 +354,54 @@ public final class ClientTerminalView {
         Minecraft mc = Minecraft.getInstance();
         startTick = mc.level != null ? mc.level.getGameTime() : 0L;
         recomputeBounds();
-        buildTimeline();
+        buildTimeline(primary);
+        endTick = startTick + (long) Math.ceil(computeEndTick(primary));
         CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] terminal view {} shell={} pathPts={} trimmed={} flight={} impact={} animEnd={} anchor={} ship={}",
-            reason, packet.projectileId(), packet.path().size(), trimmedPath.size(),
-            String.format("%.1f", flightTicks), String.format("%.1f", impactTime),
-            String.format("%.1f", animationEndTicks), anchorKind, vsShip != null);
+            "[CTB-HITCAM] terminal view {} shell={} pathPts={} trimmed={} flight={} impact={} animEnd={} endTick={} anchor={} ship={}",
+            reason, packet.projectileId(), packet.path().size(), primary.trimmedPath.size(),
+            String.format("%.1f", primary.flightTicks), String.format("%.1f", primary.impactTime),
+            String.format("%.1f", primary.animEndTick), endTick - startTick, anchorKind, vsShip != null);
         ClientHitcam.startTerminalView();
     }
 
+    /** How long (stage ticks from 0) a freshly started single-shell stage runs. */
+    private static double computeEndTick(Actor primary) {
+        double animEnd = primary.animEndTick;
+        // The base duration guarantees a readable hold even for a very short
+        // animation; the quiet window extends past the animation when burst
+        // merging is on, so a follow-up shell in the same burst keeps the view.
+        double min = Math.max(baseDuration(), animEnd + 20.0D);
+        if (!burstEnabled()) return min;
+        return Math.max(min, animEnd + burstQuietTicks());
+    }
+
+    /** Pushes the stage end out to give this actor's content its quiet window. */
+    private static void extendEndTick(Actor actor) {
+        long quietEnd = startTick + (long) Math.ceil(actor.animEndTick + burstQuietTicks());
+        if (quietEnd > endTick) {
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] endTick extended {} -> {} (actor shell={} animEnd={})",
+                endTick - startTick, quietEnd - startTick, actor.packet.projectileId(),
+                String.format("%.1f", actor.animEndTick));
+            endTick = quietEnd;
+        }
+    }
+
     public static void clear() {
-        view = null;
+        actors.clear();
         anchorEntity = null;
         anchorKind = null;
         contraptionUuid = null;
         vsShip = null;
+        endTick = 0L;
         ghostShell = null;
-        ghostKeyUsed = "";
         // {@link #pending} deliberately survives: it is flushed by
         // {@link #clientTick()} the moment the current view is gone.
     }
 
-    /** True while a terminal animation is actively playing (not yet a static hold). */
+    /** True while any terminal animation is actively playing (merged fly-ins count). */
     public static boolean animationInProgress() {
-        return view != null && ageTicks() < animationEndTicks;
+        return !actors.isEmpty() && ageTicks() < stageBusyEndTick();
     }
 
     /** Plays a parked packet once the current animation has finished. Call once per client tick. */
@@ -247,7 +412,7 @@ public final class ClientTerminalView {
             pending = null;
             return;
         }
-        if (view == null || ageTicks() >= animationEndTicks || ageTicks() >= duration()) {
+        if (actors.isEmpty() || ageTicks() >= stageBusyEndTick() || ageTicks() >= endTick) {
             ClientboundTerminalBallisticsPacket packet = pending;
             pending = null;
             CBCTerminalBallistics.LOGGER.info("[CTB-HITCAM] playing parked terminal packet shell={} plates={}",
@@ -257,23 +422,83 @@ public final class ClientTerminalView {
     }
 
     public static boolean active() {
-        return view != null;
+        return !actors.isEmpty();
     }
 
     public static boolean expired() {
-        return view == null || ageTicks() >= duration();
+        return actors.isEmpty() || ageTicks() >= endTick;
     }
 
+    /** Total display budget of the current stage (for status readers). */
     public static int duration() {
+        return (int) Math.max(20L, endTick - startTick);
+    }
+
+    private static boolean burstEnabled() {
+        return TBConfig.HITCAM_TERMINAL_BURST.get();
+    }
+
+    private static int baseDuration() {
         return Math.max(20, TBConfig.HITCAM_TERMINAL_DURATION.get());
     }
 
+    private static int burstQuietTicks() {
+        return Math.max(10, TBConfig.HITCAM_TERMINAL_BURST_QUIET_TICKS.get());
+    }
+
+    private static int burstActors() {
+        return Mth.clamp(TBConfig.HITCAM_TERMINAL_BURST_ACTORS.get(), 1, 64);
+    }
+
+    // ---- primary accessors --------------------------------------------------------
+
+    /** The primary actor (index 0), or null when the stage is empty. */
+    @Nullable
+    static Actor primaryActor() {
+        return actors.isEmpty() ? null : actors.get(0);
+    }
+
+    /** Live actor list for the overlay, in arrival order. */
+    static List<Actor> actorsView() {
+        return actors;
+    }
+
+    /** Stage tick at which the primary actor's own animation ends. */
+    static double primaryAnimEndTick() {
+        Actor primary = primaryActor();
+        return primary == null ? 20.0D : primary.animEndTick;
+    }
+
+    private static Actor primary() {
+        return actors.isEmpty() ? null : actors.get(0);
+    }
+
     public static String summary() {
-        return view == null ? "" : view.summary();
+        Actor primary = primary();
+        if (primary == null) return "";
+        String s = primary.packet.summary();
+        // A merged burst shell may have scored the critical even when the first
+        // hit was a clean penetration — surface it in the status line too, not
+        // just in the critical list.
+        if (!s.contains("CRITICAL")) {
+            for (Actor a : actors) {
+                if (!a.packet.criticals().isEmpty()) {
+                    s = "CRITICAL HIT \u00b7 " + s;
+                    break;
+                }
+            }
+        }
+        return s;
+    }
+
+    /** How many shells have stacked onto the stage (1 = single engagement). */
+    public static int actorCount() {
+        return actors.size();
     }
 
     public static String entityTypeKey() {
-        return view == null ? "" : view.entityTypeKey();
+        Actor primary = primary();
+        return primary == null ? "" : primary.packet.entityTypeKey();
     }
 
     public static float age(float partialTick) {
@@ -286,16 +511,19 @@ public final class ClientTerminalView {
     }
 
     public static List<HitcamSample> path() {
-        return view == null ? List.of() : view.path();
+        Actor primary = primary();
+        return primary == null ? List.of() : primary.packet.path();
     }
 
     public static List<ClientboundTerminalBallisticsPacket.Plate> plates() {
-        return view == null ? List.of() : view.plates();
+        Actor primary = primary();
+        return primary == null ? List.of() : primary.packet.plates();
     }
 
     /** All spall cones in order; index 0 is the main armour cone. */
     public static List<ClientboundTerminalBallisticsPacket.Spall> spalls() {
-        return view == null ? List.of() : view.spalls();
+        Actor primary = primary();
+        return primary == null ? List.of() : primary.packet.spalls();
     }
 
     /** The primary (main armour) spall cone, or null when nothing spalled. */
@@ -306,13 +534,22 @@ public final class ClientTerminalView {
     }
 
     public static List<ClientboundTerminalBallisticsPacket.EntityHit> entities() {
-        return view == null ? List.of() : view.entities();
+        Actor primary = primary();
+        return primary == null ? List.of() : primary.packet.entities();
     }
 
-    /** Critical-hit evaluation entries (destroyed components, crew kills). */
+    /** Critical-hit evaluation entries (destroyed components, crew kills), aggregated across all actors. */
     public static List<ClientboundTerminalBallisticsPacket.CriticalEntry> criticals() {
-        return view == null ? List.of() : view.criticals();
+        if (actors.isEmpty()) return List.of();
+        if (actors.size() == 1) return actors.get(0).packet.criticals();
+        List<ClientboundTerminalBallisticsPacket.CriticalEntry> all = new ArrayList<>();
+        for (Actor actor : actors) {
+            all.addAll(actor.packet.criticals());
+        }
+        return all;
     }
+
+    // ---- geometry (shared stage anchor; primary owns it) -------------------------
 
     /** Vehicle-local -> world for any stored point; identity without an anchor. */
     public static Vec3 toWorld(Vec3 local, float partialTick) {
@@ -350,17 +587,21 @@ public final class ClientTerminalView {
      * in, but only up to the impact point — a pass-through shell continuing out
      * the far side does not drag the view with it. From impact on, the look
      * settles onto the terminal focus (spall origin if the plate spalled, else
-     * the final plate position) to follow the spall progression.
+     * the final plate position) to follow the spall progression. Always the
+     * FIRST engagement: secondary actors render into the diagram but never pull
+     * the camera.
      */
     public static Vec3 lookPoint(float partialTick) {
+        Actor primary = primary();
+        if (primary == null) return Vec3.ZERO;
         Vec3 focus = terminalFocus(partialTick);
-        if (!hasPath || flightTicks <= 0.0D) return focus;
+        if (!primary.hasPath || primary.flightTicks <= 0.0D) return focus;
         float age = age(partialTick);
-        double impactFraction = Mth.clamp(impactTime / flightTicks, 0.0D, 1.0D);
-        double progress = Math.min(progressAtTime(age / flightTicks), impactFraction);
-        Vec3 follow = toWorld(pathPointAt(progress), partialTick);
-        if (age >= impactTime) {
-            double blend = Mth.clamp((age - impactTime) / 10.0D, 0.0D, 1.0D);
+        double impactFraction = Mth.clamp(primary.impactTime / primary.flightTicks, 0.0D, 1.0D);
+        double progress = Math.min(progressAtTime(primary, age / (float) primary.flightTicks), impactFraction);
+        Vec3 follow = toWorld(pathPointAt(primary, progress), partialTick);
+        if (age >= primary.impactTime) {
+            double blend = Mth.clamp((age - (float) primary.impactTime) / 10.0D, 0.0D, 1.0D);
             blend = blend * blend * (3.0D - 2.0D * blend);
             return follow.lerp(focus, blend);
         }
@@ -391,18 +632,20 @@ public final class ClientTerminalView {
      * vehicle so a moving tank stays framed.
      */
     public static Vec3 cameraPos(float partialTick) {
+        Actor primary = primary();
+        if (primary == null) return Vec3.ZERO;
         Vec3 c = center(partialTick);
         double age = age(partialTick);
-        double sweepEnd = Math.max(1.0D, duration() * SWEEP_END_FRACTION);
+        double sweepEnd = Math.max(1.0D, baseDuration() * SWEEP_END_FRACTION);
         double t = Mth.clamp(age / sweepEnd, 0.0D, 1.0D);
         double eased = t * t * (3.0D - 2.0D * t);
-        double base = incomingAzimuth(partialTick);
+        double base = incomingAzimuth(primary, partialTick);
         double angle = base + SWEEP_START_OFFSET + eased * (SWEEP_RADIANS - SWEEP_START_OFFSET);
         // War-Thunder close-up: from impact on, the orbit eases in toward the
         // penetration point while the x-ray and spall play out.
         double r = orbitRadius;
-        if (impactTime > 0.0D && age >= impactTime) {
-            double blend = Mth.clamp((age - impactTime) / CLOSEUP_TICKS, 0.0D, 1.0D);
+        if (primary.impactTime > 0.0D && age >= primary.impactTime) {
+            double blend = Mth.clamp((age - primary.impactTime) / CLOSEUP_TICKS, 0.0D, 1.0D);
             blend = blend * blend * (3.0D - 2.0D * blend);
             r *= 1.0D - CLOSEUP_FRACTION * blend;
         }
@@ -410,9 +653,9 @@ public final class ClientTerminalView {
     }
 
     /** World azimuth on the approach side of the recorded incoming direction, so the sweep starts face-on to the impact face. */
-    private static double incomingAzimuth(float partialTick) {
-        if (incomingDirLocal.lengthSqr() < 1.0e-8D) return Math.PI * 0.25D;
-        Vec3 dir = toWorldDir(incomingDirLocal, partialTick);
+    private static double incomingAzimuth(Actor actor, float partialTick) {
+        if (actor.incomingDirLocal.lengthSqr() < 1.0e-8D) return Math.PI * 0.25D;
+        Vec3 dir = toWorldDir(actor.incomingDirLocal, partialTick);
         double horiz = Math.sqrt(dir.x * dir.x + dir.z * dir.z);
         if (horiz < 1.0e-6D) return Math.PI * 0.25D;
         // Negated: the camera must sit behind the incoming shell (approach
@@ -423,84 +666,88 @@ public final class ClientTerminalView {
 
     // ---- animation timeline ------------------------------------------------------
 
-    private static void buildTimeline() {
-        trimmedPath = trimPath(path());
-        hasPath = trimmedPath.size() >= 2;
-        flightTicks = 0.0D;
-        totalLen = 0.0D;
-        pathCumLen = null;
-        impactTime = 0.0D;
-        timeLut = null;
-        incomingDirLocal = Vec3.ZERO;
-        if (hasPath) {
-            pathCumLen = new double[trimmedPath.size()];
+    private static void buildTimeline(Actor actor) {
+        List<HitcamSample> recorded = actor.packet.path();
+        actor.trimmedPath = trimPath(recorded);
+        actor.hasPath = actor.trimmedPath.size() >= 2;
+        actor.flightTicks = 0.0D;
+        actor.totalLen = 0.0D;
+        actor.pathCumLen = null;
+        actor.impactTime = 0.0D;
+        actor.timeLut = null;
+        actor.incomingDirLocal = Vec3.ZERO;
+        if (actor.hasPath) {
+            actor.pathCumLen = new double[actor.trimmedPath.size()];
             double acc = 0.0D;
-            for (int i = 1; i < trimmedPath.size(); i++) {
-                acc += samplePoint(trimmedPath.get(i - 1)).distanceTo(samplePoint(trimmedPath.get(i)));
-                pathCumLen[i] = acc;
+            for (int i = 1; i < actor.trimmedPath.size(); i++) {
+                acc += samplePoint(actor.trimmedPath.get(i - 1)).distanceTo(samplePoint(actor.trimmedPath.get(i)));
+                actor.pathCumLen[i] = acc;
             }
-            totalLen = acc;
-            flightTicks = Mth.clamp(totalLen * FLIGHT_TICKS_PER_BLOCK, FLIGHT_MIN_TICKS, FLIGHT_MAX_TICKS);
-            Vec3 dirIn = samplePoint(trimmedPath.get(trimmedPath.size() - 1)).subtract(samplePoint(trimmedPath.get(0)));
-            if (dirIn.lengthSqr() > 1.0e-8D) incomingDirLocal = dirIn.normalize();
-            buildTimeLut();
+            actor.totalLen = acc;
+            actor.flightTicks = Mth.clamp(actor.totalLen * FLIGHT_TICKS_PER_BLOCK, FLIGHT_MIN_TICKS, FLIGHT_MAX_TICKS);
+            Vec3 dirIn = samplePoint(actor.trimmedPath.get(actor.trimmedPath.size() - 1)).subtract(samplePoint(actor.trimmedPath.get(0)));
+            if (dirIn.lengthSqr() > 1.0e-8D) actor.incomingDirLocal = dirIn.normalize();
+            buildTimeLut(actor);
         }
 
-        List<ClientboundTerminalBallisticsPacket.Plate> plateList = plates();
-        plateAppear = new double[plateList.size()];
+        List<ClientboundTerminalBallisticsPacket.Plate> plateList = actor.packet.plates();
+        actor.plateAppear = new double[plateList.size()];
         for (int i = 0; i < plateList.size(); i++) {
-            plateAppear[i] = hasPath ? flightTicks * timeAtProgress(fractionOf(plateList.get(i).pos())) : 0.0D;
+            actor.plateAppear[i] = actor.hasPath
+                ? actor.flightTicks * timeAtProgress(actor, fractionOf(actor, plateList.get(i).pos())) : 0.0D;
         }
 
-        List<ClientboundTerminalBallisticsPacket.Spall> spallList = spalls();
-        spallAppear = new double[spallList.size()];
-        blockDistFrac = new double[spallList.size()][];
-        double lastPlate = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1] : 0.0D;
+        List<ClientboundTerminalBallisticsPacket.Spall> spallList = actor.packet.spalls();
+        actor.spallAppear = new double[spallList.size()];
+        actor.blockDistFrac = new double[spallList.size()][];
+        double lastPlate = actor.plateAppear.length > 0 ? actor.plateAppear[actor.plateAppear.length - 1] : 0.0D;
         for (int c = 0; c < spallList.size(); c++) {
             ClientboundTerminalBallisticsPacket.Spall cone = spallList.get(c);
-            double start = hasPath ? flightTicks * timeAtProgress(fractionOf(cone.origin())) : 0.0D;
+            double start = actor.hasPath
+                ? actor.flightTicks * timeAtProgress(actor, fractionOf(actor, cone.origin())) : 0.0D;
             // The spall waits for the struck plate's flash to finish, so the
             // beats read in order: shell travels, block highlights, spall
             // travels. Secondary cones (later plates, a second ship) queue
             // after the previous cone's growth so each reads on its own.
-            double queue = c > 0 ? spallAppear[c - 1] + SPALL_GROW_TICKS + 2.0D : 0.0D;
-            spallAppear[c] = Math.max(Math.max(start, lastPlate + PLATE_FLASH_TICKS + 2.0D), queue);
-            blockDistFrac[c] = new double[cone.blocks().size()];
+            double queue = c > 0 ? actor.spallAppear[c - 1] + SPALL_GROW_TICKS + 2.0D : 0.0D;
+            actor.spallAppear[c] = Math.max(Math.max(start, lastPlate + PLATE_FLASH_TICKS + 2.0D), queue);
+            actor.blockDistFrac[c] = new double[cone.blocks().size()];
             double range = Math.max(cone.range(), 0.5D);
             for (int i = 0; i < cone.blocks().size(); i++) {
-                blockDistFrac[c][i] = Mth.clamp(cone.blocks().get(i).pos().distanceTo(cone.origin()) / range, 0.0D, 1.0D);
+                actor.blockDistFrac[c][i] = Mth.clamp(cone.blocks().get(i).pos().distanceTo(cone.origin()) / range, 0.0D, 1.0D);
             }
         }
         ClientboundTerminalBallisticsPacket.Spall firstCone = spallList.isEmpty() ? null : spallList.get(0);
         // The impact moment (camera close-up start, look easing) is when the
         // shell lands on the last plate — not the delayed spall start.
-        impactTime = plateAppear.length > 0 ? plateAppear[plateAppear.length - 1]
-            : (firstCone != null ? spallAppear[0] : (hasPath ? flightTicks : 0.0D));
+        actor.impactTime = actor.plateAppear.length > 0 ? actor.plateAppear[actor.plateAppear.length - 1]
+            : (firstCone != null ? actor.spallAppear[0] : (actor.hasPath ? actor.flightTicks : 0.0D));
 
-        List<ClientboundTerminalBallisticsPacket.EntityHit> entityList = entities();
-        entityAppear = new double[entityList.size()];
+        List<ClientboundTerminalBallisticsPacket.EntityHit> entityList = actor.packet.entities();
+        actor.entityAppear = new double[entityList.size()];
         for (int i = 0; i < entityList.size(); i++) {
             ClientboundTerminalBallisticsPacket.EntityHit hit = entityList.get(i);
-            double direct = hasPath ? flightTicks * timeAtProgress(fractionOf(hit.pos())) : 0.0D;
+            double direct = actor.hasPath
+                ? actor.flightTicks * timeAtProgress(actor, fractionOf(actor, hit.pos())) : 0.0D;
             double viaSpall = 0.0D;
             if (firstCone != null) {
                 double range = Math.max(firstCone.range(), 0.5D);
-                viaSpall = spallAppear[0] + SPALL_GROW_TICKS
+                viaSpall = actor.spallAppear[0] + SPALL_GROW_TICKS
                     * Mth.clamp(hit.pos().distanceTo(firstCone.origin()) / range, 0.0D, 1.0D);
             }
-            entityAppear[i] = Math.max(direct, viaSpall);
+            actor.entityAppear[i] = Math.max(direct, viaSpall);
         }
 
         // Tick at which the animation has fully played: last plate flashed,
-        // every spall cone fully grown, entity pops done. Until then sticky.
+        // every spall cone fully grown, entity pops done. Actor-local.
         double end = 0.0D;
-        for (double appear : spallAppear) end = Math.max(end, appear + SPALL_GROW_TICKS);
-        for (double a : entityAppear) end = Math.max(end, a + 8.0D);
-        if (plateAppear.length > 0) {
-            end = Math.max(end, plateAppear[plateAppear.length - 1] + PLATE_FLASH_TICKS);
+        for (double appear : actor.spallAppear) end = Math.max(end, appear + SPALL_GROW_TICKS);
+        for (double a : actor.entityAppear) end = Math.max(end, a + 8.0D);
+        if (actor.plateAppear.length > 0) {
+            end = Math.max(end, actor.plateAppear[actor.plateAppear.length - 1] + PLATE_FLASH_TICKS);
         }
-        if (!hasPath) end = Math.max(end, 30.0D); // static diagram still deserves a beat
-        animationEndTicks = Math.max(end + 4.0D, 10.0D);
+        if (!actor.hasPath) end = Math.max(end, 30.0D); // static diagram still deserves a beat
+        actor.animEndTick = actor.startTick + Math.max(end + 4.0D, 10.0D);
     }
 
     /**
@@ -530,10 +777,10 @@ public final class ClientTerminalView {
      * The integral is normalized so the shell still covers the whole path in
      * exactly {@code flightTicks}.
      */
-    private static void buildTimeLut() {
+    private static void buildTimeLut(Actor actor) {
         double f = Mth.clamp(TBConfig.HITCAM_SLOWMO_END_FRACTION.get(), 0.0D, 1.0D);
         double m = Mth.clamp(TBConfig.HITCAM_SLOWMO_MIN_SPEED.get(), 0.01D, 1.0D);
-        timeLut = new double[LUT_STEPS + 1];
+        actor.timeLut = new double[LUT_STEPS + 1];
         // ∫ speed over the whole flight; the decel segment averages (1+m)/2.
         double norm = f > 0.0D ? (1.0D - f) + f * (1.0D + m) * 0.5D : 1.0D;
         for (int i = 0; i <= LUT_STEPS; i++) {
@@ -546,28 +793,28 @@ public final class ClientTerminalView {
                 double ts = t * t * (3.0D - 2.0D * t);
                 raw = (1.0D - f) + f * (t - (1.0D - m) * (t * t * t - t * t * t * t * 0.5D));
             }
-            timeLut[i] = raw / norm;
+            actor.timeLut[i] = raw / norm;
         }
-        timeLut[LUT_STEPS] = 1.0D;
+        actor.timeLut[LUT_STEPS] = 1.0D;
     }
 
     /** Path progress 0..1 the shell has reached at normalized flight time {@code u} 0..1. */
-    private static double progressAtTime(double u) {
-        if (timeLut == null) return Mth.clamp(u, 0.0D, 1.0D);
+    private static double progressAtTime(Actor actor, double u) {
+        if (actor.timeLut == null) return Mth.clamp(u, 0.0D, 1.0D);
         u = Mth.clamp(u, 0.0D, 1.0D);
         double x = u * LUT_STEPS;
         int i = Math.min((int) x, LUT_STEPS - 1);
-        return Mth.lerp(x - i, timeLut[i], timeLut[i + 1]);
+        return Mth.lerp(x - i, actor.timeLut[i], actor.timeLut[i + 1]);
     }
 
     /** Normalized flight time 0..1 at which the shell reaches path progress {@code p} 0..1. */
-    private static double timeAtProgress(double p) {
-        if (timeLut == null) return Mth.clamp(p, 0.0D, 1.0D);
+    private static double timeAtProgress(Actor actor, double p) {
+        if (actor.timeLut == null) return Mth.clamp(p, 0.0D, 1.0D);
         p = Mth.clamp(p, 0.0D, 1.0D);
         for (int i = 1; i <= LUT_STEPS; i++) {
-            if (timeLut[i] >= p) {
-                double p0 = timeLut[i - 1];
-                double p1 = timeLut[i];
+            if (actor.timeLut[i] >= p) {
+                double p0 = actor.timeLut[i - 1];
+                double p1 = actor.timeLut[i];
                 double frac = p1 > p0 ? (p - p0) / (p1 - p0) : 0.0D;
                 return ((i - 1) + frac) / LUT_STEPS;
             }
@@ -576,117 +823,261 @@ public final class ClientTerminalView {
     }
 
     /** Recorded path fraction (0..1) of a local point: nearest path sample. */
-    private static double fractionOf(Vec3 local) {
-        if (!hasPath || totalLen < 1.0e-6D) return 0.0D;
+    private static double fractionOf(Actor actor, Vec3 local) {
+        if (!actor.hasPath || actor.totalLen < 1.0e-6D) return 0.0D;
         int best = 0;
         double bestDist = Double.MAX_VALUE;
-        for (int i = 0; i < trimmedPath.size(); i++) {
-            double d = samplePoint(trimmedPath.get(i)).distanceToSqr(local);
+        for (int i = 0; i < actor.trimmedPath.size(); i++) {
+            double d = samplePoint(actor.trimmedPath.get(i)).distanceToSqr(local);
             if (d < bestDist) {
                 bestDist = d;
                 best = i;
             }
         }
-        return pathCumLen[best] / totalLen;
+        return actor.pathCumLen[best] / actor.totalLen;
     }
 
-    /** Local path point at progress 0..1, linearly interpolated along the polyline. */
+    /** Local path point at progress 0..1, linearly interpolated along the polyline (primary). */
     public static Vec3 pathPointAt(double progress) {
-        if (trimmedPath.isEmpty()) return Vec3.ZERO;
-        if (trimmedPath.size() == 1 || totalLen < 1.0e-6D) return samplePoint(trimmedPath.get(0));
-        double target = Mth.clamp(progress, 0.0D, 1.0D) * totalLen;
-        for (int i = 1; i < trimmedPath.size(); i++) {
-            if (pathCumLen[i] >= target) {
-                double segLen = pathCumLen[i] - pathCumLen[i - 1];
-                double frac = segLen < 1.0e-6D ? 0.0D : (target - pathCumLen[i - 1]) / segLen;
-                return samplePoint(trimmedPath.get(i - 1)).lerp(samplePoint(trimmedPath.get(i)), frac);
-            }
-        }
-        return samplePoint(trimmedPath.get(trimmedPath.size() - 1));
+        Actor primary = primary();
+        return primary == null ? Vec3.ZERO : pathPointAt(primary, progress);
     }
 
-    /** Local path direction at progress 0..1 (segment direction). */
+    private static Vec3 pathPointAt(Actor actor, double progress) {
+        if (actor.trimmedPath.isEmpty()) return Vec3.ZERO;
+        if (actor.trimmedPath.size() == 1 || actor.totalLen < 1.0e-6D) return samplePoint(actor.trimmedPath.get(0));
+        double target = Mth.clamp(progress, 0.0D, 1.0D) * actor.totalLen;
+        for (int i = 1; i < actor.trimmedPath.size(); i++) {
+            if (actor.pathCumLen[i] >= target) {
+                double segLen = actor.pathCumLen[i] - actor.pathCumLen[i - 1];
+                double frac = segLen < 1.0e-6D ? 0.0D : (target - actor.pathCumLen[i - 1]) / segLen;
+                return samplePoint(actor.trimmedPath.get(i - 1)).lerp(samplePoint(actor.trimmedPath.get(i)), frac);
+            }
+        }
+        return samplePoint(actor.trimmedPath.get(actor.trimmedPath.size() - 1));
+    }
+
+    /** Local path direction at progress 0..1 (segment direction; primary). */
     public static Vec3 pathDirAt(double progress) {
-        if (trimmedPath.size() < 2) return incomingDirLocal;
-        double target = Mth.clamp(progress, 0.0D, 1.0D) * totalLen;
-        for (int i = 1; i < trimmedPath.size(); i++) {
-            if (pathCumLen[i] >= target) {
-                Vec3 dir = samplePoint(trimmedPath.get(i)).subtract(samplePoint(trimmedPath.get(i - 1)));
-                return dir.lengthSqr() < 1.0e-8D ? incomingDirLocal : dir.normalize();
-            }
-        }
-        return incomingDirLocal;
+        Actor primary = primary();
+        return primary == null ? Vec3.ZERO : pathDirAt(primary, progress);
     }
 
-    /** Cumulative path fraction of sample {@code index} (for progressive drawing). */
+    private static Vec3 pathDirAt(Actor actor, double progress) {
+        if (actor.trimmedPath.size() < 2) return actor.incomingDirLocal;
+        double target = Mth.clamp(progress, 0.0D, 1.0D) * actor.totalLen;
+        for (int i = 1; i < actor.trimmedPath.size(); i++) {
+            if (actor.pathCumLen[i] >= target) {
+                Vec3 dir = samplePoint(actor.trimmedPath.get(i)).subtract(samplePoint(actor.trimmedPath.get(i - 1)));
+                return dir.lengthSqr() < 1.0e-8D ? actor.incomingDirLocal : dir.normalize();
+            }
+        }
+        return actor.incomingDirLocal;
+    }
+
+    /** Cumulative path fraction of sample {@code index} (for progressive drawing; primary). */
     public static double pathFraction(int index) {
-        if (!hasPath || totalLen < 1.0e-6D) return 0.0D;
-        int i = Mth.clamp(index, 0, pathCumLen.length - 1);
-        return pathCumLen[i] / totalLen;
+        Actor primary = primary();
+        if (primary == null || !primary.hasPath || primary.totalLen < 1.0e-6D) return 0.0D;
+        int i = Mth.clamp(index, 0, primary.pathCumLen.length - 1);
+        return primary.pathCumLen[i] / primary.totalLen;
     }
 
     public static int pathPointCount() {
-        return trimmedPath.size();
+        Actor primary = primary();
+        return primary == null ? 0 : primary.trimmedPath.size();
     }
 
-    /** Local position of path sample {@code index}. */
+    /** Local position of path sample {@code index} (primary). */
     public static Vec3 pathPoint(int index) {
-        return trimmedPath.isEmpty() ? Vec3.ZERO
-            : samplePoint(trimmedPath.get(Mth.clamp(index, 0, trimmedPath.size() - 1)));
+        Actor primary = primary();
+        return primary == null || primary.trimmedPath.isEmpty() ? Vec3.ZERO
+            : samplePoint(primary.trimmedPath.get(Mth.clamp(index, 0, primary.trimmedPath.size() - 1)));
+    }
+
+    // Per-actor path accessors for the overlay's per-actor progressive drawing.
+
+    static int actorPathCount(Actor actor) {
+        return actor.trimmedPath.size();
+    }
+
+    /** Local position of one actor's path sample. */
+    static Vec3 actorPathPoint(Actor actor, int index) {
+        return actor.trimmedPath.isEmpty() ? Vec3.ZERO
+            : samplePoint(actor.trimmedPath.get(Mth.clamp(index, 0, actor.trimmedPath.size() - 1)));
+    }
+
+    /** Cumulative path fraction of one actor's sample {@code index}. */
+    static double actorPathFraction(Actor actor, int index) {
+        if (!actor.hasPath || actor.totalLen < 1.0e-6D || actor.pathCumLen == null) return 0.0D;
+        int i = Mth.clamp(index, 0, actor.pathCumLen.length - 1);
+        return actor.pathCumLen[i] / actor.totalLen;
     }
 
     private static Vec3 samplePoint(HitcamSample sample) {
         return new Vec3(sample.x(), sample.y(), sample.z());
     }
 
-    /** Per-frame animation state. */
+    // ---- per-frame state ----------------------------------------------------------
+
+    /**
+     * Per-frame animation state of the PRIMARY actor — the single-engagement
+     * behaviour the overlay and PiP used before burst accumulation, unchanged.
+     */
     public static Timeline snapshot(float partialTick) {
-        float age = age(partialTick);
-        float remaining = duration() - age;
-        float fade = Mth.clamp(remaining / 20.0F, 0.0F, 1.0F);
-        float[] growths = new float[spallAppear.length];
+        Actor primary = primary();
+        if (primary == null) {
+            float age = age(partialTick);
+            return new Timeline(age, 0.0F, false, false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
+                new double[0], new double[0], new float[0], new double[0][], new double[0]);
+        }
+        return actorSnapshot(primary, partialTick);
+    }
+
+    /**
+     * Per-frame animation snapshot of one actor, evaluated against the stage
+     * clock. Appear ticks are shifted to the stage scale (actor-local + the
+     * actor's start tick) so the overlay compares them against {@code age}.
+     * Returns null when the actor's animation has not started yet (a later
+     * burst shell still waiting its turn).
+     */
+    @Nullable
+    static Timeline actorSnapshot(Actor actor, float partialTick) {
+        float stageAge = age(partialTick);
+        double localAge = stageAge - actor.startTick;
+        double shift = actor.startTick;
+        float[] growths = new float[actor.spallAppear.length];
+        double[] spallStarts = new double[actor.spallAppear.length];
         for (int i = 0; i < growths.length; i++) {
-            growths[i] = (float) Mth.clamp((age - spallAppear[i]) / SPALL_GROW_TICKS, 0.0D, 1.0D);
+            double appear = actor.spallAppear[i] + shift;
+            spallStarts[i] = appear;
+            growths[i] = (float) Mth.clamp((localAge - actor.spallAppear[i]) / SPALL_GROW_TICKS, 0.0D, 1.0D);
         }
-        if (!hasPath) {
-            return new Timeline(age, fade, false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
-                plateAppear, spallAppear, growths, blockDistFrac, entityAppear);
+        double[] plateAppear = shiftArray(actor.plateAppear, shift);
+        double[] entityAppear = shiftArray(actor.entityAppear, shift);
+        if (localAge < 0.0D) {
+            // Later actor not yet on stage: nothing of it shows yet, but return a
+            // valid (empty-progress) snapshot so callers can still read its data.
+            return new Timeline(stageAge, fadeAt(stageAge), stageAlive(stageAge), actor.hasPath,
+                actor.flightTicks, 0.0D, null, Vec3.ZERO, 0.0F,
+                plateAppear, spallStarts, growths, actor.blockDistFrac, entityAppear);
         }
-        double progress = progressAtTime(age / flightTicks);
-        Vec3 local = pathPointAt(progress);
+        if (!actor.hasPath) {
+            return new Timeline(stageAge, fadeAt(stageAge), stageAlive(stageAge), false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
+                plateAppear, spallStarts, growths, actor.blockDistFrac, entityAppear);
+        }
+        double progress = progressAtTime(actor, localAge / actor.flightTicks);
+        Vec3 local = pathPointAt(actor, progress);
         Vec3 world = toWorld(local, partialTick);
-        Vec3 dir = toWorldDir(pathDirAt(progress), partialTick);
-        float linger = 1.0F - (float) Mth.clamp((age - flightTicks) / SHELL_FADE_TICKS, 0.0D, 1.0D);
-        return new Timeline(age, fade, true, flightTicks, progress, world, dir, linger,
-            plateAppear, spallAppear, growths, blockDistFrac, entityAppear);
+        Vec3 dir = toWorldDir(pathDirAt(actor, progress), partialTick);
+        float linger = 1.0F - (float) Mth.clamp((localAge - actor.flightTicks) / SHELL_FADE_TICKS, 0.0D, 1.0D);
+        return new Timeline(stageAge, fadeAt(stageAge), stageAlive(stageAge), true, actor.flightTicks, progress,
+            world, dir, linger, plateAppear, spallStarts, growths, actor.blockDistFrac, entityAppear);
+    }
+
+    private static double[] shiftArray(double[] src, double shift) {
+        if (src == null || src.length == 0) return src;
+        double[] out = new double[src.length];
+        for (int i = 0; i < src.length; i++) out[i] = src[i] + shift;
+        return out;
+    }
+
+    private static float fadeAt(float stageAge) {
+        float remaining = (float) (endTick - startTick) - stageAge;
+        return Mth.clamp(remaining / (float) FADE_TICKS, 0.0F, 1.0F);
+    }
+
+    private static boolean stageAlive(float stageAge) {
+        return stageAge < endTick - startTick;
     }
 
     /** World-space shell position for the current animation frame, or null when hidden. */
     @Nullable
     public static Vec3 shellPos(float partialTick) {
-        return snapshot(partialTick).shellPos;
+        Actor primary = primary();
+        if (primary == null) return null;
+        float stageAge = age(partialTick);
+        Actor live = liveFlightActor(stageAge);
+        // The live actor's own frame while its shell is on screen; otherwise the
+        // primary's snapshot (which rests at the end of its path once it lands,
+        // keeping the streak/fallback anchored to the impact point).
+        Actor a = live != null ? live : primary;
+        Timeline t = actorSnapshot(a, partialTick);
+        return t == null ? null : t.shellPos;
     }
 
     /** World-space shell direction for the current animation frame. */
     public static Vec3 shellDir(float partialTick) {
-        return snapshot(partialTick).shellDir;
+        Actor primary = primary();
+        if (primary == null) return Vec3.ZERO;
+        float stageAge = age(partialTick);
+        Actor live = liveFlightActor(stageAge);
+        Actor a = live != null ? live : primary;
+        Timeline t = actorSnapshot(a, partialTick);
+        return t == null ? Vec3.ZERO : t.shellDir;
     }
 
     /**
      * The ghost shell model for the replay, positioned and oriented for this
-     * frame. Returns null once the shell has passed the end of the path, or if
-     * the entity type cannot be resolved (the caller falls back to a streak).
+     * frame. The PRIMARY shell shows while its own flight is live; once the
+     * primary has landed, the newest merged actor that is still mid-flight
+     * takes over, so each arriving burst shell visibly flies in over the
+     * running diagram. Returns null when no actor's shell is on screen (the
+     * caller falls back to a streak / nothing).
      */
     @Nullable
     public static Entity ghost(float partialTick) {
-        Timeline t = snapshot(partialTick);
-        if (t.shellAlpha <= 0.05F || t.shellPos == null) return null;
+        Actor primary = primary();
+        if (primary == null) return null;
+        float stageAge = age(partialTick);
+        Actor live = liveFlightActor(stageAge);
+        return live == null ? null : ghostShellFor(live, partialTick);
+    }
+
+    /**
+     * The actor whose shell model is on screen right now: the primary while
+     * its own replay flies, otherwise the newest merged actor whose flight
+     * window is still open. Null when no shell is in flight.
+     */
+    @Nullable
+    private static Actor liveFlightActor(float stageAge) {
+        if (actors.isEmpty()) return null;
+        Actor primary = actors.get(0);
+        if (primary.hasPath && actorFlightLive(primary, stageAge)) return primary;
+        for (int i = actors.size() - 1; i >= 1; i--) {
+            Actor actor = actors.get(i);
+            if (actor.hasPath && actorFlightLive(actor, stageAge)) return actor;
+        }
+        return null;
+    }
+
+    /** True while this actor's shell model is on screen (flying or in the end-of-path linger). */
+    private static boolean actorFlightLive(Actor actor, float stageAge) {
+        if (!actor.hasPath) return false;
+        double localAge = stageAge - actor.startTick;
+        if (localAge < 0.0D) return false;
+        // Flight visible from 0 to flightTicks + the 4-tick alpha fade (the
+        // model's shellAlpha crosses 0.05 at ~3.8 ticks past the end of the path).
+        return localAge < actor.flightTicks + SHELL_FADE_TICKS;
+    }
+
+    // Ghost shell model, reused across frames and actors; recreated only when
+    // the entity type of the current fly-in shell changes.
+    private static Entity ghostShell;
+    private static String ghostKeyUsed = "";
+
+    /** The shell model for one actor, positioned for this frame. */
+    @Nullable
+    private static Entity ghostShellFor(Actor actor, float partialTick) {
+        Timeline t = actorSnapshot(actor, partialTick);
+        if (t == null || t.shellAlpha <= 0.05F || t.shellPos == null) return null;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null) return null;
-        String key = entityTypeKey();
+        String key = actor.packet.entityTypeKey();
         if (key.isEmpty()) return null;
-        if ((ghostShell == null && !ghostFailed) || !key.equals(ghostKeyUsed)) {
+        if (ghostShell == null || !key.equals(ghostKeyUsed)) {
             ghostKeyUsed = key;
+            ghostShell = null;
             Optional<EntityType<?>> type = EntityType.byString(key);
             if (type.isPresent()) {
                 try {
@@ -695,21 +1086,21 @@ public final class ClientTerminalView {
                     ghostShell = null;
                 }
             }
-            if (ghostShell == null) ghostFailed = true;
         }
-        if (ghostShell == null) return null;
-        ghostShell.setPos(t.shellPos.x, t.shellPos.y, t.shellPos.z);
-        ghostShell.xOld = ghostShell.xo = t.shellPos.x;
-        ghostShell.yOld = ghostShell.yo = t.shellPos.y;
-        ghostShell.zOld = ghostShell.zo = t.shellPos.z;
+        Entity shell = ghostShell;
+        if (shell == null) return null;
+        shell.setPos(t.shellPos.x, t.shellPos.y, t.shellPos.z);
+        shell.xOld = shell.xo = t.shellPos.x;
+        shell.yOld = shell.yo = t.shellPos.y;
+        shell.zOld = shell.zo = t.shellPos.z;
         float yaw = (float) Math.toDegrees(Math.atan2(-t.shellDir.x, t.shellDir.z));
         float pitch = (float) Math.toDegrees(-Math.asin(Mth.clamp(t.shellDir.y, -1.0D, 1.0D)));
-        ghostShell.setYRot(yaw);
-        ghostShell.setXRot(pitch);
-        ghostShell.yRotO = yaw;
-        ghostShell.xRotO = pitch;
-        ClientHitcamPiP.setGhostOrientation(ghostShell, t.shellDir);
-        return ghostShell;
+        shell.setYRot(yaw);
+        shell.setXRot(pitch);
+        shell.yRotO = yaw;
+        shell.xRotO = pitch;
+        ClientHitcamPiP.setGhostOrientation(shell, t.shellDir);
+        return shell;
     }
 
     /** The Create contraption entity the diagram is anchored to, if any. */
@@ -743,13 +1134,15 @@ public final class ClientTerminalView {
         vsShip = VSClientCompat.shipForReanchor(mc.level, vsWorldRef, vsLocalRef);
         if (vsShip != null) {
             CBCTerminalBallistics.LOGGER.info("[CTB-HITCAM] ship reanchor resolved for shell {}",
-                view != null ? view.projectileId() : -1);
+                primary() != null ? primary().packet.projectileId() : -1);
         }
         return vsShip;
     }
 
     private static void recomputeBounds() {
-        if (view == null) return;
+        Actor primary = primary();
+        if (primary == null) return;
+        ClientboundTerminalBallisticsPacket view = primary.packet;
         // Center on the FIRST engagement (first plate), so secondary
         // engagements farther out never pull the camera off the first hit.
         List<ClientboundTerminalBallisticsPacket.Plate> plateList = view.plates();
