@@ -61,6 +61,9 @@ public final class TBConfig {
     public static final ForgeConfigSpec.IntValue HITCAM_TERRAIN_STREAM_LEAD_TICKS;
     public static final ForgeConfigSpec.BooleanValue HITCAM_PREFLIGHT_CHUNKLOAD;
     public static final ForgeConfigSpec.IntValue HITCAM_PIP_FAR_FRAME_INTERVAL;
+    public static final ForgeConfigSpec.ConfigValue<String> HITCAM_PIP_PARTICLES;
+    public static final ForgeConfigSpec.DoubleValue HITCAM_PIP_TERRAIN_ALPHA;
+    public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_TERRAIN_XRAY;
 
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
@@ -134,6 +137,9 @@ public final class TBConfig {
         HITCAM_TERRAIN_STREAM_LEAD_TICKS = server.comment("How far ahead (in ticks along the shell's current velocity) to also stream chunks, so terrain arrives before the shell does.").defineInRange("hitcamTerrainStreamLeadTicks", 15, 0, 40);
         HITCAM_PREFLIGHT_CHUNKLOAD = server.comment("Preflight shell chunk loading: while the artillery cam tracks a shell, queue the chunks ahead of it through CBC's own projectile chunk loader (RitchiesProjectileLib) so they are generated before the shell arrives. Without this a fast shell stalls at every not-yet-generated chunk boundary.").define("hitcamPreflightChunkload", true);
         HITCAM_PIP_FAR_FRAME_INTERVAL = server.comment("When the hitcam camera is far from the player (different chunk), the nested world render recenters the shared chunk grid every frame, which makes both views recompile all their chunk sections constantly and can leave holes in the main view's terrain. This throttles the far-view picture-in-picture to render every Nth frame instead (the window holds its last frame in between). 1 = render every frame (old behaviour).").defineInRange("hitcamPipFarFrameInterval", 3, 1, 10);
+        HITCAM_PIP_PARTICLES = server.comment("Particles inside the hitcam picture-in-picture window. NONE = no particles (old behaviour). FILTERED = hide only smoke-family particles (class names containing 'smoke' or 'plume': cannon muzzle plumes, smoke trails, breech smoke, vanilla smoke) so explosions, fire, cook-off and debris stay visible. ALL = show every particle.").defineInList("hitcamPipParticles", "FILTERED", List.of("NONE", "FILTERED", "ALL"));
+        HITCAM_PIP_TERRAIN_ALPHA = server.comment("X-ray view: opacity of the ship's own terrain blocks inside the terminal picture-in-picture (0.5 = half-transparent ghost). Only ship chunks are ghosted; world terrain, entities and block entities (cannon barrels etc.) stay fully rendered. 1.0 disables the ghost.").defineInRange("hitcamPipTerrainAlpha", 0.5, 0.05, 1.0);
+        HITCAM_PIP_TERRAIN_XRAY = server.comment("X-ray view: while ship terrain is ghosted, skip its depth writes so hull interiors and the turrets/barrels behind them show through the hull, War-Thunder style. False keeps proper depth occlusion (a ghosted hull hides what is directly behind it).").define("hitcamPipTerrainXray", true);
         server.pop();
 
         SERVER_SPEC = server.build();

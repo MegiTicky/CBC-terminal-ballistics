@@ -30,6 +30,8 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL13;
+import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL30;
 
 import java.lang.reflect.Method;
@@ -71,6 +73,74 @@ public final class ClientHitcamPiP {
 
     public static boolean isRenderingPip() {
         return RENDERING_PIP.get();
+    }
+
+    // ------------------------------------------------------------------
+    // PiP particle filtering + ship-terrain ghost (x-ray) support, driven
+    // by ParticleEngineMixin and the sodium ship-pass mixins.
+
+    /** True while VS2 is drawing a ship's terrain sections inside the nested pass (set by mixins). */
+    private static boolean shipTerrainPass;
+    /** True while our constant-alpha blend state is installed in the terrain draw. */
+    private static boolean ghostGlApplied;
+    private static int ghostEngageLogs;
+
+    public static boolean hideAllPipParticles() {
+        return isRenderingPip() && "NONE".equals(TBConfig.HITCAM_PIP_PARTICLES.get());
+    }
+
+    public static boolean shouldRenderPipParticle(net.minecraft.client.particle.Particle particle) {
+        if (!isRenderingPip()) return true;
+        String mode = TBConfig.HITCAM_PIP_PARTICLES.get();
+        if ("ALL".equals(mode)) return true;
+        if ("NONE".equals(mode)) return false;
+        String name = particle.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        return !name.contains("smoke") && !name.contains("plume");
+    }
+
+    /** Mixin hook: set while VS2's per-ship terrain pass is drawing inside the nested level render. */
+    public static void setShipTerrainPass(boolean active) {
+        shipTerrainPass = active;
+    }
+
+    private static boolean shouldGhostShipTerrain() {
+        return shipTerrainPass && isRenderingPip()
+            && ClientTerminalView.active()
+            && TBConfig.HITCAM_PIP_TERRAIN_ALPHA.get() < 0.999D;
+    }
+
+    /**
+     * Installs the ghost state inside the embeddium terrain draw, right after
+     * its pass state setup: a fixed-function constant-alpha blend (embeddium's
+     * chunk shader ignores RenderSystem.setShaderColor) plus depth writes off
+     * in x-ray mode so hull interiors stack into the ghost.
+     */
+    public static void applyShipGhostGl() {
+        if (!shouldGhostShipTerrain()) return;
+        float alpha = TBConfig.HITCAM_PIP_TERRAIN_ALPHA.get().floatValue();
+        GL11.glEnable(GL11.GL_BLEND);
+        GL14.glBlendColor(1.0F, 1.0F, 1.0F, alpha);
+        GL11.glBlendFunc(GL14.GL_CONSTANT_ALPHA, GL14.GL_ONE_MINUS_CONSTANT_ALPHA);
+        if (TBConfig.HITCAM_PIP_TERRAIN_XRAY.get()) {
+            RenderSystem.depthMask(false);
+        }
+        ghostGlApplied = true;
+        if (ghostEngageLogs < 3) {
+            ghostEngageLogs++;
+            com.mojang.logging.LogUtils.getLogger().info(
+                "[CTB-HITCAM] ship terrain ghost engaged (alpha={}, xray={})",
+                alpha, TBConfig.HITCAM_PIP_TERRAIN_XRAY.get());
+        }
+    }
+
+    /** Restores blend/depth state after a ghosted ship terrain pass. */
+    public static void clearShipGhostGl() {
+        if (!ghostGlApplied) return;
+        ghostGlApplied = false;
+        GL11.glDisable(GL11.GL_BLEND);
+        GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        GL14.glBlendColor(0.0F, 0.0F, 0.0F, 0.0F);
+        RenderSystem.depthMask(true);
     }
 
     @SubscribeEvent

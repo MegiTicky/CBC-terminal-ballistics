@@ -29,7 +29,9 @@
     "ClientChunkCacheMixin",
     "DhCameraMixin",
     "DhRenderSuppressMixin",
-    "ParticleEngineMixin"
+    "EmbeddiumTerrainGhostMixin",
+    "ParticleEngineMixin",
+    "SodiumShipPassMixin"
   ],
   "injectors": {
     "defaultRequire": 1
