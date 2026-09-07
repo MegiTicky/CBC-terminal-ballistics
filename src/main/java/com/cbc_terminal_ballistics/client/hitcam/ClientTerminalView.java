@@ -788,9 +788,13 @@ public final class ClientTerminalView {
         double base = incomingAzimuth(primary, partialTick);
         double angle = base + SWEEP_START_OFFSET + eased * (SWEEP_RADIANS - SWEEP_START_OFFSET);
         // War-Thunder close-up: from impact on, the orbit eases in toward the
-        // penetration point while the x-ray and spall play out.
+        // penetration point while the x-ray and spall play out. An explosive
+        // shell keeps the wide framing instead — the whole point of its view
+        // is the detonation, which the close-in zoom would push out of frame.
         double r = orbitRadius;
-        if (primary.impactTime > 0.0D && age >= primary.impactTime) {
+        ClientboundTerminalBallisticsPacket.Blast blast = primary.packet.blast();
+        boolean keepWide = blast != null && blast.explosive();
+        if (!keepWide && primary.impactTime > 0.0D && age >= primary.impactTime) {
             double blend = Mth.clamp((age - primary.impactTime) / CLOSEUP_TICKS, 0.0D, 1.0D);
             blend = blend * blend * (3.0D - 2.0D * blend);
             r *= 1.0D - CLOSEUP_FRACTION * blend;
@@ -1327,6 +1331,8 @@ public final class ClientTerminalView {
             anchorCenter = plateList.get(0).pos();
         } else if (!view.spalls().isEmpty()) {
             anchorCenter = view.spalls().get(0).origin();
+        } else if (view.blast() != null) {
+            anchorCenter = view.blast().pos();
         } else {
             anchorCenter = Vec3.ZERO;
         }
@@ -1341,7 +1347,17 @@ public final class ClientTerminalView {
         for (ClientboundTerminalBallisticsPacket.EntityHit hit : view.entities()) {
             maxDistSq = Math.max(maxDistSq, hit.pos().distanceToSqr(anchorCenter));
         }
-        orbitRadius = Math.max(5.5D, Math.min(12.0D, Math.sqrt(maxDistSq) + 3.0D));
+        ClientboundTerminalBallisticsPacket.Blast blast = view.blast();
+        if (blast != null) {
+            // The blast sphere must fit in frame, whatever it does to the rest.
+            double blastDist = Math.sqrt(blast.pos().distanceToSqr(anchorCenter)) + blast.radius();
+            maxDistSq = Math.max(maxDistSq, blastDist * blastDist);
+        }
+        // An HE detonation needs a much wider orbit than a kinetic hit for the
+        // fireball to read; AP-style shells (APHE) keep the tight AP framing
+        // even though their blast is drawn.
+        double radiusCap = blast != null && blast.explosive() ? 24.0D : 12.0D;
+        orbitRadius = Math.max(5.5D, Math.min(radiusCap, Math.sqrt(maxDistSq) + 3.0D));
     }
 
     private ClientTerminalView() {}

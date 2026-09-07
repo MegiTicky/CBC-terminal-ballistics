@@ -172,6 +172,7 @@ public final class ClientTerminalOverlay {
                 drawPlates(buffer, ctx, actor, tl, partialTick);
                 drawSpall(buffer, ctx, actor, tl, partialTick);
                 drawEntityHits(buffer, ctx, actor, tl, partialTick);
+                drawBlast(buffer, ctx, actor, tl, partialTick);
             }
         } finally {
             tesselator.end();
@@ -560,6 +561,80 @@ public final class ClientTerminalOverlay {
         vertexWorld(buf, ctx, p1, r, g, b, a);
         vertexWorld(buf, ctx, p2, r, g, b, a);
         vertexWorld(buf, ctx, p3, r, g, b, a);
+    }
+
+    /**
+     * The shell's own detonation, drawn as a stylized x-ray animation: a
+     * fireball disc (bright core over an orange body) plus an expanding
+     * shockwave ring, timed to the shell's arrival at its last struck plate.
+     * Drawing through the overlay (depth test off) means the blast shows even
+     * when it happens far outside client render distance, where no explosion
+     * particles exist.
+     */
+    private static void drawBlast(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
+                                  ClientTerminalView.Timeline tl, float partialTick) {
+        ClientboundTerminalBallisticsPacket.Blast blast = actor.packet.blast();
+        if (blast == null) return;
+        double appear = tl.plateAppear.length > 0 ? tl.plateAppear[tl.plateAppear.length - 1] : actor.startTick;
+        float since = (float) (tl.age - appear);
+        if (since < 0.0F || since > 20.0F) return;
+        float alpha = tl.fade * Mth.clamp(1.0F - since / 18.0F, 0.0F, 1.0F);
+        if (alpha <= 0.02F) return;
+
+        Vec3 center = ClientTerminalView.toWorld(blast.pos(), partialTick);
+        // Camera-facing disc basis: right/up span the plane parallel to screen.
+        Vec3 fwd = ctx.fwd;
+        Vec3 up0 = Math.abs(fwd.y) > 0.99D ? new Vec3(1, 0, 0) : new Vec3(0, 1, 0);
+        Vec3 right = fwd.cross(up0);
+        if (right.lengthSqr() < 1.0e-8D) return;
+        right = right.normalize();
+        Vec3 up = right.cross(fwd).normalize();
+
+        float growth = Mth.clamp(since / 8.0F, 0.0F, 1.0F);
+        growth = 1.0F - (1.0F - growth) * (1.0F - growth); // ease-out
+        float radius = (float) blast.radius() * (0.25F + 0.75F * growth);
+        if (radius <= 0.05F) return;
+
+        // Fireball: two filled discs (degenerate quads = triangles in the
+        // shared QUADS batch), the hot core drawn last on top of the body.
+        fillDisc(buffer, ctx, center, right, up, radius, 1.0F, 0.42F, 0.08F, alpha * 0.75F);
+        float flash = Mth.clamp(1.0F - since / 6.0F, 0.0F, 1.0F);
+        fillDisc(buffer, ctx, center, right, up, radius * 0.55F, 1.0F, 0.85F, 0.45F,
+            alpha * (0.35F + 0.65F * flash));
+
+        // Shockwave: one expanding, fading ring of thick strokes.
+        float ringT = Mth.clamp(since / 10.0F, 0.0F, 1.0F);
+        if (ringT < 1.0F) {
+            float ringRadius = radius * (0.6F + 1.2F * ringT);
+            float ringAlpha = tl.fade * (1.0F - ringT) * 0.7F;
+            Vec3 prev = null;
+            int segs = 16;
+            for (int i = 0; i <= segs; i++) {
+                double a = Math.PI * 2.0D * i / segs;
+                Vec3 p = center.add(right.scale(Math.cos(a) * ringRadius)).add(up.scale(Math.sin(a) * ringRadius));
+                if (prev != null) {
+                    drawThickLine(buffer, ctx, prev, p, 1.6D, 1.0F, 0.9F, 0.7F, ringAlpha);
+                }
+                prev = p;
+            }
+        }
+    }
+
+    /** A camera-facing filled disc emitted as degenerate quads (triangles) into the open QUADS batch. */
+    private static void fillDisc(BufferBuilder buffer, Ctx ctx, Vec3 center, Vec3 right, Vec3 up,
+                                 float radius, float r, float g, float b, float a) {
+        if (a <= 0.01F || radius <= 0.0F) return;
+        int segs = 24;
+        for (int i = 0; i < segs; i++) {
+            double a0 = Math.PI * 2.0D * i / segs;
+            double a1 = Math.PI * 2.0D * (i + 1) / segs;
+            Vec3 e0 = center.add(right.scale(Math.cos(a0) * radius)).add(up.scale(Math.sin(a0) * radius));
+            Vec3 e1 = center.add(right.scale(Math.cos(a1) * radius)).add(up.scale(Math.sin(a1) * radius));
+            vertexWorld(buffer, ctx, center, r, g, b, a);
+            vertexWorld(buffer, ctx, e0, r, g, b, a);
+            vertexWorld(buffer, ctx, e1, r, g, b, a);
+            vertexWorld(buffer, ctx, center, r, g, b, a);
+        }
     }
 
     private static void vertexWorld(BufferBuilder buf, Ctx ctx, Vec3 world,

@@ -102,6 +102,12 @@ public final class CommonForgeEvents {
     public static void onExplosionDetonate(ExplosionEvent.Detonate event) {
         if (!(event.getLevel() instanceof ServerLevel level)) return;
         Entity source = event.getExplosion().getIndirectSourceEntity();
+        if (source != null) {
+            // Relay the shell's own detonation for the terminal view (blast
+            // marker, HE camera widening). First blast per session wins.
+            TerminalBallisticsRecorder.onShellExplosion(
+                source, event.getExplosion().getPosition(), explosionRadius(event.getExplosion()));
+        }
         for (BlockPos pos : event.getAffectedBlocks()) {
             BlockState state = level.getBlockState(pos);
             if (state.isAir()) {
@@ -132,6 +138,34 @@ public final class CommonForgeEvents {
     private static boolean clearWelderData(ServerLevel level, BlockPos pos, boolean shellsOnly) {
         return shellsOnly ? TBImpactService.clearEmbeddedShellsOnly(level, pos)
             : TBImpactService.clearBlockImpactData(level, pos);
+    }
+
+    /** Cached handle for Explosion's private radius field (no getter on 1.20.1). */
+    private static volatile java.lang.reflect.Field explosionRadiusField;
+
+    /**
+     * Explosion radius via reflection: the field is {@code radius} in dev
+     * (official mappings) and {@code f_46017_} in production (SRG). Falls back
+     * to a TNT-sized 4.0 if neither name resolves.
+     */
+    private static float explosionRadius(net.minecraft.world.level.Explosion explosion) {
+        if (explosionRadiusField == null) {
+            for (String name : new String[]{"radius", "f_46017_"}) {
+                try {
+                    java.lang.reflect.Field f = net.minecraft.world.level.Explosion.class.getDeclaredField(name);
+                    f.setAccessible(true);
+                    explosionRadiusField = f;
+                    break;
+                } catch (ReflectiveOperationException ignored) {
+                }
+            }
+            if (explosionRadiusField == null) return 4.0F;
+        }
+        try {
+            return explosionRadiusField.getFloat(explosion);
+        } catch (IllegalAccessException e) {
+            return 4.0F;
+        }
     }
 
     private static boolean isCannonWelder(ItemStack stack) {

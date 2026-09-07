@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.hitcam;
 
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
+import com.cbc_terminal_ballistics.ballistics.ProjectileClassifier;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
@@ -88,6 +89,10 @@ public final class TerminalBallisticsRecorder {
         boolean internalDamage;
         /** Raw shipyard position of the first VS plate, captured before world normalization. */
         BlockPos vsAnchorPos;
+        /** The shell's own detonation: world centre, radius, and whether the shell is not AP-style (HE widening signal). */
+        Vec3 blastPos;
+        float blastRadius;
+        boolean explosiveShell;
         /** Game time of the last immediate snapshot send, for rate limiting. */
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
@@ -436,6 +441,28 @@ public final class TerminalBallisticsRecorder {
     /** Direct kills reported via Forge's LivingDeathEvent. */
     public static void onDirectEntityKill(Entity projectile, LivingEntity target) {
         recordEntityHit(projectile, target, 0.0F, true);
+    }
+
+    /**
+     * The shell's own detonation (fired from the vanilla-forking
+     * {@code ExplosionEvent.Detonate} handler, attributed via the explosion's
+     * indirect source entity). HE detonations usually happen as the shell is
+     * removed, so the recorded blast reaches the client through the same
+     * dirty-flush paths as criticals — typically the posthumous grace flush —
+     * refreshing the actor in place. An explosive (non-AP-style) shell ALWAYS
+     * yields a terminal view: the dispatch gate treats a blast like a plate.
+     */
+    public static void onShellExplosion(Entity projectile, Vec3 center, float radius) {
+        if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
+        Session session = SESSIONS.get(projectile.getUUID());
+        if (session == null) return;
+        if (session.blastPos != null) return; // first detonation wins; chain/cook-off blasts stay unattributed
+        session.blastPos = normalizePoint(projectile, center);
+        session.blastRadius = radius;
+        session.explosiveShell = !ProjectileClassifier.isApheType(projectile);
+        session.lastWorldPos = session.blastPos;
+        session.dataVersion++;
+        session.dirty = true;
     }
 
     private static void recordEntityHit(Entity projectile, LivingEntity target, float damage, boolean killed) {
@@ -860,7 +887,9 @@ public final class TerminalBallisticsRecorder {
 
     /** Build and send the terminal packet for the session's current state. */
     private static void dispatch(Entity projectile, Session session) {
-        if (session.plates.isEmpty() || session.audience == null) return;
+        // An explosive shell that detonated ALWAYS yields a terminal view,
+        // plate or no plate — the blast alone is worth framing.
+        if ((session.plates.isEmpty() && session.blastPos == null) || session.audience == null) return;
         if (!(projectile.level() instanceof ServerLevel level)) return;
 
         ShipFrame frame = resolveFrame(level, session);
@@ -875,7 +904,10 @@ public final class TerminalBallisticsRecorder {
         if (frame.vsShipyardPos != null) {
             double limitSq = FRAME_SANITY_LIMIT * FRAME_SANITY_LIMIT;
             Vec3 anchorCenterLocal = Vec3.atCenterOf(frame.vsShipyardPos);
-            Vec3 probePlate = frame.toItemLocal(session.plates.get(0).pos());
+            Vec3 probePlate = session.plates.isEmpty()
+                ? session.blastPos
+                : session.plates.get(0).pos();
+            probePlate = frame.toItemLocal(probePlate);
             boolean plateSane = probePlate.distanceToSqr(anchorCenterLocal) <= limitSq;
             boolean pathSane = true;
             if (!rawPath.isEmpty()) {
@@ -929,10 +961,14 @@ public final class TerminalBallisticsRecorder {
                 frame.toLocal(entry.pos()), entry.blockId(), entry.crew()));
         }
 
+        ClientboundTerminalBallisticsPacket.Blast blast = session.blastPos == null ? null
+            : new ClientboundTerminalBallisticsPacket.Blast(
+                frame.toItemLocal(session.blastPos), session.blastRadius, session.explosiveShell);
+
         int totalSpallFragments = 0;
         for (ClientboundTerminalBallisticsPacket.Spall cone : spalls) totalSpallFragments += cone.fragments();
         String summary = buildSummary(session);
-        Vec3 plate0 = plates.get(0).pos();
+        Vec3 plate0 = plates.isEmpty() ? blast.pos() : plates.get(0).pos();
         CBCTerminalBallistics.LOGGER.info(
             "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} criticals={} plate0=({},{},{}) summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
@@ -941,7 +977,7 @@ public final class TerminalBallisticsRecorder {
             (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z), summary);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
-            summary, frame.anchor, path, plates, spalls, entities, criticals));
+            summary, frame.anchor, path, plates, spalls, entities, criticals, blast));
     }
 
     /**

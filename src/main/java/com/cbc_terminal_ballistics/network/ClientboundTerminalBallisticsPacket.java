@@ -21,7 +21,7 @@ import java.util.function.Supplier;
 public record ClientboundTerminalBallisticsPacket(int projectileId, String entityTypeKey, String summary, Anchor anchor,
                                                   List<HitcamSample> path, List<Plate> plates,
                                                   List<Spall> spalls, List<EntityHit> entities,
-                                                  List<CriticalEntry> criticals) {
+                                                  List<CriticalEntry> criticals, Blast blast) {
 
     /**
      * {@code blockStateId} is the struck block's state id ({@code Block.getId});
@@ -78,6 +78,16 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             return new Anchor("VS", null, localRef, worldRef);
         }
     }
+
+    /**
+     * The shell's own detonation: centre and radius of the explosion it
+     * produced (in the packet's anchor frame). {@code explosive} is false only
+     * for the APHE family — their blast still travels so it can be drawn, but
+     * the client keeps the tight AP camera framing instead of widening for the
+     * explosion. Every other detonating shell (HE, HE-I, HE-F, shrapnel,
+     * HEAT, ...) flags true.
+     */
+    public record Blast(Vec3 pos, float radius, boolean explosive) {}
 
     private static void writeVec3(FriendlyByteBuf buf, Vec3 v) {
         buf.writeDouble(v.x);
@@ -164,6 +174,14 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             buf.writeUtf(c.blockId() == null ? "" : c.blockId(), 128);
             buf.writeBoolean(c.crew());
         }
+        if (blast == null) {
+            buf.writeBoolean(false);
+        } else {
+            buf.writeBoolean(true);
+            writeVec3(buf, blast.pos());
+            buf.writeFloat(blast.radius());
+            buf.writeBoolean(blast.explosive());
+        }
     }
 
     public static ClientboundTerminalBallisticsPacket decode(FriendlyByteBuf buf) {
@@ -236,7 +254,11 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             boolean crew = buf.readBoolean();
             criticals.add(new CriticalEntry(pos, blockId, crew));
         }
-        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spalls, entities, criticals);
+        Blast blast = null;
+        if (buf.readBoolean()) {
+            blast = new Blast(readVec3(buf), buf.readFloat(), buf.readBoolean());
+        }
+        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spalls, entities, criticals, blast);
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

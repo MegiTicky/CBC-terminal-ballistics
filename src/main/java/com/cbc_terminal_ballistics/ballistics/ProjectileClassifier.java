@@ -47,6 +47,22 @@ public final class ProjectileClassifier {
         return text.contains("ap") || text.contains("shot") || text.contains("inert");
     }
 
+    /**
+     * APHE-family shell: an AP-piercing name that also carries explosive
+     * filler. Only this family is excluded from HE camera widening — every
+     * other detonating shell (plain HE, HE-I, HE-F, shrapnel, small/medium
+     * HE from CBC:MS, HEAT, ...) counts as explosive. Note "shrapnel"
+     * contains "ap", so the loose {@link #isApStyle} must not be reused here.
+     */
+    public static boolean isApheType(Entity projectile) {
+        ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        return text.contains("aphe") || text.contains("ap_he") || text.contains("ap-he")
+            || text.contains("ap shell") || text.contains("ap_shell");
+    }
+
     public static double shellSpallCountModifier(Entity projectile) {
         ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
