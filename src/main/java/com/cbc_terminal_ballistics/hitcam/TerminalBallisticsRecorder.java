@@ -463,6 +463,18 @@ public final class TerminalBallisticsRecorder {
         session.lastWorldPos = session.blastPos;
         session.dataVersion++;
         session.dirty = true;
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] shell blast recorded shell={} tick={} radius={} explosive={} at ({},{},{})",
+            projectile.getId(), projectile.tickCount, radius, session.explosiveShell,
+            (long) Math.floor(center.x), (long) Math.floor(center.y), (long) Math.floor(center.z));
+        // Dispatch right now: a detonation is a terminal event, and the view
+        // must open (or refine) at detonation time — not when the removal or
+        // posthumous flush happens to run. Particularly important for bypassed
+        // HEAT/HEAP shells and airbursts, whose only other flush is posthumous.
+        dispatch(projectile, session);
+        session.lastSnapshotGameTime = projectile.level().getGameTime();
+        session.dataVersionAtSnapshot = session.dataVersion;
+        session.dirty = false;
     }
 
     private static void recordEntityHit(Entity projectile, LivingEntity target, float damage, boolean killed) {
@@ -970,11 +982,13 @@ public final class TerminalBallisticsRecorder {
         String summary = buildSummary(session);
         Vec3 plate0 = plates.isEmpty() ? blast.pos() : plates.get(0).pos();
         CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} criticals={} plate0=({},{},{}) summary=\"{}\"",
+            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} criticals={} plate0=({},{},{}) blast={} summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
             frame.anchor == null ? "world" : frame.anchor.kind(),
             path.size(), plates.size(), spalls.size(), totalSpallFragments, entities.size(), criticals.size(),
-            (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z), summary);
+            (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z),
+            blast == null ? "none" : String.format("r=%.1f,explosive=%s", blast.radius(), blast.explosive()),
+            summary);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
             summary, frame.anchor, path, plates, spalls, entities, criticals, blast));
@@ -1022,10 +1036,15 @@ public final class TerminalBallisticsRecorder {
      * was damaged (spall into internals, the shell body punching through
      * non-armour structure, or any entity hit); RICOCHET when the shell bounced
      * off armour without such damage; NO PENETRATION when only armour-classified
-     * blocks were hit, even if several layers were perforated.
+     * blocks were hit, even if several layers were perforated. A shell that
+     * only detonated (no plates — bypassed HEAT/HEAP, airbursts, terrain hits)
+     * reads DETONATION instead of the misleading NO PENETRATION.
      */
     private static String classify(Session session) {
         if (session.internalDamage || !session.entities.isEmpty()) return "HIT";
+        if (session.plates.isEmpty()) {
+            return session.blastPos != null ? "DETONATION" : "NO PENETRATION";
+        }
         for (ClientboundTerminalBallisticsPacket.Plate plate : session.plates) {
             if ("BOUNCE".equals(plate.outcome())) return "RICOCHET";
         }

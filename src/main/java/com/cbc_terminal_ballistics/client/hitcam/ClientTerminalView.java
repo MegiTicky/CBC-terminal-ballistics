@@ -353,6 +353,10 @@ public final class ClientTerminalView {
         // that stopped on plate 3 of 4 simply gains plate 4 mid-view.
         actor.packet = packet;
         buildTimeline(actor);
+        // A refinement can grow the diagram (a late-arriving HE blast, plate 4
+        // of 4); re-frame the camera around the new content, not just the view
+        // that was there when the stage opened.
+        recomputeBounds();
         if (burstEnabled()) {
             recomputeEndTick();
         }
