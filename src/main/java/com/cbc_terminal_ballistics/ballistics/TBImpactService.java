@@ -349,10 +349,16 @@ public final class TBImpactService {
                     TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), outcome,
                         appliedDamage, baseArmorToughness, blockBreakPending, net.minecraft.world.level.block.Block.getId(state),
                         captureShapeBoxes(level, pos, state), contraptionEntity);
+                    if (blockBreakPending) {
+                        TerminalBallisticsRecorder.onCriticalBlock(projectile, Vec3.atCenterOf(pos), state);
+                    }
                 } else if (perforates || blockBreakPending) {
                     // Shell body chewed through a non-armour block; only counts as
                     // internal damage after real armour was hit (recorder-side check).
                     TerminalBallisticsRecorder.onInternalBlockDamage(projectile);
+                    if (blockBreakPending) {
+                        TerminalBallisticsRecorder.onCriticalBlock(projectile, Vec3.atCenterOf(pos), state);
+                    }
                 }
             }
 
@@ -1001,6 +1007,9 @@ public final class TBImpactService {
                     contraptionHit.worldPos(), contraptionHit.state(), spallToughnessThreshold, spallDamageScale);
                 TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), broken,
                     isArmorLike(contraptionHit.state()) || isMetalLike(contraptionHit.state()) || isVehiclePanelLike(contraptionHit.state()));
+                if (broken) {
+                    TerminalBallisticsRecorder.onCriticalBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), contraptionHit.state());
+                }
             } else if (blockRay instanceof BlockHitResult bhr && blockRay.getType() == HitResult.Type.BLOCK) {
                 BlockPos bp = bhr.getBlockPos();
                 BlockState st = level.getBlockState(bp);
@@ -1014,6 +1023,9 @@ public final class TBImpactService {
                     bp, st, spallToughnessThreshold, spallDamageScale);
                 TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(bp), broken,
                     isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
+                if (broken) {
+                    TerminalBallisticsRecorder.onCriticalBlock(projectile, Vec3.atCenterOf(bp), st);
+                }
             }
         }
         if (visualClearRays > 0 && visualRange >= MIN_SPALL_VISUAL_CLEARANCE) {

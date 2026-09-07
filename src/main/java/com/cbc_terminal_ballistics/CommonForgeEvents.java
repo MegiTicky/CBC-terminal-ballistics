@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics;
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlock;
 import com.cbc_terminal_ballistics.ballistics.TBImpactService;
 import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
+import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionResult;
@@ -11,10 +12,13 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
+import net.minecraftforge.event.level.ExplosionEvent;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
+import net.minecraftforge.eventbus.api.EventPriority;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
@@ -69,11 +73,43 @@ public final class CommonForgeEvents {
         }
     }
 
-    @SubscribeEvent
+    /**
+     * PlayerRevive intercepts lethal hits at HIGHEST priority and CANCELS the
+     * death event to put the player in its downed (bleeding-out) state, so a
+     * plain subscription never sees crew casualties on PlayerRevive servers.
+     * receiveCanceled = true gives us both true deaths and downs; either way
+     * the crew member is out of the fight and counts for the critical
+     * evaluation. Handler must not inspect isCanceled().
+     */
+    @SubscribeEvent(priority = EventPriority.HIGHEST, receiveCanceled = true)
     public static void onLivingDeath(LivingDeathEvent event) {
         Entity direct = event.getSource().getDirectEntity();
         if (direct != null) {
             TerminalBallisticsRecorder.onDirectEntityKill(direct, event.getEntity());
+        }
+    }
+
+    /**
+     * Shell explosions that destroyed critical blocks feed the critical
+     * evaluation. CBC shell explosions extend vanilla Explosion and call its
+     * finalizeExplosion, so this event fires with the affected block list; the
+     * blocks are still present when it fires. The recorder no-ops unless the
+     * source entity has an active hitcam session.
+     */
+    @SubscribeEvent
+    public static void onExplosionDetonate(ExplosionEvent.Detonate event) {
+        if (!(event.getLevel() instanceof ServerLevel level)) return;
+        Entity source = event.getExplosion().getIndirectSourceEntity();
+        if (source == null) return;
+        for (BlockPos pos : event.getAffectedBlocks()) {
+            BlockState state = level.getBlockState(pos);
+            if (state.isAir()) {
+                // VS ship blocks: the world position holds air, the block lives
+                // in the contraption/ship storage.
+                BlockState contra = ContraptionCompat.blockStateAt(level, pos);
+                if (contra != null) state = contra;
+            }
+            TerminalBallisticsRecorder.onCriticalBlock(source, Vec3.atCenterOf(pos), state);
         }
     }
 

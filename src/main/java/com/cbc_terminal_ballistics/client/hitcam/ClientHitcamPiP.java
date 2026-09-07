@@ -14,10 +14,13 @@ import com.mojang.blaze3d.vertex.VertexFormat;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
@@ -30,6 +33,10 @@ import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL30;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -42,6 +49,13 @@ import java.util.Optional;
 public final class ClientHitcamPiP {
     /** Guards RenderLevelStageEvent subscribers (ours and, via {@link #isRenderingPip()}, the mod's other visuals) against re-entering during the nested pass. */
     private static final ThreadLocal<Boolean> RENDERING_PIP = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /** Max rows of the terminal-view critical list before folding into "+N more". */
+    private static final int MAX_CRITICAL_ROWS = 5;
+    /** Component rows orange, crew rows red, overflow rows gray. */
+    private static final int COLOR_COMPONENT = 0xFFFFAA00;
+    private static final int COLOR_CREW = 0xFFFF5555;
+    private static final int COLOR_MORE = 0xFF999999;
 
     private static RenderTarget target;
     private static RenderTarget backupTarget;
@@ -561,6 +575,100 @@ public final class ClientHitcamPiP {
         gui.fill(x - 1, y - 1, x + drawW + 1, y + drawH + 1, 0xFF202020);
         blitFramebuffer(gui.pose().last().pose(), x, y, drawW, drawH);
         gui.drawString(mc.font, ClientHitcam.statusLine(), x + 4, y + drawH - mc.font.lineHeight - 3, 0xFFFFFF, true);
+        if (ClientHitcam.isTerminal() && TBConfig.HITCAM_TERMINAL_CRITICALS.get()) {
+            drawCriticalList(gui, mc, x, y, drawW);
+        }
+    }
+
+    /**
+     * Small damage-evaluation list in the PiP's top-left, visible as soon as
+     * the terminal animation starts: each destroyed mechanical component
+     * (aggregated by block) and the crew kill count. Draws at 75% font scale
+     * so it reads as secondary to the status line, over a dark backdrop.
+     */
+    private static void drawCriticalList(net.minecraft.client.gui.GuiGraphics gui, Minecraft mc, int x, int y, int drawW) {
+        List<Component> lines = buildCriticalLines();
+        if (lines.isEmpty()) return;
+        float scale = 0.75F;
+        int lineHeight = (int) Math.ceil(mc.font.lineHeight * scale) + 1;
+        int maxLineW = 0;
+        int[] widths = new int[lines.size()];
+        for (int i = 0; i < lines.size(); i++) {
+            widths[i] = mc.font.width(lines.get(i));
+            maxLineW = Math.max(maxLineW, widths[i]);
+        }
+        int boxW = Math.min(drawW - 6, (int) Math.ceil(maxLineW * scale) + 6);
+        int boxH = lines.size() * lineHeight + 4;
+        var pose = gui.pose();
+        gui.fill(x + 2, y + 2, x + 2 + boxW, y + 2 + boxH, 0x90101010);
+        pose.pushPose();
+        pose.translate(x + 5, y + 4, 0);
+        pose.scale(scale, scale, 1.0F);
+        for (int i = 0; i < lines.size(); i++) {
+            gui.drawString(mc.font, lines.get(i), 0, i * (mc.font.lineHeight + 1),
+                criticalLineColor(lines.get(i)), true);
+        }
+        pose.popPose();
+    }
+
+    private static int criticalLineColor(Component line) {
+        String s = line.getString();
+        if (s.startsWith("+ ")) return COLOR_MORE;
+        if (s.startsWith("\u2620")) return COLOR_CREW;
+        return COLOR_COMPONENT;
+    }
+
+    /** Aggregated evaluation rows: destroyed components by name, then crew kills. */
+    private static List<Component> buildCriticalLines() {
+        List<com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket.CriticalEntry> criticals =
+            ClientTerminalView.criticals();
+        if (criticals.isEmpty()) return List.of();
+        Map<String, int[]> blocks = new LinkedHashMap<>(); // display name -> [count]
+        int crew = 0;
+        for (var entry : criticals) {
+            if (entry.crew()) {
+                crew++;
+            } else {
+                blocks.computeIfAbsent(criticalBlockName(entry.blockId()), k -> new int[1])[0]++;
+            }
+        }
+        List<Map.Entry<String, int[]>> sorted = new ArrayList<>(blocks.entrySet());
+        sorted.sort((a, b) -> {
+            int byCount = Integer.compare(b.getValue()[0], a.getValue()[0]);
+            return byCount != 0 ? byCount : a.getKey().compareToIgnoreCase(b.getKey());
+        });
+        List<Component> lines = new ArrayList<>();
+        for (Map.Entry<String, int[]> e : sorted) {
+            if (lines.size() >= MAX_CRITICAL_ROWS) break;
+            int count = e.getValue()[0];
+            lines.add(Component.literal("\u26a1 " + e.getKey() + (count > 1 ? " \u00d7" + count : "")));
+        }
+        if (crew > 0 && lines.size() < MAX_CRITICAL_ROWS) {
+            lines.add(Component.literal("\u2620 Crew killed \u00d7" + crew));
+        }
+        int total = sorted.size() + (crew > 0 ? 1 : 0);
+        if (total > MAX_CRITICAL_ROWS) {
+            lines.add(Component.literal("+ " + (total - MAX_CRITICAL_ROWS) + " more"));
+        }
+        return lines;
+    }
+
+    /** Display name of a destroyed block, resolved against the client registry. */
+    private static String criticalBlockName(String blockId) {
+        if (blockId == null || blockId.isEmpty()) return "Component";
+        try {
+            ResourceLocation id = new ResourceLocation(blockId);
+            Block block = BuiltInRegistries.BLOCK.get(id);
+            if (block != null) {
+                String name = block.getName().getString();
+                if (name != null && !name.isBlank()) return name;
+            }
+        } catch (Exception ignored) {
+            // fall through to prettified path
+        }
+        String path = blockId.contains(":") ? blockId.substring(blockId.indexOf(':') + 1) : blockId;
+        if (path.isEmpty()) return "Component";
+        return Character.toUpperCase(path.charAt(0)) + path.substring(1).replace('_', ' ');
     }
 
     private static void blitFramebuffer(Matrix4f matrix, int x, int y, int w, int h) {

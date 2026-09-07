@@ -20,7 +20,8 @@ import java.util.function.Supplier;
  */
 public record ClientboundTerminalBallisticsPacket(int projectileId, String entityTypeKey, String summary, Anchor anchor,
                                                   List<HitcamSample> path, List<Plate> plates,
-                                                  List<Spall> spalls, List<EntityHit> entities) {
+                                                  List<Spall> spalls, List<EntityHit> entities,
+                                                  List<CriticalEntry> criticals) {
 
     /**
      * {@code blockStateId} is the struck block's state id ({@code Block.getId});
@@ -38,6 +39,14 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
                         int blockStateId, float[][] shapeBoxes) {}
 
     public record EntityHit(int entityId, Vec3 pos, float damage, boolean killed) {}
+
+    /**
+     * One critical-hit evaluation entry: either a destroyed mechanical
+     * component ({@code crew} false, {@code blockId} the block's registry id
+     * for display-name lookup) or a killed crew member ({@code crew} true,
+     * {@code blockId} empty). {@code pos} is in the packet's anchor frame.
+     */
+    public record CriticalEntry(Vec3 pos, String blockId, boolean crew) {}
 
     /** {@code armorLike} is true when the spall-struck block is itself armour/hull, not internal structure. */
     public record SpallBlock(Vec3 pos, boolean broken, boolean armorLike) {}
@@ -148,6 +157,13 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             buf.writeFloat(e.damage());
             buf.writeBoolean(e.killed());
         }
+        List<CriticalEntry> criticals = this.criticals == null ? List.of() : this.criticals;
+        buf.writeVarInt(criticals.size());
+        for (CriticalEntry c : criticals) {
+            writeVec3(buf, c.pos());
+            buf.writeUtf(c.blockId() == null ? "" : c.blockId(), 128);
+            buf.writeBoolean(c.crew());
+        }
     }
 
     public static ClientboundTerminalBallisticsPacket decode(FriendlyByteBuf buf) {
@@ -212,7 +228,15 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
         for (int i = 0; i < entityCount; i++) {
             entities.add(new EntityHit(buf.readVarInt(), readVec3(buf), buf.readFloat(), buf.readBoolean()));
         }
-        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spalls, entities);
+        int criticalCount = buf.readVarInt();
+        List<CriticalEntry> criticals = new ArrayList<>(Math.min(criticalCount, 16));
+        for (int i = 0; i < criticalCount; i++) {
+            Vec3 pos = readVec3(buf);
+            String blockId = buf.readUtf(128);
+            boolean crew = buf.readBoolean();
+            criticals.add(new CriticalEntry(pos, blockId, crew));
+        }
+        return new ClientboundTerminalBallisticsPacket(projectileId, entityTypeKey, summary, anchor, path, plates, spalls, entities, criticals);
     }
 
     public void handle(Supplier<NetworkEvent.Context> ctx) {

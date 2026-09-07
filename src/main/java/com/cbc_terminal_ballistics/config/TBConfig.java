@@ -44,6 +44,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.BooleanValue HITCAM_ENABLED;
     public static final ForgeConfigSpec.BooleanValue HITCAM_ARTILLERY_CAM;
     public static final ForgeConfigSpec.BooleanValue HITCAM_TERMINAL_VIEW;
+    public static final ForgeConfigSpec.BooleanValue HITCAM_TERMINAL_CRITICALS;
     public static final ForgeConfigSpec.IntValue HITCAM_TERMINAL_DURATION;
     public static final ForgeConfigSpec.IntValue HITCAM_TERMINAL_PATH_BLOCKS;
     public static final ForgeConfigSpec.IntValue HITCAM_MAX_SAMPLES;
@@ -116,6 +117,7 @@ public final class TBConfig {
         HITCAM_ENABLED = server.comment("Record projectile flights so /cbctb hitcam can replay the last fired shell in a slow-motion picture-in-picture view.").define("hitcamEnabled", true);
         HITCAM_ARTILLERY_CAM = server.comment("Artillery view: automatically show a live chase-camera picture-in-picture when a projectile you fired (or are operating) spawns.").define("hitcamArtilleryCam", true);
         HITCAM_TERMINAL_VIEW = server.comment("Terminal ballistic view: after a shell engages armour, show a War-Thunder-style x-ray reconstruction (shell path, plate outcomes, spall, crew hits) in the picture-in-picture window.").define("hitcamTerminalView", true);
+        HITCAM_TERMINAL_CRITICALS = server.comment("Critical hits in the terminal view: when the shell, its spall or its explosion BREAKS a mechanical component block (data-driven critical_blocks datapack list) or kills/downs a crew member, flag the engagement as CRITICAL and list the destroyed components and crew kills in the picture-in-picture window.").define("hitcamTerminalCriticals", true);
         HITCAM_TERMINAL_DURATION = server.comment("How long the terminal ballistic x-ray diagram stays on screen, in ticks.").defineInRange("hitcamTerminalDurationTicks", 120, 20, 600);
         HITCAM_TERMINAL_PATH_BLOCKS = server.comment("Maximum length of the flight path, in blocks, replayed by the terminal view. Longer shots trim their approach so the impact dominates, War-Thunder style.").defineInRange("hitcamTerminalPathBlocks", 40, 10, 200);
         HITCAM_MAX_SAMPLES = server.comment("Maximum recorded flight samples per projectile. 20 samples = 1 second of flight.").defineInRange("hitcamMaxSamples", 100, 20, 600);

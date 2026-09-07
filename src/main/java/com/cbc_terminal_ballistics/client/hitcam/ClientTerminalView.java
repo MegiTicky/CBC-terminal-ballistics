@@ -309,6 +309,11 @@ public final class ClientTerminalView {
         return view == null ? List.of() : view.entities();
     }
 
+    /** Critical-hit evaluation entries (destroyed components, crew kills). */
+    public static List<ClientboundTerminalBallisticsPacket.CriticalEntry> criticals() {
+        return view == null ? List.of() : view.criticals();
+    }
+
     /** Vehicle-local -> world for any stored point; identity without an anchor. */
     public static Vec3 toWorld(Vec3 local, float partialTick) {
         Entity anchor = contraptionAnchor();

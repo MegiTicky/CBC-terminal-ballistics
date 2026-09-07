@@ -39,6 +39,7 @@ public final class TerminalBallisticsRecorder {
     private static final int MAX_ENTITY_HITS = 8;
     private static final int MAX_SPALL_CONES = 4;
     private static final int MAX_SPALL_BLOCKS_PER_CONE = 16;
+    private static final int MAX_CRITICALS = 16;
     private static final int STALE_FLUSH_TICKS = 30;
     private static final double AUDIENCE_SEARCH_RADIUS = 32.0D;
     /**
@@ -70,6 +71,15 @@ public final class TerminalBallisticsRecorder {
         final List<ClientboundTerminalBallisticsPacket.Spall> spalls = new ArrayList<>();
         /** Spall-struck blocks per cone, parallel to {@link #spalls}; filled after each cone is recorded. */
         final List<List<ClientboundTerminalBallisticsPacket.SpallBlock>> spallBlocksPerCone = new ArrayList<>();
+        /**
+         * Critical-hit evaluation entries: destroyed mechanical components
+         * (data-driven critical block list) and killed crew, in record order.
+         */
+        final List<ClientboundTerminalBallisticsPacket.CriticalEntry> criticals = new ArrayList<>();
+        /** World-space block positions already recorded as criticals, for dedupe. */
+        final it.unimi.dsi.fastutil.longs.LongOpenHashSet criticalPositions = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        /** True once any critical event (destroyed component or crew kill) was recorded. */
+        boolean hasCritical;
         UUID anchorUuid;
         ServerPlayer audience;
         long firstEventGameTime = -1L;
@@ -319,6 +329,30 @@ public final class TerminalBallisticsRecorder {
         session.internalDamage = true;
     }
 
+    /**
+     * A critical block was BROKEN (not merely damaged) by this shell — its
+     * body, spall, or explosion. The block is checked against the data-driven
+     * critical block list; hits are deduped per block position.
+     */
+    public static void onCriticalBlock(Entity projectile, Vec3 worldPos, net.minecraft.world.level.block.state.BlockState state) {
+        if (!TBConfig.HITCAM_TERMINAL_VIEW.get() || !TBConfig.HITCAM_TERMINAL_CRITICALS.get()) return;
+        if (state == null || !com.cbc_terminal_ballistics.data.CriticalBlockManager.INSTANCE.isCritical(state)) return;
+        Session session = SESSIONS.get(projectile.getUUID());
+        if (session == null) return;
+        Vec3 world = normalizePoint(projectile, worldPos);
+        long packed = BlockPos.containing(world).asLong();
+        if (!session.criticalPositions.add(packed)) return;
+        if (session.criticals.size() < MAX_CRITICALS) {
+            net.minecraft.resources.ResourceLocation id =
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock());
+            session.criticals.add(new ClientboundTerminalBallisticsPacket.CriticalEntry(
+                world, id == null ? "" : id.toString(), false));
+        }
+        session.hasCritical = true;
+        session.dataVersion++;
+        session.dirty = true;
+    }
+
     public static void onSpallEntityHit(Entity projectile, LivingEntity target, float damage) {
         recordEntityHit(projectile, target, damage, false);
     }
@@ -342,15 +376,28 @@ public final class TerminalBallisticsRecorder {
         for (int i = 0; i < session.entities.size(); i++) {
             ClientboundTerminalBallisticsPacket.EntityHit hit = session.entities.get(i);
             if (hit.entityId() == target.getId()) {
+                boolean nowKilled = hit.killed() || killed;
                 session.entities.set(i, new ClientboundTerminalBallisticsPacket.EntityHit(
-                    hit.entityId(), hit.pos(), Math.max(hit.damage(), damage), hit.killed() || killed));
+                    hit.entityId(), hit.pos(), Math.max(hit.damage(), damage), nowKilled));
+                if (killed && !hit.killed()) recordCrewCritical(session, target);
                 return;
             }
         }
         if (session.entities.size() < MAX_ENTITY_HITS) {
             session.entities.add(new ClientboundTerminalBallisticsPacket.EntityHit(
                 target.getId(), target.position(), damage, killed));
+            if (killed) recordCrewCritical(session, target);
         }
+    }
+
+    /** A crew death (PlayerRevive downs included) is a critical event. */
+    private static void recordCrewCritical(Session session, LivingEntity target) {
+        if (!TBConfig.HITCAM_TERMINAL_CRITICALS.get()) return;
+        if (session.criticals.size() < MAX_CRITICALS) {
+            session.criticals.add(new ClientboundTerminalBallisticsPacket.CriticalEntry(
+                target.position(), "", true));
+        }
+        session.hasCritical = true;
     }
 
     /**
@@ -742,19 +789,25 @@ public final class TerminalBallisticsRecorder {
                 hit.entityId(), frame.toLocal(hit.pos()), hit.damage(), hit.killed()));
         }
 
+        List<ClientboundTerminalBallisticsPacket.CriticalEntry> criticals = new ArrayList<>(session.criticals.size());
+        for (ClientboundTerminalBallisticsPacket.CriticalEntry entry : session.criticals) {
+            criticals.add(new ClientboundTerminalBallisticsPacket.CriticalEntry(
+                frame.toLocal(entry.pos()), entry.blockId(), entry.crew()));
+        }
+
         int totalSpallFragments = 0;
         for (ClientboundTerminalBallisticsPacket.Spall cone : spalls) totalSpallFragments += cone.fragments();
         String summary = buildSummary(session);
         Vec3 plate0 = plates.get(0).pos();
         CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} plate0=({},{},{}) summary=\"{}\"",
+            "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} criticals={} plate0=({},{},{}) summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
             frame.anchor == null ? "world" : frame.anchor.kind(),
-            path.size(), plates.size(), spalls.size(), totalSpallFragments, entities.size(),
+            path.size(), plates.size(), spalls.size(), totalSpallFragments, entities.size(), criticals.size(),
             (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z), summary);
         send(session.audience, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
-            summary, frame.anchor, path, plates, spalls, entities));
+            summary, frame.anchor, path, plates, spalls, entities, criticals));
     }
 
     /**
@@ -788,6 +841,7 @@ public final class TerminalBallisticsRecorder {
             if (hit.killed()) killed++;
         }
         StringBuilder sb = new StringBuilder(classify(session));
+        if (session.hasCritical) sb.insert(0, "CRITICAL \u00b7 ");
         sb.append(" \u00b7 ").append(session.plates.size()).append(session.plates.size() == 1 ? " plate" : " plates");
         if (!session.entities.isEmpty()) {
             sb.append(" \u00b7 ").append(session.entities.size()).append(" crew");
