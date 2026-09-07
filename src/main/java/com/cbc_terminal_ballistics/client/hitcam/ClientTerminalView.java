@@ -589,7 +589,7 @@ public final class ClientTerminalView {
      * animation and the fade.
      */
     private static long quietWallMs() {
-        return (long) burstQuietTicks() * 50L + FADE_TICKS * 50L + QUIET_WALL_MARGIN_MS;
+        return burstQuietTicks() * 50L + (long) (FADE_TICKS * 50.0D) + QUIET_WALL_MARGIN_MS;
     }
 
     private static int burstActors() {
