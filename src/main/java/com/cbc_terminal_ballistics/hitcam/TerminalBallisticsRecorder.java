@@ -114,6 +114,16 @@ public final class TerminalBallisticsRecorder {
         /** Chunk-unload rebind: the shell's UUID while waiting for its re-created entity. */
         UUID pendingUuid;
         long pendingSinceTick = -1L;
+        /**
+         * Post-mortem grace window: the shell entity is gone (removed, or the
+         * engagement flushed terminal) but cook-off/crew-death events may still
+         * arrive for {@link #graceEndTick} ticks. The session stays registered
+         * so those events update the client's verdict in place.
+         */
+        boolean shellGone;
+        long graceEndTick = -1L;
+        /** World-space position of the most recent recorded event, for post-mortem attribution. */
+        Vec3 lastWorldPos;
     }
 
     /**
@@ -197,7 +207,7 @@ public final class TerminalBallisticsRecorder {
         if (!(projectile.level() instanceof ServerLevel level)) return;
         if (!TBConfig.HITCAM_ENABLED.get()) return;
         Session existing = SESSIONS.get(projectile.getUUID());
-        if (existing != null) {
+        if (existing != null && !existing.shellGone) {
             if (existing.bound == projectile) return;
             CBCTerminalBallistics.LOGGER.info(
                 "[CTB-CHUNKSTREAM] shell rebind: newId={} oldId={} uuid={}",
@@ -238,12 +248,13 @@ public final class TerminalBallisticsRecorder {
         Session session = SESSIONS.get(projectile.getUUID());
         if (session == null) return;
         if (session.firstEventGameTime < 0L) session.firstEventGameTime = projectile.level().getGameTime();
+        session.lastWorldPos = normalizePoint(projectile, worldPos);
         if (session.plates.size() < MAX_PLATES) {
             if (session.vsAnchorPos == null && VSCompat.isShipyardCoordinate(worldPos)) {
                 session.vsAnchorPos = BlockPos.containing(worldPos);
             }
             session.plates.add(new ClientboundTerminalBallisticsPacket.Plate(
-                normalizePoint(projectile, worldPos), outcome, damage, toughness, broken, blockStateId,
+                session.lastWorldPos, outcome, damage, toughness, broken, blockStateId,
                 shapeBoxes == null ? new float[0][] : shapeBoxes));
         }
         if (contraptionEntity != null && session.anchorUuid == null) session.anchorUuid = contraptionEntity.getUUID();
@@ -278,6 +289,7 @@ public final class TerminalBallisticsRecorder {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
         if (session == null || fragments <= 0) return;
+        session.lastWorldPos = normalizePoint(projectile, origin);
         if (session.spalls.size() < MAX_SPALL_CONES) {
             session.spalls.add(new ClientboundTerminalBallisticsPacket.Spall(normalizePoint(projectile, origin),
                 dir, coneCos, range, fragments, new ArrayList<>(),
@@ -305,6 +317,7 @@ public final class TerminalBallisticsRecorder {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
         if (session == null || session.spallBlocksPerCone.isEmpty()) return;
+        session.lastWorldPos = normalizePoint(projectile, worldPos);
         // Blocks arrive right after their own cone's onSpall, so the last
         // list is always the cone these blocks belong to.
         List<ClientboundTerminalBallisticsPacket.SpallBlock> coneBlocks =
@@ -338,8 +351,15 @@ public final class TerminalBallisticsRecorder {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get() || !TBConfig.HITCAM_TERMINAL_CRITICALS.get()) return;
         if (state == null || !com.cbc_terminal_ballistics.data.CriticalBlockManager.INSTANCE.isCritical(state)) return;
         Session session = SESSIONS.get(projectile.getUUID());
+        if (session == null) {
+            // Not the shell's own doing (e.g. an ammo-rack cook-off explosion
+            // that still carries the shell as its source chain): attribute by
+            // proximity to a finished engagement's last impact.
+            session = attributeByPosition(projectile.level(), worldPos);
+        }
         if (session == null) return;
         Vec3 world = normalizePoint(projectile, worldPos);
+        session.lastWorldPos = world;
         long packed = BlockPos.containing(world).asLong();
         if (!session.criticalPositions.add(packed)) return;
         if (session.criticals.size() < MAX_CRITICALS) {
@@ -351,6 +371,57 @@ public final class TerminalBallisticsRecorder {
         session.hasCritical = true;
         session.dataVersion++;
         session.dirty = true;
+    }
+
+    /**
+     * Explosion-critical attribution when no source entity can be resolved
+     * (the explosion carries no indirect entity): pure positional fallback to
+     * a finished engagement's last impact point.
+     */
+    public static void onUnattributedCriticalBlock(net.minecraft.world.level.Level level, Vec3 worldPos,
+                                                   net.minecraft.world.level.block.state.BlockState state) {
+        if (!TBConfig.HITCAM_TERMINAL_VIEW.get() || !TBConfig.HITCAM_TERMINAL_CRITICALS.get()) return;
+        if (state == null || !com.cbc_terminal_ballistics.data.CriticalBlockManager.INSTANCE.isCritical(state)) return;
+        Session session = attributeByPosition(level, worldPos);
+        if (session == null) return;
+        session.lastWorldPos = worldPos;
+        long packed = BlockPos.containing(worldPos).asLong();
+        if (!session.criticalPositions.add(packed)) return;
+        if (session.criticals.size() < MAX_CRITICALS) {
+            net.minecraft.resources.ResourceLocation id =
+                net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(state.getBlock());
+            session.criticals.add(new ClientboundTerminalBallisticsPacket.CriticalEntry(
+                worldPos, id == null ? "" : id.toString(), false));
+        }
+        session.hasCritical = true;
+        session.dataVersion++;
+        session.dirty = true;
+    }
+
+    /** Max distance (blocks) from an engagement's last impact for post-mortem attribution. */
+    private static final double ATTRIBUTION_RADIUS = 8.0D;
+
+    /**
+     * Find the finished engagement (shell gone, grace window still open) whose
+     * last recorded event position is nearest to {@code pos}. Only shell-gone
+     * sessions qualify: while the shell is alive, attribution runs through its
+     * UUID and nearby unrelated deaths must never be claimed.
+     */
+    @Nullable
+    private static Session attributeByPosition(net.minecraft.world.level.Level level, Vec3 pos) {
+        if (TBConfig.HITCAM_TERMINAL_POSTHUMOUS_TICKS.get() <= 0) return null;
+        Session best = null;
+        double bestDistSq = ATTRIBUTION_RADIUS * ATTRIBUTION_RADIUS;
+        for (Session session : SESSIONS.values()) {
+            if (!session.shellGone || session.lastWorldPos == null) continue;
+            if (session.bound == null || session.bound.level() != level) continue;
+            double distSq = session.lastWorldPos.distanceToSqr(pos);
+            if (distSq <= bestDistSq) {
+                bestDistSq = distSq;
+                best = session;
+            }
+        }
+        return best;
     }
 
     public static void onSpallEntityHit(Entity projectile, LivingEntity target, float damage) {
@@ -370,6 +441,12 @@ public final class TerminalBallisticsRecorder {
     private static void recordEntityHit(Entity projectile, LivingEntity target, float damage, boolean killed) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
+        if (session == null && killed) {
+            // The killer entity has no session (e.g. an ammo cook-off explosion
+            // killing the crew after the shell is gone): attribute the death
+            // positionally to a finished engagement near the victim.
+            session = attributeByPosition(projectile.level(), target.position());
+        }
         if (session == null) return;
         session.dataVersion++;
         session.dirty = true;
@@ -430,7 +507,9 @@ public final class TerminalBallisticsRecorder {
      * the mod's ServerTickEvent handler.
      */
     public static void onServerTick(net.minecraft.server.MinecraftServer server) {
-        if (!TBConfig.HITCAM_ENABLED.get() || !TBConfig.HITCAM_ARTILLERY_CAM.get()) return;
+        if (!TBConfig.HITCAM_ENABLED.get()) return;
+        expirePosthumousSessions(server);
+        if (!TBConfig.HITCAM_ARTILLERY_CAM.get()) return;
         if (SESSIONS.isEmpty() || server.getTickCount() % 2 != 0) return;
         // Rebinds mutate Session fields only (bound/pending), never the map.
         // Session-ending paths remove the current key via it.remove() — a
@@ -439,6 +518,8 @@ public final class TerminalBallisticsRecorder {
         for (java.util.Iterator<java.util.Map.Entry<UUID, Session>> it = SESSIONS.entrySet().iterator(); it.hasNext(); ) {
             java.util.Map.Entry<UUID, Session> entry = it.next();
             Session session = entry.getValue();
+            // Post-mortem grace session: no relay/streaming, expiry handled above.
+            if (session.shellGone) continue;
             Entity projectile = session.bound;
             if (projectile == null || session.audience == null) continue;
             if (projectile.isRemoved()) {
@@ -463,11 +544,14 @@ public final class TerminalBallisticsRecorder {
                 // data would die with the session, never reaching the client.
                 if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot) {
                     dispatch(projectile, session);
+                    session.dataVersionAtSnapshot = session.dataVersion;
+                    session.dirty = false;
                 }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
-                session.audience = null;
-                it.remove();
+                // Keep the session registered in its post-mortem grace window:
+                // an ammo-rack cook-off or chained crew death may still follow.
+                markShellGone(session, projectile.level().getGameTime());
                 continue;
             }
             // Stuck-shell watchdog: a projectile that has not moved for ~5 s
@@ -487,14 +571,15 @@ public final class TerminalBallisticsRecorder {
                     "[CTB-HITCAM] session for shell {} ended: stationary {} ticks at {}",
                     projectile.getId(), session.stuckRelays, posNow);
                 // Same as the removed-shell path: flush engagements recorded
-                // after the last snapshot before tearing the session down.
+                // after the last snapshot before entering the grace window.
                 if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot) {
                     dispatch(projectile, session);
+                    session.dataVersionAtSnapshot = session.dataVersion;
+                    session.dirty = false;
                 }
                 send(session.audience, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", posNow, Vec3.ZERO, true));
-                session.audience = null;
-                it.remove();
+                markShellGone(session, projectile.level().getGameTime());
                 continue;
             }
             send(session.audience, new ClientboundArtilleryUpdatePacket(
@@ -707,8 +792,57 @@ public final class TerminalBallisticsRecorder {
     // ---- finalize ----------------------------------------------------------------
 
     private static void finalizeAndSend(Entity projectile, Session session) {
-        SESSIONS.remove(projectile.getUUID());
         dispatch(projectile, session);
+        session.dataVersionAtSnapshot = session.dataVersion;
+        session.dirty = false;
+        // Keep the session in its post-mortem grace window so cook-off
+        // criticals still reach the client (0-tick grace removes immediately).
+        markShellGone(session, projectile.level().getGameTime());
+    }
+
+    /**
+     * Enter the post-mortem grace window: the shell is gone but ammo cook-off
+     * explosions and chained crew deaths may follow seconds later. With the
+     * grace disabled (or expired, see {@link #expirePosthumousSessions}) the
+     * session is dropped immediately.
+     */
+    private static void markShellGone(Session session, long gameTime) {
+        session.shellGone = true;
+        session.lastRelayPos = null;
+        session.stuckRelays = 0;
+        int grace = TBConfig.HITCAM_TERMINAL_POSTHUMOUS_TICKS.get();
+        session.graceEndTick = grace > 0 ? gameTime + grace : -1L;
+        if (grace <= 0) dropSession(session);
+    }
+
+    /** Remove a grace session's registration (used once its window is spent). */
+    private static void dropSession(Session session) {
+        SESSIONS.entrySet().removeIf(e -> e.getValue() == session);
+    }
+
+    /**
+     * End-of-grace sweep. A session that accumulated post-mortem criticals
+     * since its last dispatch sends one final packet (the client's same-shell
+     * refresh updates the verdict in place — NO PENETRATION becomes CRITICAL
+     * HIT — or restarts the view if it already closed).
+     */
+    private static void expirePosthumousSessions(net.minecraft.server.MinecraftServer server) {
+        if (SESSIONS.isEmpty()) return;
+        for (java.util.Iterator<java.util.Map.Entry<UUID, Session>> it = SESSIONS.entrySet().iterator(); it.hasNext(); ) {
+            Session session = it.next().getValue();
+            if (!session.shellGone) continue;
+            Entity bound = session.bound;
+            long now = bound != null ? bound.level().getGameTime() : server.overworld() != null ? server.overworld().getGameTime() : Long.MAX_VALUE;
+            if (now < session.graceEndTick) continue;
+            if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot
+                && session.audience != null && bound != null) {
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-HITCAM] posthumous criticals flush: shell={} criticals={}",
+                    bound.getId(), session.criticals.size());
+                dispatch(bound, session);
+            }
+            it.remove();
+        }
     }
 
     /**

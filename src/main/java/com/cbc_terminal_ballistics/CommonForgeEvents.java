@@ -102,7 +102,6 @@ public final class CommonForgeEvents {
     public static void onExplosionDetonate(ExplosionEvent.Detonate event) {
         if (!(event.getLevel() instanceof ServerLevel level)) return;
         Entity source = event.getExplosion().getIndirectSourceEntity();
-        if (source == null) return;
         for (BlockPos pos : event.getAffectedBlocks()) {
             BlockState state = level.getBlockState(pos);
             if (state.isAir()) {
@@ -111,7 +110,13 @@ public final class CommonForgeEvents {
                 BlockState contra = ContraptionCompat.blockStateAt(level, pos);
                 if (contra != null) state = contra;
             }
-            TerminalBallisticsRecorder.onCriticalBlock(source, Vec3.atCenterOf(pos), state);
+            if (source == null) {
+                // No attributable entity (e.g. an ammo-rack cook-off): fall back
+                // to positional attribution against finished engagements.
+                TerminalBallisticsRecorder.onUnattributedCriticalBlock(level, Vec3.atCenterOf(pos), state);
+            } else {
+                TerminalBallisticsRecorder.onCriticalBlock(source, Vec3.atCenterOf(pos), state);
+            }
         }
     }
 
