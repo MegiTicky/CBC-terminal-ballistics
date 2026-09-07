@@ -399,6 +399,7 @@ public final class TBImpactService {
                         // removed by CBC's own block-break handling or left as damage metadata.
                         clearMarks(server, pos);
                     } else {
+                        fireProjectileHitHook(server, state, pos, projectile);
                         server.setBlock(pos, Blocks.AIR.defaultBlockState(), 3);
                         playBreakSound(server, pos, state);
                         clearMarks(server, pos);
@@ -1003,7 +1004,7 @@ public final class TBImpactService {
             if (contraptionHit != null && contraptionDistSqr <= blockDistSqr) {
                 // Fragment stopped by a contraption hull block: integrity damage accumulates,
                 // but the block itself is never removed (it lives inside the entity).
-                boolean broken = applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
+                boolean broken = applyFragmentBlockDamage(level, projectile, caliber, fragments, massRatio, damageModifier,
                     contraptionHit.worldPos(), contraptionHit.state(), spallToughnessThreshold, spallDamageScale);
                 TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), broken,
                     isArmorLike(contraptionHit.state()) || isMetalLike(contraptionHit.state()) || isVehiclePanelLike(contraptionHit.state()));
@@ -1019,7 +1020,7 @@ public final class TBImpactService {
                     if (contraState != null) st = contraState;
                     else continue;
                 }
-                boolean broken = applyFragmentBlockDamage(level, caliber, fragments, massRatio, damageModifier,
+                boolean broken = applyFragmentBlockDamage(level, projectile, caliber, fragments, massRatio, damageModifier,
                     bp, st, spallToughnessThreshold, spallDamageScale);
                 TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(bp), broken,
                     isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
@@ -1062,13 +1063,30 @@ public final class TBImpactService {
     }
 
     /**
+     * Fires a destroyed block's "shot by a projectile" reaction before it is
+     * replaced with air. Mod blocks route cook-off logic through
+     * {@code Block.onProjectileHit} (combatgear ammo racks detonate this way),
+     * which vanilla never calls on a raw setBlock — and our break paths are
+     * not vanilla explosions, so {@code wasExploded} never fires either.
+     */
+    private static void fireProjectileHitHook(ServerLevel level, BlockState state, BlockPos pos, Entity projectile) {
+        if (!(projectile instanceof net.minecraft.world.entity.projectile.Projectile proj)) return;
+        try {
+            state.onProjectileHit(level, state,
+                new BlockHitResult(Vec3.atCenterOf(pos), Direction.UP, pos, false), proj);
+        } catch (Throwable t) {
+            CTB_LOG.warn("onProjectileHit hook failed at {}: {}", pos, t.toString());
+        }
+    }
+
+    /**
      * Apply spall fragment integrity damage to a single blocking block (world or
      * contraption hull). The block is never set to air when it belongs to a
      * contraption; damage still accumulates and break sounds play.
      *
      * @return true when this fragment pushed the block past its integrity threshold.
      */
-    private static boolean applyFragmentBlockDamage(ServerLevel level, TBCaliber caliber, int fragments, double massRatio, double damageModifier,
+    private static boolean applyFragmentBlockDamage(ServerLevel level, Entity projectile, TBCaliber caliber, int fragments, double massRatio, double damageModifier,
                                                  BlockPos bp, BlockState st, double spallToughnessThreshold, double spallDamageScale) {
         float speed = st.getDestroySpeed(level, bp);
         if (speed < 0) return false;
@@ -1087,6 +1105,7 @@ public final class TBImpactService {
             syncIntegrityProgress(level, bp, currentDamage, threshold);
             if (currentDamage >= threshold) {
                 if (!ContraptionCompat.isContraptionBlock(level, bp)) {
+                    fireProjectileHitHook(level, st, bp, projectile);
                     level.setBlock(bp, Blocks.AIR.defaultBlockState(), 3);
                 }
                 playBreakSound(level, bp, st);
