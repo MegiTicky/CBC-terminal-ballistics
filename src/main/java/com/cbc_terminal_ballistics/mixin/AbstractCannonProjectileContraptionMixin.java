@@ -13,9 +13,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Mixin into CBC's {@code AbstractCannonProjectile.clipAndDamage()} to add collision
@@ -66,13 +64,6 @@ public abstract class AbstractCannonProjectileContraptionMixin {
     private long ctb$sourceExpiry = -1L;
     @Unique
     private int ctb$sourceChecksLeft = 3;
-
-    @Inject(method = "clipAndDamage", at = @At("HEAD"))
-    private void ctb$logHead(CallbackInfo ci) {
-        Entity self = (Entity) (Object) this;
-        CTB_LOG.info("[ctb] clipAndDamage called. pos={} vel={} config={}",
-            self.position(), self.getDeltaMovement(), TBConfig.HIT_CREATE_CONTRAPTIONS.get());
-    }
 
     /**
      * Intercept the first BlockHitResult store (ordinal 0 = block clip result).
@@ -131,7 +122,7 @@ public abstract class AbstractCannonProjectileContraptionMixin {
                 return original;
             }
 
-            CTB_LOG.info("[ctb] contraption hit! worldPos={} hitLoc={} dir={} normal={} state={}",
+            CTB_LOG.debug("[ctb] contraption hit! worldPos={} hitLoc={} dir={} normal={} state={}",
                 hit.worldPos(), hit.hitLocation(), hit.direction(), hit.trueNormal(), hit.state());
             ctb$pendingContraptionState = hit.state();
             return hit.toBlockHitResult();

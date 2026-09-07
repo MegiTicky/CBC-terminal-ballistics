@@ -308,12 +308,12 @@ public final class ContraptionCompat {
     @Nullable
     public static ContraptionHit raycast(Level level, Vec3 from, Vec3 to, @Nullable java.util.UUID excludeContraption) {
         if (!isLoaded()) {
-            LOG.info("[ctb] raycast: Create not loaded");
+            LOG.debug("[ctb] raycast: Create not loaded");
             return null;
         }
         try {
             List<Entity> entities = findContraptionEntities(level, from, to);
-            LOG.info("[ctb] raycast: found {} contraption entities near {}-{}", entities.size(), from, to);
+            LOG.debug("[ctb] raycast: found {} contraption entities near {}-{}", entities.size(), from, to);
             if (entities.isEmpty()) return null;
 
             ContraptionHit best = null;
@@ -322,7 +322,7 @@ public final class ContraptionCompat {
                 if (excludeContraption != null && excludeContraption.equals(entity.getUUID())) continue;
                 Object hit = raycastSingle(level, from, to, entity);
                 if (hit instanceof ContraptionHit ch) {
-                    LOG.info("[ctb] raycast: HIT on entity at {}! worldPos={} hitLoc={}", entity.position(), ch.worldPos(), ch.hitLocation());
+                    LOG.debug("[ctb] raycast: HIT on entity at {}! worldPos={} hitLoc={}", entity.position(), ch.worldPos(), ch.hitLocation());
                     double distSq = from.distanceToSqr(ch.hitLocation());
                     if (distSq < bestDistSq) {
                         bestDistSq = distSq;
