@@ -69,6 +69,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.ConfigValue<String> HITCAM_PIP_PARTICLES;
     public static final ForgeConfigSpec.DoubleValue HITCAM_PIP_TERRAIN_ALPHA;
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_TERRAIN_XRAY;
+    public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_SALVO_SHELLS;
 
     public static final ForgeConfigSpec.DoubleValue XRAY_PATH_THICKNESS;
     public static final ForgeConfigSpec.DoubleValue XRAY_PLATE_THICKNESS;
@@ -157,6 +158,7 @@ public final class TBConfig {
         HITCAM_PIP_PARTICLES = server.comment("Particles inside the hitcam picture-in-picture window. NONE = no particles (old behaviour). FILTERED = hide only smoke-family particles (class names containing 'smoke' or 'plume': cannon muzzle plumes, smoke trails, breech smoke, vanilla smoke) so explosions, fire, cook-off and debris stay visible. ALL = show every particle.").defineInList("hitcamPipParticles", "FILTERED", List.of("NONE", "FILTERED", "ALL"));
         HITCAM_PIP_TERRAIN_ALPHA = server.comment("X-ray view: opacity of the ship's own terrain blocks inside the terminal picture-in-picture (0.5 = half-transparent ghost). Only ship chunks are ghosted; world terrain, entities and block entities (cannon barrels etc.) stay fully rendered. 1.0 disables the ghost.").defineInRange("hitcamPipTerrainAlpha", 0.5, 0.05, 1.0);
         HITCAM_PIP_TERRAIN_XRAY = server.comment("X-ray view: while ship terrain is ghosted, skip its depth writes so hull interiors and the turrets/barrels behind them show through the hull, War-Thunder style. False keeps proper depth occlusion (a ghosted hull hides what is directly behind it).").define("hitcamPipTerrainXray", true);
+        HITCAM_PIP_SALVO_SHELLS = server.comment("Show the OTHER shells of a salvo/broadside inside the hitcam picture-in-picture as relay-fed ghosts, so a dozen-shell salvo does not collapse to just the focused shell once the others leave client tracking range.").define("hitcamPipSalvoShells", true);
         server.pop();
 
         SERVER_SPEC = server.build();

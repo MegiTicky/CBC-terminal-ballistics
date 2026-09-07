@@ -434,6 +434,7 @@ public final class ClientHitcamPiP {
             if (!rendered && ClientTerminalView.liveFlightActive(partialTick)) {
                 renderGhostStreak(mc, camera, partialTick, viewPose);
             }
+            renderSalvoGhosts(mc, camera, partialTick, viewPose);
             return;
         }
         if (ClientHitcam.isArtillery()) {
@@ -443,6 +444,7 @@ public final class ClientHitcamPiP {
             if (target == null) target = ghostShell;
             boolean rendered = target != null && renderEntity(mc, camera, target, partialTick, viewPose);
             if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
+            renderSalvoGhosts(mc, camera, partialTick, viewPose);
             return;
         }
         if (!ClientHitcam.isReplay()) return;
@@ -458,6 +460,11 @@ public final class ClientHitcamPiP {
      * cannot be resolved or throws so the caller can fall back.
      */
     private static boolean renderEntity(Minecraft mc, Camera camera, Entity entity, float partialTick, PoseStack viewPose) {
+        return renderEntity(mc, camera, entity, partialTick, viewPose, ClientHitcam.shellDir(), 1.0F);
+    }
+
+    private static boolean renderEntity(Minecraft mc, Camera camera, Entity entity, float partialTick, PoseStack viewPose,
+                                        Vec3 orientDir, float scaleMul) {
         if (mc.level == null) return false;
         Vec3 cam = camera.getPosition();
         // Render the manual model at the partial-tick interpolated position so
@@ -479,7 +486,7 @@ public final class ClientHitcamPiP {
             // CBC shells render as ~1-block block models regardless of caliber,
             // which reads huge in the slow PiP view, so the target is allowed to
             // shrink them; small-caliber entities still get lifted to be visible.
-            float scale = (float) Mth.clamp(0.55D / Math.max(longest, 0.05D), 0.45D, 2.5D);
+            float scale = (float) Mth.clamp(0.55D / Math.max(longest, 0.05D), 0.45D, 2.5D) * scaleMul;
             // Seed the pose with the PiP camera rotation, then offset to the
             // camera-relative shell position and lift the model. Entity models
             // bake their per-vertex matrix at buffer-build time, so without the
@@ -488,7 +495,7 @@ public final class ClientHitcamPiP {
             PoseStack pose = new PoseStack();
             pose.mulPoseMatrix(viewPose.last().pose());
             var buffers = mc.renderBuffers().bufferSource();
-            setGhostOrientation(entity, ClientHitcam.shellDir());
+            setGhostOrientation(entity, orientDir);
             pose.pushPose();
             pose.translate(rx, ry, rz);
             pose.scale(scale, scale, scale);
@@ -505,6 +512,74 @@ public final class ClientHitcamPiP {
             }
             return false;
         }
+    }
+
+    /**
+     * Draws the non-focused shells of a salvo/broadside as relay-fed ghosts, so
+     * a dozen-shell salvo does not collapse to one shell once the rest leave
+     * client tracking range. Each entry in the salvo registry is extrapolated
+     * from its last server relay the same way the artillery ghost is. A shell
+     * whose client entity still exists is skipped — the world pass drew the
+     * real one this frame.
+     */
+    private static void renderSalvoGhosts(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
+        if (!TBConfig.HITCAM_PIP_SALVO_SHELLS.get()) return;
+        var registry = ClientHitcam.salvoGhosts();
+        if (registry.isEmpty() || mc.level == null) return;
+        for (var entry : registry.entrySet()) {
+            ClientHitcam.SalvoGhost relay = entry.getValue();
+            if (relay.typeKey.isEmpty()) continue;
+            if (mc.level.getEntity(entry.getKey()) != null) continue;
+            Entity model = pooledSalvoShell(mc, relay.typeKey);
+            if (model == null) continue;
+            long elapsed = mc.level.getGameTime() - relay.updateGameTime;
+            Vec3 pos = relay.pos.add(relay.vel.scale(Math.max(0.0D, elapsed + partialTick)));
+            Vec3 dir = relay.vel.lengthSqr() > 1.0e-6D ? relay.vel.normalize() : null;
+            parkGhost(mc, model, pos, dir);
+            renderEntity(mc, camera, model, partialTick, viewPose,
+                dir == null ? new Vec3(0, 1, 0) : dir, 0.7F);
+        }
+    }
+
+    /** Ghost shell entity per type key, so a mixed-caliber salvo needs one model each. */
+    private static final Map<String, Entity> salvoShellPool = new LinkedHashMap<>();
+
+    private static Entity pooledSalvoShell(Minecraft mc, String typeKey) {
+        Entity existing = salvoShellPool.get(typeKey);
+        if (existing != null && existing.level() == mc.level) return existing;
+        Entity created = null;
+        Optional<EntityType<?>> type = EntityType.byString(typeKey);
+        if (mc.level != null) {
+            try {
+                created = type.get().create(mc.level);
+            } catch (Throwable t) {
+                created = null;
+            }
+        }
+        salvoShellPool.put(typeKey, created);
+        // Bound the pool: a salvo realistically mixes one or two shell types.
+        while (salvoShellPool.size() > 8) {
+            var it = salvoShellPool.values().iterator();
+            it.next();
+            it.remove();
+        }
+        return created;
+    }
+
+    /** Parks a pooled ghost at an exact world position, oriented along dir. */
+    private static void parkGhost(Minecraft mc, Entity model, Vec3 pos, Vec3 dir) {
+        model.setPos(pos.x, pos.y, pos.z);
+        model.xOld = model.xo = pos.x;
+        model.yOld = model.yo = pos.y;
+        model.zOld = model.zo = pos.z;
+        Vec3 d = dir != null ? dir : new Vec3(0, 1, 0);
+        float yaw = (float) Math.toDegrees(Math.atan2(-d.x, d.z));
+        float pitch = (float) Math.toDegrees(-Math.asin(Mth.clamp(d.y, -1.0D, 1.0D)));
+        model.setYRot(yaw);
+        model.setXRot(pitch);
+        model.yRotO = yaw;
+        model.xRotO = pitch;
+        setGhostOrientation(model, d);
     }
 
     /** Sets the CBC projectile orientation field on a ghost shell (package-visible for ClientTerminalView). */

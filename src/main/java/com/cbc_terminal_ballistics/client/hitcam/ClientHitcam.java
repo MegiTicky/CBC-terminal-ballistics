@@ -12,7 +12,10 @@ import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Client-side hitcam state. Three mutually exclusive modes, newest event wins:
@@ -57,6 +60,24 @@ public final class ClientHitcam {
     private static int artilleryGraceTicks;
     /** Game time of the last relay packet with live data; keeps streamed terrain cached a moment past view-mode flickers. */
     private static long lastArtilleryRelayGameTime = Long.MIN_VALUE;
+
+    /**
+     * One non-focused shell of a salvo, as relayed by the server. The vanilla
+     * tracker despawns these client-side once they leave tracking range; the
+     * relay keeps enough state to draw them as ghosts in the PiP.
+     */
+    public static final class SalvoGhost {
+        public String typeKey = "";
+        public Vec3 pos = Vec3.ZERO;
+        public Vec3 vel = Vec3.ZERO;
+        public long updateGameTime;
+    }
+
+    /** Relays after which a silent salvo ghost is dropped. */
+    private static final int SALVO_GHOST_TIMEOUT_TICKS = 20;
+    /** Hard cap on concurrently drawn salvo ghosts; the oldest entry gives way. */
+    private static final int SALVO_GHOST_CAP = 24;
+    private static final Map<Integer, SalvoGhost> salvoGhosts = new LinkedHashMap<>();
 
     public static void start(String typeKey, List<HitcamSample> recorded, String summary) {
         if (recorded.size() < 2) return;
@@ -111,6 +132,7 @@ public final class ClientHitcam {
         artilleryEntityId = -1;
         artilleryGraceTicks = 0;
         clearArtilleryGhost();
+        salvoGhosts.clear();
         ArtilleryChunkCache.setActive(false);
         ClientTerminalView.clear();
         resetReplay();
@@ -126,6 +148,29 @@ public final class ClientHitcam {
     /** Server relay: authoritative shell state from beyond tracking range. */
     public static void onArtilleryUpdate(int entityId, String typeKey, Vec3 pos, Vec3 vel, boolean removed) {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
+        Minecraft mc = Minecraft.getInstance();
+        long now = mc.level != null ? mc.level.getGameTime() : 0L;
+        // Salvo registry: record EVERY shell's relay, not just the focused
+        // one — this is the only data that survives past client tracking
+        // range, and it is what keeps a broadside looking like a broadside.
+        if (removed) {
+            salvoGhosts.remove(entityId);
+        } else {
+            SalvoGhost ghost = salvoGhosts.get(entityId);
+            if (ghost == null) {
+                ghost = new SalvoGhost();
+                salvoGhosts.put(entityId, ghost);
+                while (salvoGhosts.size() > SALVO_GHOST_CAP) {
+                    Iterator<Integer> keys = salvoGhosts.keySet().iterator();
+                    keys.next();
+                    keys.remove();
+                }
+            }
+            ghost.typeKey = typeKey == null ? "" : typeKey;
+            ghost.pos = pos;
+            ghost.vel = vel;
+            ghost.updateGameTime = now;
+        }
         if (removed) {
             // Only the followed shell's death may end the view. Removal notices
             // for other shells (e.g. an older one expiring somewhere else) must
@@ -145,9 +190,19 @@ public final class ClientHitcam {
         artilleryGhostPos = pos;
         artilleryGhostVel = vel;
         artilleryGhostAlive = true;
-        Minecraft mc = Minecraft.getInstance();
-        artilleryGhostUpdateGameTime = mc.level != null ? mc.level.getGameTime() : 0L;
-        lastArtilleryRelayGameTime = artilleryGhostUpdateGameTime;
+        artilleryGhostUpdateGameTime = now;
+        lastArtilleryRelayGameTime = now;
+    }
+
+    /** Live non-focused salvo shells for the PiP ghost pass. */
+    public static Map<Integer, SalvoGhost> salvoGhosts() {
+        return salvoGhosts;
+    }
+
+    /** Drops salvo ghosts gone quiet past the relay timeout. */
+    private static void pruneSalvoGhosts(Minecraft mc) {
+        long now = mc.level.getGameTime();
+        salvoGhosts.values().removeIf(g -> now - g.updateGameTime > SALVO_GHOST_TIMEOUT_TICKS);
     }
 
     /**
@@ -269,6 +324,7 @@ public final class ClientHitcam {
             return;
         }
         updateTerrainCache(mc);
+        pruneSalvoGhosts(mc);
         // Live toggle-off: the client master switch closes any running
         // automatic view immediately (the replay view is user-initiated and
         // unaffected).
