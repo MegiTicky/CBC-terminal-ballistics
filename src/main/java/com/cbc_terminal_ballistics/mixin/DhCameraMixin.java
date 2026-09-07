@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.mixin;
 
 import com.cbc_terminal_ballistics.client.hitcam.DistantHorizonsCompat;
+import com.cbc_terminal_ballistics.config.TBConfig;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
@@ -43,5 +44,27 @@ public abstract class DhCameraMixin {
         if (vec != null) {
             cir.setReturnValue(vec);
         }
+    }
+
+    /**
+     * DH hides its LOD terrain inside the vanilla render distance: the terrain
+     * shader clips fragments within renderDistance*16*overdraw+16 blocks of
+     * the camera and the vanilla-fade gradient uses the same radius — correct
+     * for the main view, where vanilla terrain always covers that ring, but in
+     * the picture-in-picture only the streamed radius (default 2 chunks)
+     * exists around the shell, so everything up to ~300 blocks was a hole.
+     * Reporting the stream radius (minus the shader's extra 16-block margin)
+     * during the nested pass pulls that ring inside the streamed area; with
+     * terrain streaming disabled it reports 0, so DH fills the whole window.
+     */
+    @Inject(method = "getRenderDistance", at = @At("HEAD"), cancellable = true, remap = false, require = 0)
+    private void ctb$pipRenderDistance(CallbackInfoReturnable<Integer> cir) {
+        if (!DistantHorizonsCompat.shouldPatchCamera()) return;
+        // DH's terrain shader clips LOD fragments within renderDistance*16*overdraw+16
+        // blocks of the camera, so the reported distance must stay one chunk below
+        // the streamed radius for the clipped ring to remain covered by vanilla.
+        cir.setReturnValue(TBConfig.HITCAM_TERRAIN_STREAM.get()
+            ? Math.max(0, TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get() - 1)
+            : 0);
     }
 }
