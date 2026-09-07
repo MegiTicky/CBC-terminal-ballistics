@@ -54,10 +54,27 @@ public final class CBCReflect {
         }
     }
 
+    /** One-shot WARN per class for fuzed projectiles without a matchable onImpact. */
+    private static final java.util.Set<String> ON_IMPACT_WARNED = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Invokes the projectile's {@code onImpact(HitResult, ImpactResult,
+     * ProjectileContext)} so fuze logic sees TB-handled impacts. Matched by
+     * name + arity + runtime-assignable parameters: exact-class lookup breaks
+     * for mods that pass a context SUBCLASS (CBC:MW's MWProjectileContext),
+     * which silently disconnected every MW fuze from TB.
+     */
     public static boolean callOnImpact(Entity projectile, HitResult hit, Object impactResult, Object context) {
         try {
-            Method m = findMethod(projectile.getClass(), "onImpact", HitResult.class, impactResult.getClass(), context.getClass());
-            if (m == null) return false;
+            Method m = findCompatibleMethod(projectile.getClass(), "onImpact", hit, impactResult, context);
+            if (m == null) {
+                if (hasFuze(projectile) && ON_IMPACT_WARNED.add(projectile.getClass().getName())) {
+                    CBCTerminalBallistics.LOGGER.warn(
+                        "Fuzed projectile {} has no matchable onImpact method; fuze impact triggers are skipped",
+                        projectile.getClass().getName());
+                }
+                return false;
+            }
             m.setAccessible(true);
             Object r = m.invoke(projectile, hit, impactResult, context);
             return r instanceof Boolean b && b;
@@ -65,6 +82,25 @@ public final class CBCReflect {
             CBCTerminalBallistics.LOGGER.debug("Failed to call CBC onImpact", ex);
             return false;
         }
+    }
+
+    /** Walks the hierarchy for a method by name whose declared parameters accept the runtime arguments. */
+    private static Method findCompatibleMethod(Class<?> c, String name, Object... args) {
+        for (Class<?> cur = c; cur != null; cur = cur.getSuperclass()) {
+            for (Method m : cur.getDeclaredMethods()) {
+                if (!m.getName().equals(name) || m.getParameterCount() != args.length) continue;
+                Class<?>[] pts = m.getParameterTypes();
+                boolean compatible = true;
+                for (int i = 0; i < pts.length; i++) {
+                    if (args[i] != null && !pts[i].isInstance(args[i])) {
+                        compatible = false;
+                        break;
+                    }
+                }
+                if (compatible) return m;
+            }
+        }
+        return null;
     }
 
 

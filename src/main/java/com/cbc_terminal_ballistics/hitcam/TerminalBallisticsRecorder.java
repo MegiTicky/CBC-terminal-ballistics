@@ -7,6 +7,7 @@ import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundTrackProjectilePacket;
 import com.cbc_terminal_ballistics.network.TBNetwork;
+import com.cbc_terminal_ballistics.util.CBCReflect;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import com.cbc_terminal_ballistics.util.VSCompat;
 import net.minecraft.core.BlockPos;
@@ -93,6 +94,8 @@ public final class TerminalBallisticsRecorder {
         Vec3 blastPos;
         float blastRadius;
         boolean explosiveShell;
+        /** Explosive shell by the predefined name list ({@link ProjectileClassifier#isExplosiveShell}); gates blast synthesis. */
+        boolean heShell;
         /** Game time of the last immediate snapshot send, for rate limiting. */
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
@@ -235,6 +238,8 @@ public final class TerminalBallisticsRecorder {
         Session session = new Session();
         session.bound = projectile;
         session.audience = audience;
+        session.heShell = ProjectileClassifier.isExplosiveShell(projectile);
+        session.explosiveShell = session.heShell && !ProjectileClassifier.isApheType(projectile);
         SESSIONS.put(projectile.getUUID(), session);
         if (TBConfig.HITCAM_ARTILLERY_CAM.get()) {
             send(audience, new ClientboundTrackProjectilePacket(projectile.getId()));
@@ -477,6 +482,39 @@ public final class TerminalBallisticsRecorder {
         session.dirty = false;
     }
 
+    /**
+     * The simplified HE pipeline: an explosive shell (predefined name list)
+     * carrying a fuze whose flight ends WITHOUT a real detonation still gets a
+     * blast in the x-ray — synthesized at its terminal position, sized by
+     * caliber. CBC impact fuzes are probabilistic, so dud shells are common;
+     * without this the HE view work had nothing to render. A real detonation
+     * records first ({@link #onShellExplosion}) and wins.
+     */
+    private static void syntheticBlast(Session session, Entity projectile) {
+        if (session.blastPos != null || !session.heShell || !CBCReflect.hasFuze(projectile)) return;
+        Vec3 center = projectile.position();
+        session.blastPos = normalizePoint(projectile, center);
+        session.blastRadius = caliberBlastRadius(projectile);
+        session.dataVersion++;
+        session.dirty = true;
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] synthetic HE blast shell={} tick={} radius={} at ({},{},{})",
+            projectile.getId(), projectile.tickCount, session.blastRadius,
+            (long) Math.floor(center.x), (long) Math.floor(center.y), (long) Math.floor(center.z));
+    }
+
+    /** Stylized blast radius per caliber, scaled by {@code hitcamBlastRadiusScale}. */
+    private static float caliberBlastRadius(Entity projectile) {
+        return switch (ProjectileClassifier.classify(projectile, false)) {
+            case AUTOCANNON -> 1.2F;
+            case HEAVY_AUTOCANNON -> 1.5F;
+            case SMALL -> 1.8F;
+            case SMALL_MEDIUM -> 2.2F;
+            case MEDIUM -> 3.0F;
+            case BIG -> 4.5F;
+        } * TBConfig.HITCAM_BLAST_RADIUS_SCALE.get().floatValue();
+    }
+
     private static void recordEntityHit(Entity projectile, LivingEntity target, float damage, boolean killed) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
@@ -575,6 +613,10 @@ public final class TerminalBallisticsRecorder {
                 CBCTerminalBallistics.LOGGER.info(
                     "[CTB-CHUNKSTREAM] shell {} removed server-side: reason={} at {}",
                     projectile.getId(), projectile.getRemovalReason(), projectile.position());
+                // Explosive shell whose flight ended without a real detonation
+                // (fuze rolled a dud, or the fuze never saw the impact):
+                // synthesize the blast so the HE pipeline always renders it.
+                syntheticBlast(session, projectile);
                 // Pass-through terminal flush (formerly on the entity-leave
                 // event, which also fires client-side): a shell that recorded
                 // events but never snapshotted gets its x-ray here. A shell

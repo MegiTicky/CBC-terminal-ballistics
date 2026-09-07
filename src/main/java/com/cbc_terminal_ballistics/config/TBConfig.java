@@ -70,6 +70,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.DoubleValue HITCAM_PIP_TERRAIN_ALPHA;
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_TERRAIN_XRAY;
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_SALVO_SHELLS;
+    public static final ForgeConfigSpec.DoubleValue HITCAM_BLAST_RADIUS_SCALE;
 
     public static final ForgeConfigSpec.DoubleValue XRAY_PATH_THICKNESS;
     public static final ForgeConfigSpec.DoubleValue XRAY_PLATE_THICKNESS;
@@ -159,6 +160,7 @@ public final class TBConfig {
         HITCAM_PIP_TERRAIN_ALPHA = server.comment("X-ray view: opacity of the ship's own terrain blocks inside the terminal picture-in-picture (0.5 = half-transparent ghost). Only ship chunks are ghosted; world terrain, entities and block entities (cannon barrels etc.) stay fully rendered. 1.0 disables the ghost.").defineInRange("hitcamPipTerrainAlpha", 0.5, 0.05, 1.0);
         HITCAM_PIP_TERRAIN_XRAY = server.comment("X-ray view: while ship terrain is ghosted, skip its depth writes so hull interiors and the turrets/barrels behind them show through the hull, War-Thunder style. False keeps proper depth occlusion (a ghosted hull hides what is directly behind it).").define("hitcamPipTerrainXray", true);
         HITCAM_PIP_SALVO_SHELLS = server.comment("Show the OTHER shells of a salvo/broadside inside the hitcam picture-in-picture as relay-fed ghosts, so a dozen-shell salvo does not collapse to just the focused shell once the others leave client tracking range.").define("hitcamPipSalvoShells", true);
+        HITCAM_BLAST_RADIUS_SCALE = server.comment("Terminal view: scale for the synthesized HE blast (an explosive shell that ends its flight without a real detonation still gets a blast in the x-ray, sized by caliber x this multiplier). Real detonations use their actual explosion radius.").defineInRange("hitcamBlastRadiusScale", 1.0, 0.25, 4.0);
         server.pop();
 
         SERVER_SPEC = server.build();
