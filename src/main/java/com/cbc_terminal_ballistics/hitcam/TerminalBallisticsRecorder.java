@@ -836,17 +836,9 @@ public final class TerminalBallisticsRecorder {
     }
 
     private static String buildSummary(Session session) {
-        int killed = 0;
-        for (ClientboundTerminalBallisticsPacket.EntityHit hit : session.entities) {
-            if (hit.killed()) killed++;
-        }
-        StringBuilder sb = new StringBuilder(classify(session));
-        if (session.hasCritical) sb.insert(0, "CRITICAL \u00b7 ");
-        sb.append(" \u00b7 ").append(session.plates.size()).append(session.plates.size() == 1 ? " plate" : " plates");
-        if (!session.entities.isEmpty()) {
-            sb.append(" \u00b7 ").append(session.entities.size()).append(" crew");
-            if (killed > 0) sb.append(" (").append(killed).append(" KIA)");
-        }
+        // Plate/crew counts were dropped: the status line overflowed the PiP
+        // window, and the top-left critical list already covers the details.
+        StringBuilder sb = new StringBuilder(session.hasCritical ? "CRITICAL HIT" : classify(session));
         if (!session.spalls.isEmpty()) {
             int fragments = 0;
             for (ClientboundTerminalBallisticsPacket.Spall cone : session.spalls) fragments += cone.fragments();
