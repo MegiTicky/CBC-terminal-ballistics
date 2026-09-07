@@ -86,6 +86,13 @@ public final class ClientTerminalView {
      * clock, which advances through lag and pause, and always wins.
      */
     private static final long MAX_STAGE_WALL_MS = 90_000L;
+    /**
+     * Wall-clock quiet margin (ms) added on top of the configured quiet hold
+     * for the {@code lastPacketMillis} backstop: covers one animation's length
+     * plus the fade. The quiet hold itself is scaled from the config below so
+     * long-hold setups keep their long hold.
+     */
+    private static final long QUIET_WALL_MARGIN_MS = 3_000L;
 
     /**
      * One shell's contribution to the stage. {@code primary} is the first
@@ -140,6 +147,13 @@ public final class ClientTerminalView {
     private static long startTick;
     /** Client wall clock (ms) when the stage started; backs the hard expiry in {@link #expired()}. */
     private static long stageStartMillis;
+    /**
+     * Client wall clock (ms) of the most recent packet intake (start, merge,
+     * same-shell refinement, restart). The quiet backstop in {@link #expired()}
+     * measures silence from here, so a lag-frozen or paused view still closes
+     * a few real seconds after the LAST shell's data arrived.
+     */
+    private static long lastPacketMillis;
     /** Client level the stage started in; a dimension change expires the stage (each level has its own game-time clock). */
     private static ResourceKey<Level> stageDim;
     /**
@@ -249,6 +263,7 @@ public final class ClientTerminalView {
      * current animation finishes, then restarts the view on it.
      */
     public static void accept(ClientboundTerminalBallisticsPacket packet) {
+        lastPacketMillis = Util.getMillis();
         if (!actors.isEmpty()) {
             // Same-shell refinement: replace the actor's packet in place.
             for (int i = 0; i < actors.size(); i++) {
@@ -536,10 +551,17 @@ public final class ClientTerminalView {
         // started on the old clock would otherwise age backwards and never end.
         if (mc.level == null || stageDim == null || mc.level.dimension() != stageDim) return true;
         if (mc.level.getGameTime() < startTick) return true;
-        // Wall-clock backstop: game ticks freeze under TPS collapse and pause,
-        // which would otherwise hold the view (and the burst-hold artillery
-        // guard) open for minutes of real time.
-        if (Util.getMillis() - stageStartMillis > MAX_STAGE_WALL_MS) return true;
+        // Wall-clock backstops. Game ticks freeze under TPS collapse and
+        // pause, which would otherwise hold the view (and the burst-hold
+        // artillery guard) open for minutes of real time. The quiet window
+        // measures silence since the LAST packet — the view must clear a few
+        // real seconds after the final shell's data no matter how slow the
+        // tick clock runs — and scales from the configured quiet hold so
+        // long-hold setups keep theirs. The absolute stage cap bounds a stage
+        // that somehow keeps its quiet window refreshed forever.
+        long now = Util.getMillis();
+        if (now - lastPacketMillis > quietWallMs()) return true;
+        if (now - stageStartMillis > MAX_STAGE_WALL_MS) return true;
         return ageTicks() >= endTick;
     }
 
@@ -558,6 +580,16 @@ public final class ClientTerminalView {
 
     private static int burstQuietTicks() {
         return Math.max(10, TBConfig.HITCAM_TERMINAL_BURST_QUIET_TICKS.get());
+    }
+
+    /**
+     * Wall-clock silence that must follow the last packet before the view is
+     * force-expired regardless of the (possibly frozen) tick clock: the
+     * configured quiet hold converted to real time plus a margin for one
+     * animation and the fade.
+     */
+    private static long quietWallMs() {
+        return (long) burstQuietTicks() * 50L + FADE_TICKS * 50L + QUIET_WALL_MARGIN_MS;
     }
 
     private static int burstActors() {
