@@ -425,9 +425,15 @@ public final class ClientHitcamPiP {
     private static void renderGhost(Minecraft mc, Camera camera, float partialTick, PoseStack viewPose) {
         if (ClientHitcam.isTerminal()) {
             // Animated replay: the actual shell model flies the recorded path.
+            // The streak fallback only ever shows while a shell is genuinely in
+            // flight — once the fly-in is over, no stroke may outlive the
+            // diagram's own fade (a lingering full-bright streak at the impact
+            // point used to ignore every per-shell fade).
             Entity ghost = ClientTerminalView.ghost(partialTick);
             boolean rendered = ghost != null && renderEntity(mc, camera, ghost, partialTick, viewPose);
-            if (!rendered) renderGhostStreak(mc, camera, partialTick, viewPose);
+            if (!rendered && ClientTerminalView.liveFlightActive(partialTick)) {
+                renderGhostStreak(mc, camera, partialTick, viewPose);
+            }
             return;
         }
         if (ClientHitcam.isArtillery()) {

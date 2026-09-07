@@ -35,12 +35,15 @@ import java.util.UUID;
  *
  * <p>The view is a <b>stage</b> holding one {@link Actor} per shell. The first
  * actor is the <em>primary</em>: it owns the camera (orbit center, azimuth,
- * close-up) and the anchor, and later shells from the SAME vehicle merge in as
- * secondary actors that play their own fly-in/spall beats into the same
- * diagram without ever moving the camera. A shell that hits while nothing is
- * playing starts a fresh stage. Each actor carries its own timeline arrays,
- * offset to the stage clock so its animation plays when its own packet
- * arrives.
+ * close-up) and the anchor, and when a view opens from rest it plays a full
+ * cinematic fly-in of its recorded path. Later shells from the SAME vehicle
+ * merge in as secondary actors that have ALREADY hit by the time their packet
+ * arrives, so they pop their impact marks (plates, spall, crew) onto the
+ * running diagram the tick they land — no queued fly-in, their own fade timer,
+ * so a sustained autocannon burst reads as an overlapping mess of fresh
+ * impacts. A shell that hits while nothing is playing starts a fresh stage.
+ * Each actor carries its own timeline arrays, offset to the stage clock so its
+ * content plays when its own packet arrives.
  */
 public final class ClientTerminalView {
     /** Fraction of the view duration spent turning; the rest holds the framing. */
@@ -70,8 +73,6 @@ public final class ClientTerminalView {
     private static final double CLOSEUP_TICKS = 20.0D;
     /** Fraction of the orbit radius removed at the closest point of the close-up. */
     private static final double CLOSEUP_FRACTION = 0.28D;
-    /** Gap (ticks) between the previous shell's impact and the next actor's fly-in start. */
-    private static final double ACTOR_GAP_TICKS = 6.0D;
     /** Minimum fade-out length once the stage really ends (also each shell's own fade). */
     private static final double FADE_TICKS = 20.0D;
     /** Hard ceiling on one stage's life in ticks: no arrival pattern may pin the view open. */
@@ -90,6 +91,13 @@ public final class ClientTerminalView {
     static final class Actor {
         ClientboundTerminalBallisticsPacket packet;
         final boolean primary;
+        /**
+         * Post-impact actor: the shell had already landed when it merged onto
+         * the stage, so its content pops in place at {@link #startTick} — no
+         * replayed flight path, no ghost tracer. False for the primary (a view
+         * opening from rest replays the full cinematic fly-in).
+         */
+        boolean immediate;
         /** Stage tick the actor's animation (shell flight, flashes, growth) starts. */
         double startTick;
         /** Stage tick at which this actor's animation has fully played. */
@@ -219,14 +227,15 @@ public final class ClientTerminalView {
      * Accept a terminal packet. A packet whose projectile id matches an actor
      * already on stage refines that actor in place (a shell that hit several
      * plates in a row dispatches cumulative snapshots under one id — the
-     * diagram grows, the fly-in never replays). A NEW shell whose anchor is
-     * compatible with the current primary merges as a secondary actor while the
-     * stage is alive and under the actor cap (burst accumulation, config
-     * {@code hitcamTerminalMergeBurst}); its fly-in starts just after the
-     * previous shell's impact (promptly, so a stream of hits renders as they
-     * land), and a not-yet-flown queued shell is superseded by an even newer
-     * one so the queue never backs up. Anything else waits until the current
-     * animation finishes, then restarts the view on it.
+     * diagram grows, the shell never re-pops). A NEW shell whose anchor is
+     * compatible with the current primary merges as a secondary actor for as
+     * long as the stage is alive (burst accumulation, config
+     * {@code hitcamTerminalMergeBurst}). Merging is CONCURRENT, never queued:
+     * the shell has already hit, so its marks start the tick it arrives, with
+     * its own fade timer — at high RPM the diagram becomes an overlapping mess
+     * of fresh plates/spalls instead of shells waiting behind an earlier
+     * animation. Anything else (different vehicle, burst off) waits until the
+     * current animation finishes, then restarts the view on it.
      */
     public static void accept(ClientboundTerminalBallisticsPacket packet) {
         if (!actors.isEmpty()) {
@@ -238,35 +247,21 @@ public final class ClientTerminalView {
                 }
             }
             // Drop secondary actors whose per-shell diagram has fully faded, so
-            // a long burst stream keeps merging instead of hitting the actor cap.
+            // a long burst stream keeps merging instead of filling the actor cap.
             pruneFadedActors();
             if (ageTicks() < endTick) {
-                // A compatible shell from the same vehicle merges whenever the
-                // stage is open (even while another actor animates — its fly-in
-                // simply queues after the current shell's impact, so an
-                // autocannon burst reads as shells arriving one after another).
-                // Newest-wins queue: a not-yet-flown queued shell is superseded
-                // by the arriving one (replacing keeps the actor count flat, so
-                // it is allowed even at the actor cap), so the backlog never
-                // grows and every hit renders promptly.
-                Actor last = actors.get(actors.size() - 1);
-                boolean replaceQueued = actors.size() > 1 && last.startTick > ageTicks();
-                boolean mergeable = TBConfig.HITCAM_TERMINAL_BURST.get()
-                    && (actors.size() < burstActors() || replaceQueued)
+                boolean burst = burstEnabled();
+                boolean mergeable = burst && burstActors() > 1
                     && anchorsCompatible(actors.get(0).packet.anchor(), packet.anchor());
                 if (mergeable) {
-                    if (replaceQueued) {
-                        CBCTerminalBallistics.LOGGER.info(
-                            "[CTB-HITCAM] burst queue replaced shell={} (superseded before its fly-in)",
-                            last.packet.projectileId());
-                        actors.remove(actors.size() - 1);
-                    }
+                    // Concurrent burst: pop this shell's marks onto the running
+                    // diagram right now, overlapping whatever is still showing.
                     addActor(packet);
                     return;
                 }
                 if (ageTicks() < stageBusyEndTick()) {
-                    // A different-vehicle shell (or over-cap) mid-animation must
-                    // wait until every actor's fly-in has played — cutting an
+                    // A different-vehicle shell (or burst off) mid-animation must
+                    // wait until every actor's content has played — cutting an
                     // animation already on screen reads as a glitch.
                     park(packet, "animation still playing");
                     return;
@@ -282,9 +277,9 @@ public final class ClientTerminalView {
     /**
      * Removes secondary actors whose per-shell diagram has fully faded, so a
      * long burst stream keeps merging into the running stage instead of
-     * hitting the actor cap (which would restart the view and yank the camera).
-     * The primary (owns the anchor/camera) and the newest actor (closes the
-     * view) are always kept.
+     * filling the actor cap (which would otherwise force dropping shells that
+     * still have content to show). The primary (owns the anchor/camera) and
+     * the newest actor (holds the view open for the close) are always kept.
      */
     private static void pruneFadedActors() {
         if (actors.size() <= 1) return;
@@ -337,17 +332,33 @@ public final class ClientTerminalView {
         }
     }
 
-    /** A new shell merged onto the running stage. */
+    /**
+     * A new shell merged onto the running stage. The shell has ALREADY hit —
+     * packets are dispatched at the first armour plate strike — so the actor is
+     * post-impact ({@code immediate}): it starts this tick and its plates,
+     * spall and crew marks pop onto the diagram as the beats of a short static
+     * timeline play, then fade on the actor's own timer. Nothing is queued
+     * behind earlier content and nothing replays a flight, so a sustained
+     * autocannon burst renders as an overlapping mess of fresh impacts.
+     */
     private static void addActor(ClientboundTerminalBallisticsPacket packet) {
         Actor actor = new Actor(packet, false);
-        // Near-real-time pacing: the next tracer starts just after the most
-        // recent impact among replays already under way, so a stream of hits
-        // renders as shells landing one after another — not queued behind the
-        // whole backlog of previous animations (which delayed follow-ups by
-        // many seconds and read as "new shells don't render until I stop").
-        actor.startTick = nextFlyInStartTick();
+        actor.immediate = true;
+        actor.startTick = ageTicks();
         actors.add(actor);
         buildTimeline(actor);
+        // Rolling window at the actor cap: drop whichever finished secondary is
+        // only holding on screen (else the oldest secondary), so the newest hit
+        // always renders and the view never restarts mid-burst (which would yank
+        // the camera). pruneFadedActors may already have freed a slot.
+        while (actors.size() > burstActors()) {
+            int drop = indexOfExpendableSecondary();
+            if (drop < 1) break; // no secondary worth dropping; keep the newest
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] burst actor {} dropped for shell={} (cap {})",
+                drop, actors.get(drop).packet.projectileId(), burstActors());
+            actors.remove(drop);
+        }
         CBCTerminalBallistics.LOGGER.info(
             "[CTB-HITCAM] burst merged shell={} onto view shell={} (actor {} of {})",
             packet.projectileId(), actors.get(0).packet.projectileId(),
@@ -357,33 +368,31 @@ public final class ClientTerminalView {
     }
 
     /**
-     * Stage tick at which the next merged shell's fly-in starts: just after
-     * the most recent impact of any actor whose replay has already begun,
-     * plus a small gap. Once the previous shell has already landed, a new
-     * arrival starts flying next tick (immediate); while one is still on its
-     * way the tracer waits until that shell visibly impacts, so tracers read
-     * one at a time.
+     * Picks the secondary actor with the least to lose when the actor cap is
+     * exceeded: a secondary whose per-shell diagram is already fully faded (its
+     * content is only holding), else the oldest secondary — never the primary
+     * (owns the anchor/camera) and never the newest actor (this shell closes
+     * the view). Returns -1 when no secondary is droppable.
      */
-    private static double nextFlyInStartTick() {
+    private static int indexOfExpendableSecondary() {
         long age = ageTicks();
-        double latestImpact = Double.NEGATIVE_INFINITY;
-        for (Actor actor : actors) {
-            if (actor.startTick <= age) {
-                latestImpact = Math.max(latestImpact, actor.startTick + actor.impactTime);
-            }
+        for (int i = 1; i < actors.size() - 1; i++) {
+            if (age >= actorFadeStartTick(actors.get(i)) + FADE_TICKS) return i;
         }
-        if (latestImpact == Double.NEGATIVE_INFINITY) return age + 1.0D;
-        return Math.max(latestImpact + ACTOR_GAP_TICKS, age + 1.0D);
+        return actors.size() <= 2 ? -1 : 1;
     }
 
     /**
      * Stage tick at which this actor's per-shell diagram fade begins: once its
      * whole animation has played out plus the burst quiet hold measured from
      * its impact (whichever is later), so a fast shell's marks hold for the
-     * quiet window even when a follow-up has already taken over the stage.
+     * quiet window even when a follow-up has already taken over the stage. A
+     * post-impact actor has ALREADY hit when it starts (its "impact" is its
+     * start tick), so its quiet hold runs straight from arrival.
      */
     private static double actorFadeStartTick(Actor actor) {
-        return Math.max(actor.animEndTick, actor.startTick + actor.impactTime + burstQuietTicks());
+        double impact = actor.immediate ? 0.0D : actor.impactTime;
+        return Math.max(actor.animEndTick, actor.startTick + impact + burstQuietTicks());
     }
 
     /**
@@ -459,6 +468,11 @@ public final class ClientTerminalView {
             for (Actor actor : actors) {
                 rel = Math.max(rel, actor.animEndTick + burstQuietTicks());
             }
+            // A still-running stream must never let the stage expire under
+            // itself: every recompute (pruning, cap drops) keeps a floor of the
+            // current age plus the fade window, so an arriving shell always
+            // finds the stage alive and merges instead of restarting it.
+            rel = Math.max(rel, ageTicks() + FADE_TICKS);
         }
         long maxRel = Math.max((long) baseDuration() * 3L, MAX_STAGE_TICKS);
         endTick = startTick + Math.min((long) Math.ceil(rel), maxRel);
@@ -752,8 +766,19 @@ public final class ClientTerminalView {
 
     private static void buildTimeline(Actor actor) {
         List<HitcamSample> recorded = actor.packet.path();
-        actor.trimmedPath = trimPath(recorded);
-        actor.hasPath = actor.trimmedPath.size() >= 2;
+        if (actor.immediate) {
+            // Post-impact actor: the shell had already landed when its packet
+            // arrived, so there is no flight to replay. The appear delays are
+            // computed below as if the path did not exist — every plate it
+            // struck pops at once (all plates hit at impact), spall cones grow
+            // in sequence from arrival, and the marks fade on the actor's own
+            // timer, overlapping earlier shells (the concurrent-burst design).
+            actor.trimmedPath = List.of();
+            actor.hasPath = false;
+        } else {
+            actor.trimmedPath = trimPath(recorded);
+            actor.hasPath = actor.trimmedPath.size() >= 2;
+        }
         actor.flightTicks = 0.0D;
         actor.totalLen = 0.0D;
         actor.pathCumLen = null;
@@ -1098,8 +1123,8 @@ public final class ClientTerminalView {
         float stageAge = age(partialTick);
         Actor live = liveFlightActor(stageAge);
         // The live actor's own frame while its shell is on screen; otherwise the
-        // primary's snapshot (which rests at the end of its path once it lands,
-        // keeping the streak/fallback anchored to the impact point).
+        // primary's resting end-of-path position (the PiP streak fallback draws
+        // only while a shell is actually in flight, so this is a safe default).
         Actor a = live != null ? live : primary;
         Timeline t = actorSnapshot(a, partialTick);
         return t == null ? null : t.shellPos;
@@ -1114,6 +1139,11 @@ public final class ClientTerminalView {
         Actor a = live != null ? live : primary;
         Timeline t = actorSnapshot(a, partialTick);
         return t == null ? Vec3.ZERO : t.shellDir;
+    }
+
+    /** True while some actor's shell model is actually in flight (a tracer should show). */
+    public static boolean liveFlightActive(float partialTick) {
+        return liveFlightActor(age(partialTick)) != null;
     }
 
     /**
