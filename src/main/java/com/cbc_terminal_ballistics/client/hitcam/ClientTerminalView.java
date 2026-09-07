@@ -9,6 +9,7 @@ import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.client.Minecraft;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.util.Mth;
+import net.minecraft.Util;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
@@ -77,6 +78,14 @@ public final class ClientTerminalView {
     private static final double FADE_TICKS = 20.0D;
     /** Hard ceiling on one stage's life in ticks: no arrival pattern may pin the view open. */
     private static final long MAX_STAGE_TICKS = 1200L;
+    /**
+     * Wall-clock ceiling on one stage's life, in milliseconds. The tick budget
+     * above ages in server ticks, so a TPS collapse (heavy ship battles) or a
+     * single-player pause — both freeze {@code getGameTime()} — can stretch a
+     * 6-second view into wall-clock minutes. This cap runs on the client millisecond
+     * clock, which advances through lag and pause, and always wins.
+     */
+    private static final long MAX_STAGE_WALL_MS = 90_000L;
 
     /**
      * One shell's contribution to the stage. {@code primary} is the first
@@ -129,6 +138,8 @@ public final class ClientTerminalView {
     /** All actors in arrival order; index 0 is the primary. */
     private static final List<Actor> actors = new ArrayList<>();
     private static long startTick;
+    /** Client wall clock (ms) when the stage started; backs the hard expiry in {@link #expired()}. */
+    private static long stageStartMillis;
     /** Client level the stage started in; a dimension change expires the stage (each level has its own game-time clock). */
     private static ResourceKey<Level> stageDim;
     /**
@@ -439,6 +450,7 @@ public final class ClientTerminalView {
         }
         Minecraft mc = Minecraft.getInstance();
         startTick = mc.level != null ? mc.level.getGameTime() : 0L;
+        stageStartMillis = Util.getMillis();
         stageDim = mc.level != null ? mc.level.dimension() : null;
         recomputeBounds();
         buildTimeline(primary);
@@ -524,6 +536,10 @@ public final class ClientTerminalView {
         // started on the old clock would otherwise age backwards and never end.
         if (mc.level == null || stageDim == null || mc.level.dimension() != stageDim) return true;
         if (mc.level.getGameTime() < startTick) return true;
+        // Wall-clock backstop: game ticks freeze under TPS collapse and pause,
+        // which would otherwise hold the view (and the burst-hold artillery
+        // guard) open for minutes of real time.
+        if (Util.getMillis() - stageStartMillis > MAX_STAGE_WALL_MS) return true;
         return ageTicks() >= endTick;
     }
 
