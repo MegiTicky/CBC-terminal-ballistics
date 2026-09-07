@@ -27,6 +27,8 @@
   ],
   "client": [
     "ClientChunkCacheMixin",
+    "DhCameraMixin",
+    "DhRenderSuppressMixin",
     "ParticleEngineMixin"
   ],
   "injectors": {

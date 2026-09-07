@@ -96,19 +96,34 @@ public final class ClientHitcamPiP {
             RENDERING_PIP.set(Boolean.TRUE);
             renderPipScene(mc, event.getPartialTick(), fullScene, packInUse && !fullScene);
         } catch (Throwable t) {
-            // A secondary full-scene pass can break under other mods' render hooks;
-            // the replay is cosmetic, so drop it instead of crashing the frame.
-            if (!failureLogged) {
-                failureLogged = true;
+            if (DistantHorizonsCompat.shouldPatchCamera() && DistantHorizonsCompat.markAttemptFailure()) {
+                // The throw happened while the Distant Horizons camera patch
+                // was active. Suppress DH inside the view and keep going next
+                // frame instead of tearing the replay down; if it still fails,
+                // the existing stop path below runs on the following throw.
+                if (mc.player != null) {
+                    mc.player.displayClientMessage(
+                        net.minecraft.network.chat.Component.literal(
+                            "CBCTB hitcam: Distant Horizons render failed in the view, suppressing DH LODs inside it for this session."), false);
+                }
                 org.slf4j.Logger log = com.mojang.logging.LogUtils.getLogger();
-                log.warn("CBCTB hitcam PiP render failed, replay stopped", t);
-                Minecraft.getInstance().player.displayClientMessage(
-                    net.minecraft.network.chat.Component.literal("CBCTB hitcam PiP render failed, replay stopped: "
-                        + t.getClass().getSimpleName() + ": " + t.getMessage()), false);
+                log.warn("CBCTB hitcam: DH camera patch failed, suppressing DH LODs inside the hitcam view", t);
+            } else {
+                // A secondary full-scene pass can break under other mods' render hooks;
+                // the replay is cosmetic, so drop it instead of crashing the frame.
+                if (!failureLogged) {
+                    failureLogged = true;
+                    org.slf4j.Logger log = com.mojang.logging.LogUtils.getLogger();
+                    log.warn("CBCTB hitcam PiP render failed, replay stopped", t);
+                    Minecraft.getInstance().player.displayClientMessage(
+                        net.minecraft.network.chat.Component.literal("CBCTB hitcam PiP render failed, replay stopped: "
+                            + t.getClass().getSimpleName() + ": " + t.getMessage()), false);
+                }
+                ClientHitcam.stop();
             }
-            ClientHitcam.stop();
         } finally {
             RENDERING_PIP.set(Boolean.FALSE);
+            DistantHorizonsCompat.endPipFrame();
             if (mainProjection != null) {
                 RenderSystem.setProjectionMatrix(mainProjection, mainSorting);
             }
@@ -150,6 +165,10 @@ public final class ClientHitcamPiP {
         double horiz = Math.sqrt(look.x * look.x + look.z * look.z);
         float yaw = (float) Math.toDegrees(Math.atan2(-look.x, look.z));
         float pitch = (float) Math.toDegrees(-Math.atan2(look.y, horiz));
+        // Feed the nested pass's camera to the Distant Horizons compat (its
+        // mixins read these while DH renders inside the pass below).
+        DistantHorizonsCompat.beginPipFrame(camPos,
+            look.lengthSqr() > 1.0E-8D ? look.normalize() : ClientHitcam.shellDir(partialTick));
         updateGhost(mc, partialTick);
 
         // Camera.setup dereferences the entity (view rot / eye pos lerp), so a
