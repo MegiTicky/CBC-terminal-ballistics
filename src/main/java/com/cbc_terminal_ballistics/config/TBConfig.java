@@ -170,11 +170,11 @@ public final class TBConfig {
         // matching the previous hard-coded ClientTerminalOverlay constants.
         XRAY_VIEW_ENABLED = client.comment("Master client-side switch for the automatic hitcam picture-in-picture views (artillery chase cam and terminal x-ray). When false no view opens on your client and any running view closes; recordings/criticals are unaffected server-side. The manual /cbctb hitcam replay is not affected.").define("viewEnabled", true);
         XRAY_PATH_THICKNESS = client.comment("Terminal x-ray: flight trajectory stroke thickness (GUI px on the PiP window).").defineInRange("pathThickness", 2.2, 0.5, 8.0);
-        XRAY_PLATE_THICKNESS = client.comment("Terminal x-ray: plate block wireframe and entity-hit box stroke thickness (GUI px).").defineInRange("plateThickness", 1.8, 0.5, 8.0);
-        XRAY_SPALL_THICKNESS = client.comment("Terminal x-ray: spall cone ray stroke thickness (GUI px).").defineInRange("spallThickness", 1.6, 0.5, 8.0);
-        XRAY_MARKER_SIZE = client.comment("Terminal x-ray: spall-hit marker dot diameter (GUI px). Lower for smaller hit particles.").defineInRange("markerSize", 4.5, 0.5, 12.0);
-        XRAY_IMPACT_CROSS_THICKNESS = client.comment("Terminal x-ray: final-impact cross stroke thickness (GUI px).").defineInRange("impactCrossThickness", 2.8, 0.5, 8.0);
-        XRAY_IMPACT_CROSS_SIZE = client.comment("Terminal x-ray: final-impact cross arm length in blocks.").defineInRange("impactCrossSize", 0.45, 0.1, 1.5);
+        XRAY_PLATE_THICKNESS = client.comment("Terminal x-ray: plate block wireframe and entity-hit box stroke thickness (GUI px).").defineInRange("plateThickness", 1.0, 0.5, 8.0);
+        XRAY_SPALL_THICKNESS = client.comment("Terminal x-ray: spall cone ray stroke thickness (GUI px).").defineInRange("spallThickness", 1.0, 0.5, 8.0);
+        XRAY_MARKER_SIZE = client.comment("Terminal x-ray: spall-hit marker dot diameter (GUI px). Lower for smaller hit particles.").defineInRange("markerSize", 2.0, 0.5, 12.0);
+        XRAY_IMPACT_CROSS_THICKNESS = client.comment("Terminal x-ray: final-impact cross stroke thickness (GUI px).").defineInRange("impactCrossThickness", 1.0, 0.5, 8.0);
+        XRAY_IMPACT_CROSS_SIZE = client.comment("Terminal x-ray: final-impact cross arm length in blocks.").defineInRange("impactCrossSize", 0.2, 0.1, 1.5);
         client.pop();
         CLIENT_SPEC = client.build();
     }
