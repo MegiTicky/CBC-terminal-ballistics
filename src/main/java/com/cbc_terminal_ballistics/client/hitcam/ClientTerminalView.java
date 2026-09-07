@@ -7,9 +7,11 @@ import com.cbc_terminal_ballistics.hitcam.HitcamSample;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.client.Minecraft;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.Vec3;
 
 import javax.annotation.Nullable;
@@ -68,10 +70,12 @@ public final class ClientTerminalView {
     private static final double CLOSEUP_TICKS = 20.0D;
     /** Fraction of the orbit radius removed at the closest point of the close-up. */
     private static final double CLOSEUP_FRACTION = 0.28D;
-    /** Gap between one actor's animation ending and the next actor's fly-in starting. */
-    private static final double ACTOR_GAP_TICKS = 10.0D;
-    /** Minimum fade-out length once the stage really ends. */
+    /** Gap (ticks) between the previous shell's impact and the next actor's fly-in start. */
+    private static final double ACTOR_GAP_TICKS = 6.0D;
+    /** Minimum fade-out length once the stage really ends (also each shell's own fade). */
     private static final double FADE_TICKS = 20.0D;
+    /** Hard ceiling on one stage's life in ticks: no arrival pattern may pin the view open. */
+    private static final long MAX_STAGE_TICKS = 1200L;
 
     /**
      * One shell's contribution to the stage. {@code primary} is the first
@@ -117,6 +121,8 @@ public final class ClientTerminalView {
     /** All actors in arrival order; index 0 is the primary. */
     private static final List<Actor> actors = new ArrayList<>();
     private static long startTick;
+    /** Client level the stage started in; a dimension change expires the stage (each level has its own game-time clock). */
+    private static ResourceKey<Level> stageDim;
     /**
      * Stage tick (game time) at which the whole view ends: the latest content's
      * animation plus its quiet window, never before the base duration.
@@ -216,8 +222,10 @@ public final class ClientTerminalView {
      * diagram grows, the fly-in never replays). A NEW shell whose anchor is
      * compatible with the current primary merges as a secondary actor while the
      * stage is alive and under the actor cap (burst accumulation, config
-     * {@code hitcamTerminalMergeBurst}); its fly-in starts after the previous
-     * actor's animation finishes. Anything else waits until the current
+     * {@code hitcamTerminalMergeBurst}); its fly-in starts just after the
+     * previous shell's impact (promptly, so a stream of hits renders as they
+     * land), and a not-yet-flown queued shell is superseded by an even newer
+     * one so the queue never backs up. Anything else waits until the current
      * animation finishes, then restarts the view on it.
      */
     public static void accept(ClientboundTerminalBallisticsPacket packet) {
@@ -229,15 +237,30 @@ public final class ClientTerminalView {
                     return;
                 }
             }
+            // Drop secondary actors whose per-shell diagram has fully faded, so
+            // a long burst stream keeps merging instead of hitting the actor cap.
+            pruneFadedActors();
             if (ageTicks() < endTick) {
                 // A compatible shell from the same vehicle merges whenever the
                 // stage is open (even while another actor animates — its fly-in
-                // simply queues after the current animation, so an autocannon
-                // burst reads as shells arriving one after another).
+                // simply queues after the current shell's impact, so an
+                // autocannon burst reads as shells arriving one after another).
+                // Newest-wins queue: a not-yet-flown queued shell is superseded
+                // by the arriving one (replacing keeps the actor count flat, so
+                // it is allowed even at the actor cap), so the backlog never
+                // grows and every hit renders promptly.
+                Actor last = actors.get(actors.size() - 1);
+                boolean replaceQueued = actors.size() > 1 && last.startTick > ageTicks();
                 boolean mergeable = TBConfig.HITCAM_TERMINAL_BURST.get()
-                    && actors.size() < burstActors()
+                    && (actors.size() < burstActors() || replaceQueued)
                     && anchorsCompatible(actors.get(0).packet.anchor(), packet.anchor());
                 if (mergeable) {
+                    if (replaceQueued) {
+                        CBCTerminalBallistics.LOGGER.info(
+                            "[CTB-HITCAM] burst queue replaced shell={} (superseded before its fly-in)",
+                            last.packet.projectileId());
+                        actors.remove(actors.size() - 1);
+                    }
                     addActor(packet);
                     return;
                 }
@@ -254,6 +277,29 @@ public final class ClientTerminalView {
             }
         }
         start(packet, "no active view");
+    }
+
+    /**
+     * Removes secondary actors whose per-shell diagram has fully faded, so a
+     * long burst stream keeps merging into the running stage instead of
+     * hitting the actor cap (which would restart the view and yank the camera).
+     * The primary (owns the anchor/camera) and the newest actor (closes the
+     * view) are always kept.
+     */
+    private static void pruneFadedActors() {
+        if (actors.size() <= 1) return;
+        long age = ageTicks();
+        for (int i = actors.size() - 1; i >= 1; i--) {
+            if (i == actors.size() - 1) continue; // newest stays for the close
+            Actor actor = actors.get(i);
+            if (age >= actorFadeStartTick(actor) + FADE_TICKS) {
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-HITCAM] burst actor {} pruned (diagram faded, shell={})",
+                    i, actor.packet.projectileId());
+                actors.remove(i);
+            }
+        }
+        recomputeEndTick();
     }
 
     /** Stage tick at which the LAST actor's animation ends; before then the stage is busy. */
@@ -287,26 +333,57 @@ public final class ClientTerminalView {
         actor.packet = packet;
         buildTimeline(actor);
         if (burstEnabled()) {
-            extendEndTick(actor);
+            recomputeEndTick();
         }
     }
 
     /** A new shell merged onto the running stage. */
     private static void addActor(ClientboundTerminalBallisticsPacket packet) {
         Actor actor = new Actor(packet, false);
-        // This shell's replay starts once the previous actor's animation has
-        // fully played, plus a small gap so the burst reads as distinct shots.
-        double latestEnd = primaryAnimEndTick();
-        for (Actor a : actors) latestEnd = Math.max(latestEnd, a.animEndTick);
-        actor.startTick = latestEnd + ACTOR_GAP_TICKS;
+        // Near-real-time pacing: the next tracer starts just after the most
+        // recent impact among replays already under way, so a stream of hits
+        // renders as shells landing one after another — not queued behind the
+        // whole backlog of previous animations (which delayed follow-ups by
+        // many seconds and read as "new shells don't render until I stop").
+        actor.startTick = nextFlyInStartTick();
         actors.add(actor);
         buildTimeline(actor);
         CBCTerminalBallistics.LOGGER.info(
             "[CTB-HITCAM] burst merged shell={} onto view shell={} (actor {} of {})",
             packet.projectileId(), actors.get(0).packet.projectileId(),
             actors.size(), burstActors());
-        extendEndTick(actor);
+        recomputeEndTick();
         ClientHitcam.startTerminalView();
+    }
+
+    /**
+     * Stage tick at which the next merged shell's fly-in starts: just after
+     * the most recent impact of any actor whose replay has already begun,
+     * plus a small gap. Once the previous shell has already landed, a new
+     * arrival starts flying next tick (immediate); while one is still on its
+     * way the tracer waits until that shell visibly impacts, so tracers read
+     * one at a time.
+     */
+    private static double nextFlyInStartTick() {
+        long age = ageTicks();
+        double latestImpact = Double.NEGATIVE_INFINITY;
+        for (Actor actor : actors) {
+            if (actor.startTick <= age) {
+                latestImpact = Math.max(latestImpact, actor.startTick + actor.impactTime);
+            }
+        }
+        if (latestImpact == Double.NEGATIVE_INFINITY) return age + 1.0D;
+        return Math.max(latestImpact + ACTOR_GAP_TICKS, age + 1.0D);
+    }
+
+    /**
+     * Stage tick at which this actor's per-shell diagram fade begins: once its
+     * whole animation has played out plus the burst quiet hold measured from
+     * its impact (whichever is later), so a fast shell's marks hold for the
+     * quiet window even when a follow-up has already taken over the stage.
+     */
+    private static double actorFadeStartTick(Actor actor) {
+        return Math.max(actor.animEndTick, actor.startTick + actor.impactTime + burstQuietTicks());
     }
 
     /**
@@ -353,9 +430,10 @@ public final class ClientTerminalView {
         }
         Minecraft mc = Minecraft.getInstance();
         startTick = mc.level != null ? mc.level.getGameTime() : 0L;
+        stageDim = mc.level != null ? mc.level.dimension() : null;
         recomputeBounds();
         buildTimeline(primary);
-        endTick = startTick + (long) Math.ceil(computeEndTick(primary));
+        recomputeEndTick();
         CBCTerminalBallistics.LOGGER.info(
             "[CTB-HITCAM] terminal view {} shell={} pathPts={} trimmed={} flight={} impact={} animEnd={} endTick={} anchor={} ship={}",
             reason, packet.projectileId(), packet.path().size(), primary.trimmedPath.size(),
@@ -364,27 +442,26 @@ public final class ClientTerminalView {
         ClientHitcam.startTerminalView();
     }
 
-    /** How long (stage ticks from 0) a freshly started single-shell stage runs. */
-    private static double computeEndTick(Actor primary) {
-        double animEnd = primary.animEndTick;
-        // The base duration guarantees a readable hold even for a very short
-        // animation; the quiet window extends past the animation when burst
-        // merging is on, so a follow-up shell in the same burst keeps the view.
-        double min = Math.max(baseDuration(), animEnd + 20.0D);
-        if (!burstEnabled()) return min;
-        return Math.max(min, animEnd + burstQuietTicks());
-    }
-
-    /** Pushes the stage end out to give this actor's content its quiet window. */
-    private static void extendEndTick(Actor actor) {
-        long quietEnd = startTick + (long) Math.ceil(actor.animEndTick + burstQuietTicks());
-        if (quietEnd > endTick) {
-            CBCTerminalBallistics.LOGGER.info(
-                "[CTB-HITCAM] endTick extended {} -> {} (actor shell={} animEnd={})",
-                endTick - startTick, quietEnd - startTick, actor.packet.projectileId(),
-                String.format("%.1f", actor.animEndTick));
-            endTick = quietEnd;
+    /** Recomputed the absolute stage end from every actor's content plus its quiet hold. */
+    private static void recomputeEndTick() {
+        // The stage ends once every actor's content has played plus its quiet
+        // hold (burst on), or after the primary's animation plus a fixed tail
+        // (burst off — the old single-shell duration). Never below the base
+        // duration, and hard-capped so no arrival pattern can pin the view
+        // open for tens of seconds after the fire stops. All actor ticks are
+        // relative to the stage start; endTick itself is absolute game time.
+        double rel = baseDuration();
+        if (!burstEnabled()) {
+            Actor primary = primary();
+            double animEnd = primary == null ? 0.0D : primary.animEndTick;
+            rel = Math.max(rel, animEnd + 20.0D);
+        } else {
+            for (Actor actor : actors) {
+                rel = Math.max(rel, actor.animEndTick + burstQuietTicks());
+            }
         }
+        long maxRel = Math.max((long) baseDuration() * 3L, MAX_STAGE_TICKS);
+        endTick = startTick + Math.min((long) Math.ceil(rel), maxRel);
     }
 
     public static void clear() {
@@ -394,6 +471,7 @@ public final class ClientTerminalView {
         contraptionUuid = null;
         vsShip = null;
         endTick = 0L;
+        stageDim = null;
         ghostShell = null;
         // {@link #pending} deliberately survives: it is flushed by
         // {@link #clientTick()} the moment the current view is gone.
@@ -426,7 +504,13 @@ public final class ClientTerminalView {
     }
 
     public static boolean expired() {
-        return actors.isEmpty() || ageTicks() >= endTick;
+        if (actors.isEmpty()) return true;
+        Minecraft mc = Minecraft.getInstance();
+        // A level swap/dimension change resets the game-time clock; a stage
+        // started on the old clock would otherwise age backwards and never end.
+        if (mc.level == null || stageDim == null || mc.level.dimension() != stageDim) return true;
+        if (mc.level.getGameTime() < startTick) return true;
+        return ageTicks() >= endTick;
     }
 
     /** Total display budget of the current stage (for status readers). */
@@ -958,12 +1042,12 @@ public final class ClientTerminalView {
         if (localAge < 0.0D) {
             // Later actor not yet on stage: nothing of it shows yet, but return a
             // valid (empty-progress) snapshot so callers can still read its data.
-            return new Timeline(stageAge, fadeAt(stageAge), stageAlive(stageAge), actor.hasPath,
+            return new Timeline(stageAge, snapshotFade(actor, stageAge), stageAlive(stageAge), actor.hasPath,
                 actor.flightTicks, 0.0D, null, Vec3.ZERO, 0.0F,
                 plateAppear, spallStarts, growths, actor.blockDistFrac, entityAppear);
         }
         if (!actor.hasPath) {
-            return new Timeline(stageAge, fadeAt(stageAge), stageAlive(stageAge), false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
+            return new Timeline(stageAge, snapshotFade(actor, stageAge), stageAlive(stageAge), false, 0.0D, 1.0D, null, Vec3.ZERO, 0.0F,
                 plateAppear, spallStarts, growths, actor.blockDistFrac, entityAppear);
         }
         double progress = progressAtTime(actor, localAge / actor.flightTicks);
@@ -971,7 +1055,7 @@ public final class ClientTerminalView {
         Vec3 world = toWorld(local, partialTick);
         Vec3 dir = toWorldDir(pathDirAt(actor, progress), partialTick);
         float linger = 1.0F - (float) Mth.clamp((localAge - actor.flightTicks) / SHELL_FADE_TICKS, 0.0D, 1.0D);
-        return new Timeline(stageAge, fadeAt(stageAge), stageAlive(stageAge), true, actor.flightTicks, progress,
+        return new Timeline(stageAge, snapshotFade(actor, stageAge), stageAlive(stageAge), true, actor.flightTicks, progress,
             world, dir, linger, plateAppear, spallStarts, growths, actor.blockDistFrac, entityAppear);
     }
 
@@ -985,6 +1069,21 @@ public final class ClientTerminalView {
     private static float fadeAt(float stageAge) {
         float remaining = (float) (endTick - startTick) - stageAge;
         return Mth.clamp(remaining / (float) FADE_TICKS, 0.0F, 1.0F);
+    }
+
+    /**
+     * Per-frame fade of one actor's diagram: the newest actor holds until the
+     * stage end fade; an older (superseded) actor starts fading on its own
+     * once its per-shell hold ({@link #actorFadeStartTick}) has elapsed, so
+     * while a stream of shells keeps arriving the older marks clear instead of
+     * piling up fully bright. The per-actor fade never exceeds the stage fade.
+     */
+    private static float snapshotFade(Actor actor, float stageAge) {
+        boolean newest = actors.isEmpty() || actor == actors.get(actors.size() - 1);
+        if (newest) return fadeAt(stageAge);
+        float own = Mth.clamp((float) ((actorFadeStartTick(actor) + FADE_TICKS - stageAge) / (float) FADE_TICKS),
+            0.0F, 1.0F);
+        return Math.min(own, fadeAt(stageAge));
     }
 
     private static boolean stageAlive(float stageAge) {
