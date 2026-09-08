@@ -59,6 +59,28 @@ public final class TerminalBallisticsRecorder {
      * rebind it. Strong refs here, cleaned up on every session end path.
      */
     private static final Map<UUID, Session> SESSIONS = new HashMap<>();
+    /**
+     * Explosion contexts bridge source-less explosion damage events to the
+     * terminal engagement that caused them. They are deliberately short-lived:
+     * proximity to an old impact alone must never turn an unrelated death into
+     * a critical crew kill.
+     */
+    private static final List<SecondaryExplosion> SECONDARY_EXPLOSIONS = new ArrayList<>();
+    private static final int SECONDARY_EXPLOSION_TICKS = 2;
+
+    private static final class SecondaryExplosion {
+        final Session session;
+        final Vec3 center;
+        final double radius;
+        final long expiresAt;
+
+        SecondaryExplosion(Session session, Vec3 center, double radius, long expiresAt) {
+            this.session = session;
+            this.center = center;
+            this.radius = radius;
+            this.expiresAt = expiresAt;
+        }
+    }
 
     private static final class Session {
         /** The live projectile entity this session is currently bound to (changes on rebind). */
@@ -384,10 +406,26 @@ public final class TerminalBallisticsRecorder {
     }
 
     /**
-     * Explosion-critical attribution when no source entity can be resolved
-     * (the explosion carries no indirect entity): pure positional fallback to
-     * a finished engagement's last impact point.
+     * Bind every explosion to its live shell session, or to the nearest
+     * shell-gone session when the source was lost to a cook-off. This is called
+     * from ExplosionEvent.Start, before vanilla applies explosion damage and
+     * therefore before any crew LivingDeathEvent can fire.
      */
+    public static void onSecondaryExplosionStart(net.minecraft.world.level.Level level, @Nullable Entity source,
+                                                 Vec3 center, float radius) {
+        if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
+        Session session = source == null ? attributeByPosition(level, center) : SESSIONS.get(source.getUUID());
+        if (session == null) return;
+        long now = level.getGameTime();
+        SECONDARY_EXPLOSIONS.removeIf(context -> context.expiresAt < now);
+        SECONDARY_EXPLOSIONS.add(new SecondaryExplosion(session, center, Math.max(0.0D, radius),
+            now + SECONDARY_EXPLOSION_TICKS));
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] secondary explosion bound shell={} source={} radius={} at ({},{},{})",
+            session.bound == null ? -1 : session.bound.getId(), source == null ? "none" : source.getId(), radius,
+            (long) Math.floor(center.x), (long) Math.floor(center.y), (long) Math.floor(center.z));
+    }
+
     public static void onUnattributedCriticalBlock(net.minecraft.world.level.Level level, Vec3 worldPos,
                                                    net.minecraft.world.level.block.state.BlockState state) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get() || !TBConfig.HITCAM_TERMINAL_CRITICALS.get()) return;
@@ -446,6 +484,38 @@ public final class TerminalBallisticsRecorder {
     /** Direct kills reported via Forge's LivingDeathEvent. */
     public static void onDirectEntityKill(Entity projectile, LivingEntity target) {
         recordEntityHit(projectile, target, 0.0F, true);
+    }
+
+    /**
+     * Crew death caused by a secondary explosion with no surviving source
+     * entity. The explosion must have been attributed to this engagement in
+     * the same tick or immediately preceding ticks; an old nearby impact is
+     * insufficient on its own.
+     */
+    public static void onSecondaryExplosionCrewKill(net.minecraft.world.level.Level level, LivingEntity target) {
+        if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
+        long now = level.getGameTime();
+        Session session = null;
+        double bestDistSq = Double.MAX_VALUE;
+        for (java.util.Iterator<SecondaryExplosion> it = SECONDARY_EXPLOSIONS.iterator(); it.hasNext(); ) {
+            SecondaryExplosion context = it.next();
+            if (context.expiresAt < now || context.session.bound == null || context.session.bound.level() != level) {
+                it.remove();
+                continue;
+            }
+            double distSq = context.center.distanceToSqr(target.position());
+            double reach = context.radius + 2.0D;
+            if (distSq <= reach * reach && distSq < bestDistSq) {
+                bestDistSq = distSq;
+                session = context.session;
+            }
+        }
+        if (session == null) return;
+        CBCTerminalBallistics.LOGGER.info(
+            "[CTB-HITCAM] secondary crew kill attributed shell={} victim={} at ({},{},{})",
+            session.bound.getId(), target.getId(),
+            (long) Math.floor(target.getX()), (long) Math.floor(target.getY()), (long) Math.floor(target.getZ()));
+        recordEntityHit(session, target, 0.0F, true);
     }
 
     /**
@@ -525,6 +595,10 @@ public final class TerminalBallisticsRecorder {
             session = attributeByPosition(projectile.level(), target.position());
         }
         if (session == null) return;
+        recordEntityHit(session, target, damage, killed);
+    }
+
+    private static void recordEntityHit(Session session, LivingEntity target, float damage, boolean killed) {
         session.dataVersion++;
         session.dirty = true;
         for (int i = 0; i < session.entities.size(); i++) {

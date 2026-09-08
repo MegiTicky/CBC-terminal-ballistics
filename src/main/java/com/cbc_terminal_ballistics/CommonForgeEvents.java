@@ -88,7 +88,20 @@ public final class CommonForgeEvents {
         if (direct == null) direct = event.getSource().getEntity();
         if (direct != null) {
             TerminalBallisticsRecorder.onDirectEntityKill(direct, event.getEntity());
+        } else {
+            // Secondary explosions such as delayed APHE and ammo cook-offs can
+            // have no source entity. Attribute only against a freshly recorded
+            // secondary explosion inside the post-mortem grace window.
+            TerminalBallisticsRecorder.onSecondaryExplosionCrewKill(event.getEntity().level(), event.getEntity());
         }
+    }
+
+    @SubscribeEvent
+    public static void onExplosionStart(ExplosionEvent.Start event) {
+        if (!(event.getLevel() instanceof ServerLevel level)) return;
+        net.minecraft.world.level.Explosion explosion = event.getExplosion();
+        TerminalBallisticsRecorder.onSecondaryExplosionStart(
+            level, explosion.getIndirectSourceEntity(), explosion.getPosition(), explosionRadius(explosion));
     }
 
     /**
