@@ -1361,7 +1361,13 @@ public final class ClientTerminalView {
         // fireball to read; AP-style shells (APHE) keep the tight AP framing
         // even though their blast is drawn.
         double radiusCap = blast != null && blast.explosive() ? 24.0D : 12.0D;
-        orbitRadius = Math.max(5.5D, Math.min(radiusCap, Math.sqrt(maxDistSq) + 3.0D));
+        double radius = Math.max(5.5D, Math.min(radiusCap, Math.sqrt(maxDistSq) + 3.0D));
+        if (blast != null && blast.explosive()) {
+            // Far view: hold the camera ~30 blocks out from the detonation
+            // (unless the damage diagram itself is wider).
+            radius = Math.max(radius, 30.0D);
+        }
+        orbitRadius = radius;
     }
 
     private ClientTerminalView() {}
