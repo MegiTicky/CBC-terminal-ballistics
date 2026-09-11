@@ -176,6 +176,14 @@ public final class ClientHitcamPiP {
 
         Matrix4f mainProjection = RenderSystem.getProjectionMatrix();
         com.mojang.blaze3d.vertex.VertexSorting mainSorting = RenderSystem.getVertexSorting();
+        // Shader globals the nested pass overwrites. The main frame's later
+        // draws (other mods' AFTER_LEVEL hooks, the hand) run before the next
+        // frame's fog setup, so left un-restored they render with the PiP
+        // scene's fog.
+        Float mainFogStart = RenderSystem.getShaderFogStart();
+        Float mainFogEnd = RenderSystem.getShaderFogEnd();
+        float[] mainFogColor = RenderSystem.getShaderFogColor();
+        com.mojang.blaze3d.shaders.FogShape mainFogShape = RenderSystem.getShaderFogShape();
         try {
             RENDERING_PIP.set(Boolean.TRUE);
             renderPipScene(mc, event.getPartialTick(), fullScene, packInUse && !fullScene);
@@ -208,6 +216,17 @@ public final class ClientHitcamPiP {
         } finally {
             RENDERING_PIP.set(Boolean.FALSE);
             DistantHorizonsCompat.endPipFrame();
+            // Self-heal ship-ghost GL state stranded by an exception inside a
+            // ship pass; a no-op when the end-inject already cleared it.
+            clearShipGhostGl();
+            RenderSystem.setShaderFogStart(mainFogStart);
+            RenderSystem.setShaderFogEnd(mainFogEnd);
+            RenderSystem.setShaderFogColor(mainFogColor[0], mainFogColor[1], mainFogColor[2], mainFogColor[3]);
+            RenderSystem.setShaderFogShape(mainFogShape);
+            // renderEntity points the shared entity dispatcher at the PiP
+            // camera (billboard orientation); the main view's own renderLevel
+            // has already run this frame, so nothing else points it back.
+            mc.getEntityRenderDispatcher().prepare(mc.level, mc.gameRenderer.getMainCamera(), null);
             if (mainProjection != null) {
                 RenderSystem.setProjectionMatrix(mainProjection, mainSorting);
             }
@@ -306,8 +325,11 @@ public final class ClientHitcamPiP {
         RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
         renderGhost(mc, camera, partialTick, viewPose);
-        mc.renderBuffers().bufferSource().endBatch();
         ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
+        // Flush deferred batches while the PiP projection is active, so
+        // nothing queued here leaks into the main frame (see renderFullScene).
+        mc.renderBuffers().outlineBufferSource().endOutlineBatch();
+        mc.renderBuffers().bufferSource().endBatch();
     }
 
     /**
@@ -328,18 +350,28 @@ public final class ClientHitcamPiP {
 
         mc.renderBuffers().bufferSource().endBatch();
 
-        // Back up the main screen (color only) so the HUD and any later
-        // rendering see the original frame. Depth is deliberately not copied:
-        // blitting depth between framebuffers with different depth formats is
-        // invalid in GL and rejects the whole call, color included, which
-        // would silently leave the main screen unrestored. Nothing after this
-        // stage needs the old depth (the hand render clears it, the next frame
-        // clears color+depth).
+        // Back up the main screen (color + depth) so the HUD and any later
+        // rendering see the original frame. Depth must ride along: the PiP
+        // pass renders into the main framebuffer and overwrites its depth, and
+        // main-frame draws after this stage depth-test against it — leaving
+        // the PiP scene's depth there made geometry layer wrong in the main
+        // view. Depth blitting is legal here because both targets are
+        // TextureTargets with the same DEPTH_COMPONENT24 renderbuffer (neither
+        // has a stencil buffer, so the stencil bit must NOT be included: a
+        // stencil blit against a missing buffer rejects the whole call).
         GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
         GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, backupTarget.frameBufferId);
         GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
             0, 0, backupTarget.width, backupTarget.height,
-            GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+            GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
+        if (GL11.glGetError() != 0) {
+            // Depth format mismatch on some drivers: retry color-only so the
+            // backup (and thus the restore below) never loses the screen.
+            GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
+                0, 0, backupTarget.width, backupTarget.height,
+                GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+            GL11.glGetError();
+        }
 
         Matrix4f oldProjection = RenderSystem.getProjectionMatrix();
         try {
@@ -372,6 +404,14 @@ public final class ClientHitcamPiP {
             // same finished frame so it stays inside the PiP window.
             ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
 
+            // Flush every deferred batch while the PiP projection is still the
+            // active one — including the outline batch (glowing entities),
+            // which a plain bufferSource.endBatch does not cover. Anything left
+            // queued would be drawn by the main view with PiP-relative
+            // geometry.
+            mc.renderBuffers().outlineBufferSource().endOutlineBatch();
+            mc.renderBuffers().bufferSource().endBatch();
+
             // Copy the finished frame into the private PiP texture.
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
             GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, target.frameBufferId);
@@ -379,17 +419,28 @@ public final class ClientHitcamPiP {
                 0, 0, target.width, target.height,
                 GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
         } finally {
-            // Restore the main screen from the backup, color only (see above).
+            // Restore the main screen from the backup, color + depth (the PiP
+            // pass left its own scene's depth in the main framebuffer; see the
+            // backup comment above for the format argument).
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, backupTarget.frameBufferId);
             GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, mainTarget.frameBufferId);
             GL30.glBlitFramebuffer(0, 0, backupTarget.width, backupTarget.height,
                 0, 0, mainTarget.width, mainTarget.height,
-                GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+                GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
             int blitError = GL11.glGetError();
-            if (blitError != 0 && !failureLogged) {
-                failureLogged = true;
-                com.mojang.logging.LogUtils.getLogger()
-                    .warn("CBCTB hitcam: main screen restore blit failed, GL error 0x{}", Integer.toHexString(blitError));
+            if (blitError != 0) {
+                // Depth restore rejected on this driver: fall back to the
+                // color-only restore rather than losing the screen.
+                GL30.glBlitFramebuffer(0, 0, backupTarget.width, backupTarget.height,
+                    0, 0, mainTarget.width, mainTarget.height,
+                    GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
+                GL11.glGetError();
+                if (!failureLogged) {
+                    failureLogged = true;
+                    com.mojang.logging.LogUtils.getLogger()
+                        .warn("CBCTB hitcam: main screen restore blit failed, GL error 0x{} (depth not restored)",
+                            Integer.toHexString(blitError));
+                }
             }
             RenderSystem.setProjectionMatrix(oldProjection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
             mainTarget.bindWrite(true);
