@@ -6,6 +6,7 @@ import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.CbcArmorCompat;
 import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.debug.TBDebug;
+import com.cbc_terminal_ballistics.hitcam.StreamPreferences;
 import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.data.CriticalBlockManager;
@@ -86,6 +87,13 @@ public class CBCTerminalBallistics {
             TBProjectileSlowdown.syncTo(player);
             TBImpactService.syncAllImpactMarksToPlayer(player);
             TBImpactService.syncAllEmbeddedShellsToPlayer(player);
+        }
+    }
+
+    @SubscribeEvent
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            StreamPreferences.clear(player.getUUID());
         }
     }
 

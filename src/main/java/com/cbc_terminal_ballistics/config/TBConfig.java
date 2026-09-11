@@ -150,8 +150,6 @@ public final class TBConfig {
         HITCAM_PIP_DISPLAY_HEIGHT = server.comment("Picture-in-picture replay window height in GUI-scaled pixels.").defineInRange("hitcamPipDisplayHeight", 135, 50, 540);
         HITCAM_PIP_ANCHOR = server.comment("Corner of the screen the replay window is pinned to. One of TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT.").defineInList("hitcamPipAnchor", "TOP_RIGHT", List.of("TOP_LEFT", "TOP_RIGHT", "BOTTOM_LEFT", "BOTTOM_RIGHT"));
         HITCAM_SHADER_MODE = server.comment("Picture-in-picture behaviour when a shader pack is actively rendering: AUTO = lightweight fallback (ghost shell over live view, no nested world render), SKIP = disable with a chat notice, ATTEMPT = try the full nested render anyway. When no shader pack is active the full render is always used.").defineInList("hitcamShaderMode", "AUTO", List.of("AUTO", "SKIP", "ATTEMPT"));
-        HITCAM_DH_MODE = server.comment("Distant Horizons behaviour inside the hitcam picture-in-picture. DH renders its LOD terrain during the nested world pass but points it at the player's camera, which displaces the LODs in the window. ATTEMPT = patch DH's render camera to the hitcam camera so LOD terrain, fog and fades line up in the view (falls back to SUPPRESS for the session if it throws). SUPPRESS = never render DH LODs inside the picture-in-picture; the window shows only streamed vanilla chunks while the main view keeps DH untouched.").defineInList("hitcamDhMode", "ATTEMPT", List.of("ATTEMPT", "SUPPRESS"));
-        HITCAM_TERRAIN_STREAM = server.comment("Artillery/terminal view terrain streaming: send the chunks around the flying shell to the viewer's client so the picture-in-picture world pass keeps showing terrain past the chunk render distance boundary (the client normally discards chunks beyond its view range).").define("hitcamTerrainStream", true);
         HITCAM_TERRAIN_STREAM_RADIUS = server.comment("Chunk radius around the shell streamed to the artillery/terminal viewer.").defineInRange("hitcamTerrainStreamRadius", 2, 1, 4);
         HITCAM_TERRAIN_STREAM_LEAD_TICKS = server.comment("How far ahead (in ticks along the shell's current velocity) to also stream chunks, so terrain arrives before the shell does.").defineInRange("hitcamTerrainStreamLeadTicks", 15, 0, 40);
         HITCAM_PREFLIGHT_CHUNKLOAD = server.comment("Preflight shell chunk loading: while the artillery cam tracks a shell, queue the chunks ahead of it through CBC's own projectile chunk loader (RitchiesProjectileLib) so they are generated before the shell arrives. Without this a fast shell stalls at every not-yet-generated chunk boundary.").define("hitcamPreflightChunkload", true);
@@ -169,6 +167,14 @@ public final class TBConfig {
         COMMON_SPEC = common.build();
 
         ForgeConfigSpec.Builder client = new ForgeConfigSpec.Builder();
+        client.push("hitcam");
+        // Client-side hitcam rendering preferences. The terrain-stream
+        // preference is relayed to the server per player (ServerboundStream
+        // PreferencePacket) because the server, not the client, sends the
+        // chunks; radius/lead stay server-side as bandwidth governance.
+        HITCAM_TERRAIN_STREAM = client.comment("Artillery/terminal view terrain streaming preference: stream the chunks around the flying shell to this client so the picture-in-picture world pass keeps showing terrain past the chunk render distance boundary. false = rely on Distant Horizons LODs inside the view instead — no chunk packets, no client-side parse/mesh cost (if DH is absent the view shows sky and effects only). The preference is sent to the server when a view starts, so mid-game edits apply at the next shot; the server's hitcamTerrainStreamRadius/LeadTicks still govern how much it sends.").define("terrainStream", true);
+        HITCAM_DH_MODE = client.comment("Distant Horizons behaviour inside the hitcam picture-in-picture. DH renders its LOD terrain during the nested world pass but points it at the player's camera, which displaces the LODs in the window. ATTEMPT = patch DH's render camera to the hitcam camera so LOD terrain, fog and fades line up in the view (falls back to SUPPRESS for the session if it throws). SUPPRESS = never render DH LODs inside the picture-in-picture; the window shows only streamed vanilla chunks (or, with terrainStream off, sky and effects) while the main view keeps DH untouched.").defineInList("dhMode", "ATTEMPT", List.of("ATTEMPT", "SUPPRESS"));
+        client.pop();
         client.push("hitcam_xray");
         // Stroke widths are in GUI-scaled pixels on the displayed PiP window,
         // matching the previous hard-coded ClientTerminalOverlay constants.

@@ -6,7 +6,7 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public final class TBNetwork {
-    private static final String VERSION = "20";
+    private static final String VERSION = "21";
     public static SimpleChannel CHANNEL;
 
     public static void register() {
@@ -56,6 +56,11 @@ public final class TBNetwork {
             .encoder(ServerboundSetLauncherVelocityPacket::encode)
             .decoder(ServerboundSetLauncherVelocityPacket::decode)
             .consumerMainThread(ServerboundSetLauncherVelocityPacket::handle)
+            .add();
+        CHANNEL.messageBuilder(ServerboundStreamPreferencePacket.class, id++)
+            .encoder(ServerboundStreamPreferencePacket::encode)
+            .decoder(ServerboundStreamPreferencePacket::decode)
+            .consumerMainThread(ServerboundStreamPreferencePacket::handle)
             .add();
         CHANNEL.messageBuilder(ClientboundTestRayPacket.class, id++)
             .encoder(ClientboundTestRayPacket::encode)

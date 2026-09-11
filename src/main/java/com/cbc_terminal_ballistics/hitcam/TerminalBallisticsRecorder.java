@@ -886,7 +886,9 @@ public final class TerminalBallisticsRecorder {
      */
     private static void streamTerrain(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
                                       net.minecraft.world.phys.Vec3 vel, ServerPlayer player) {
-        if (!TBConfig.HITCAM_TERRAIN_STREAM.get()) return;
+        // The viewer's client config decides whether streaming happens at all
+        // (relayed per player); this side's radius/lead decide how much.
+        if (!StreamPreferences.isEnabled(player)) return;
         if (player.level() != level) return;
         net.minecraft.server.level.ServerChunkCache chunks = level.getChunkSource();
         int radius = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get(), 1, 4);

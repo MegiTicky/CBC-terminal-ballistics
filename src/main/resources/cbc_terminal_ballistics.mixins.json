@@ -29,6 +29,7 @@
     "ClientChunkCacheMixin",
     "DhCameraMixin",
     "DhRenderSuppressMixin",
+    "DhClipRingMixin",
     "EmbeddiumTerrainGhostMixin",
     "ParticleEngineMixin",
     "SodiumShipPassMixin"

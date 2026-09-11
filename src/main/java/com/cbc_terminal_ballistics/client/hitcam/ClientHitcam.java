@@ -3,11 +3,14 @@ package com.cbc_terminal_ballistics.client.hitcam;
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.hitcam.HitcamSample;
+import com.cbc_terminal_ballistics.network.ServerboundStreamPreferencePacket;
+import com.cbc_terminal_ballistics.network.TBNetwork;
 import net.minecraft.client.Minecraft;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
@@ -97,6 +100,7 @@ public final class ClientHitcam {
     /** Artillery view: follow this live projectile entity until it is gone. */
     public static void startArtillery(int entityId) {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
+        sendStreamPreference();
         // A newly fired shell must not cut a terminal animation that is still
         // on screen (salvo fire made the x-ray flash for a moment, then vanish
         // when the next gun's track packet arrived). Its own terminal packet
@@ -127,10 +131,27 @@ public final class ClientHitcam {
 
     /** Terminal view packet arrived; called by {@link ClientTerminalView#accept}. */
     public static void startTerminalView() {
+        sendStreamPreference();
         mode = Mode.TERMINAL;
         artilleryEntityId = -1;
         clearArtilleryGhost();
         resetReplay();
+    }
+
+    /**
+     * Tells the server whether this client wants hitcam terrain streaming.
+     * The server sends the chunks but cannot read a client config file, so
+     * the preference is relayed on login and at every view start — live
+     * config edits therefore apply at the next shot.
+     */
+    private static void sendStreamPreference() {
+        if (TBNetwork.CHANNEL == null) return;
+        TBNetwork.CHANNEL.sendToServer(new ServerboundStreamPreferencePacket(TBConfig.HITCAM_TERRAIN_STREAM.get()));
+    }
+
+    @SubscribeEvent
+    public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+        sendStreamPreference();
     }
 
     public static void stop() {
@@ -189,6 +210,7 @@ public final class ClientHitcam {
         if (mode == Mode.NONE) {
             mode = Mode.ARTILLERY;
             artilleryEntityId = entityId;
+            sendStreamPreference();
             ClientTerminalView.clear();
             resetReplay();
         }
