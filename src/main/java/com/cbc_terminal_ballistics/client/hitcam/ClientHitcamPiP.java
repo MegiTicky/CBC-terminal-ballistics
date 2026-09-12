@@ -182,7 +182,7 @@ public final class ClientHitcamPiP {
         // scene's fog.
         Float mainFogStart = RenderSystem.getShaderFogStart();
         Float mainFogEnd = RenderSystem.getShaderFogEnd();
-        float[] mainFogColor = RenderSystem.getShaderFogColor();
+        float[] mainFogColor = RenderSystem.getShaderFogColor().clone();
         com.mojang.blaze3d.shaders.FogShape mainFogShape = RenderSystem.getShaderFogShape();
         try {
             RENDERING_PIP.set(Boolean.TRUE);
@@ -325,11 +325,8 @@ public final class ClientHitcamPiP {
         RenderSystem.setProjectionMatrix(projection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
 
         renderGhost(mc, camera, partialTick, viewPose);
-        ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
-        // Flush deferred batches while the PiP projection is active, so
-        // nothing queued here leaks into the main frame (see renderFullScene).
-        mc.renderBuffers().outlineBufferSource().endOutlineBatch();
         mc.renderBuffers().bufferSource().endBatch();
+        ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
     }
 
     /**
@@ -411,14 +408,6 @@ public final class ClientHitcamPiP {
             // X-ray diagram of the terminal-ballistics view, drawn into the
             // same finished frame so it stays inside the PiP window.
             ClientTerminalOverlay.render(mc, camera, partialTick, viewPose);
-
-            // Flush every deferred batch while the PiP projection is still the
-            // active one — including the outline batch (glowing entities),
-            // which a plain bufferSource.endBatch does not cover. Anything left
-            // queued would be drawn by the main view with PiP-relative
-            // geometry.
-            mc.renderBuffers().outlineBufferSource().endOutlineBatch();
-            mc.renderBuffers().bufferSource().endBatch();
 
             // Copy the finished frame into the private PiP texture.
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
