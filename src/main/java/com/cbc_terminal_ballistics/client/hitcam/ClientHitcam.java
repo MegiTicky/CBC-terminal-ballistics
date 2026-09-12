@@ -157,7 +157,8 @@ public final class ClientHitcam {
      */
     private static void sendStreamPreference() {
         if (TBNetwork.CHANNEL == null) return;
-        TBNetwork.CHANNEL.sendToServer(new ServerboundStreamPreferencePacket(TBConfig.HITCAM_TERRAIN_STREAM.get()));
+        TBNetwork.CHANNEL.sendToServer(new ServerboundStreamPreferencePacket(
+            TBConfig.HITCAM_TERRAIN_STREAM.get(), TBConfig.HITCAM_TERMINAL_STREAM.get()));
     }
 
     @SubscribeEvent

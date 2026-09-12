@@ -148,6 +148,8 @@ public final class TerminalBallisticsRecorder {
         /** Stuck-shell watchdog: last relayed position and count of unmoved relays. */
         Vec3 lastRelayPos;
         int stuckRelays;
+        /** One-time terminal path backfill for viewers that opted out of artillery streaming. */
+        boolean terminalBackfill;
         /** Chunk-unload rebind: the shell's UUID while waiting for its re-created entity. */
         UUID pendingUuid;
         long pendingSinceTick = -1L;
@@ -711,6 +713,12 @@ public final class TerminalBallisticsRecorder {
                 }
                 sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
+                // Terminal-only viewers (artillery streaming opted out) still
+                // need the impact area: a shell that dies at its first plate
+                // never relays again after this.
+                if (projectile.level() instanceof ServerLevel removedLevel) {
+                    streamTerrain(session, removedLevel, projectile.position(), Vec3.ZERO, projectile);
+                }
                 // Keep the session registered in its post-mortem grace window:
                 // an ammo-rack cook-off or chained crew death may still follow.
                 markShellGone(session, projectile.level().getGameTime());
@@ -741,6 +749,9 @@ public final class TerminalBallisticsRecorder {
                 }
                 sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", posNow, Vec3.ZERO, true));
+                if (projectile.level() instanceof ServerLevel stuckLevel) {
+                    streamTerrain(session, stuckLevel, posNow, Vec3.ZERO, projectile);
+                }
                 markShellGone(session, projectile.level().getGameTime());
                 continue;
             }
@@ -750,7 +761,7 @@ public final class TerminalBallisticsRecorder {
             if (projectile.level() instanceof ServerLevel slevel) {
                 Vec3 velNow = projectile.getDeltaMovement();
                 preflightChunkload(slevel, posNow, velNow);
-                streamTerrain(session, slevel, posNow, velNow);
+                streamTerrain(session, slevel, posNow, velNow, projectile);
             }
         }
     }
@@ -814,7 +825,7 @@ public final class TerminalBallisticsRecorder {
         sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
             removed.getId(), EntityType.getKey(removed.getType()).toString(),
             session.lastRelayPos, Vec3.ZERO, false));
-        streamTerrain(session, level, session.lastRelayPos, Vec3.ZERO);
+        streamTerrain(session, level, session.lastRelayPos, Vec3.ZERO, session.bound != null ? session.bound : removed);
     }
 
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
@@ -892,24 +903,82 @@ public final class TerminalBallisticsRecorder {
      * enters it, at which point this relay picks it up.
      */
     private static void streamTerrain(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
-                                      net.minecraft.world.phys.Vec3 vel) {
-        // Per audience member: their client config decides whether streaming
-        // happens at all (relayed per player); this side's radius/lead decide
-        // how much, and each player tracks their own streamed-chunk set so a
-        // joining viewer still receives the chunks the others already have.
+                                      net.minecraft.world.phys.Vec3 vel, Entity projectile) {
+        // Per-view preference gating: artillery-pref viewers always get the
+        // shell's surroundings; terminal-pref viewers get them once the shell
+        // has terminal content (a recorded plate or blast) — the x-ray is
+        // exempt from the artillery streaming switch. A shell with no
+        // engagement keeps honouring artillery-only prefs, preserving the
+        // fast-flight bandwidth saving.
+        boolean terminalEngaged = !session.plates.isEmpty() || session.blastPos != null;
         for (ServerPlayer player : session.audiences) {
+            boolean artillery = StreamPreferences.wantsArtillery(player);
+            if (!artillery && !(terminalEngaged && StreamPreferences.wantsTerminal(player))) continue;
             streamTerrainFor(session, level, pos, vel, player);
+        }
+        if (terminalEngaged) backfillTerminalPath(session, level, projectile);
+    }
+
+    /**
+     * One-time backfill of the recent flight path for viewers that opted out
+     * of artillery streaming: walks the recorded flight backwards up to the
+     * configured path length, streaming radius-1 chunks along it so the
+     * x-ray's fly-in has terrain beneath it. Per-viewer dedup sets make a
+     * repeat harmless; the flag keeps it a single pass.
+     */
+    private static final int TERMINAL_BACKFILL_BUDGET = 48;
+
+    private static void backfillTerminalPath(Session session, ServerLevel level, Entity projectile) {
+        if (session.terminalBackfill) return;
+        session.terminalBackfill = true;
+        List<HitcamSample> samples = HitcamRecorder.samplesOf(projectile);
+        if (samples.isEmpty()) return;
+        java.util.ArrayList<Vec3> points = new java.util.ArrayList<>();
+        double budget = TBConfig.HITCAM_TERMINAL_PATH_BLOCKS.get();
+        double walked = 0.0D;
+        Vec3 previous = null;
+        for (int i = samples.size() - 1; i >= 0 && walked < budget; i--) {
+            HitcamSample sample = samples.get(i);
+            Vec3 point = new Vec3(sample.x(), sample.y(), sample.z());
+            if (previous == null) {
+                points.add(point);
+            } else {
+                double d = previous.distanceTo(point);
+                if (d >= 8.0D) {
+                    points.add(point);
+                    walked += d;
+                }
+            }
+            previous = point;
+        }
+        if (points.size() <= 1) return;
+        for (ServerPlayer player : session.audiences) {
+            // Artillery-pref viewers already received the path as it flew.
+            if (StreamPreferences.wantsArtillery(player) || !StreamPreferences.wantsTerminal(player)) continue;
+            int sent = 0;
+            for (Vec3 point : points) {
+                if (sent >= TERMINAL_BACKFILL_BUDGET) break;
+                sent += streamTerrainFor(session, level, point, Vec3.ZERO, player, 1);
+            }
         }
     }
 
     private static void streamTerrainFor(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
                                          net.minecraft.world.phys.Vec3 vel, ServerPlayer player) {
-        if (!StreamPreferences.isEnabled(player)) return;
-        if (player.level() != level) return;
+        streamTerrainFor(session, level, pos, vel, player, -1);
+    }
+
+    /** radiusOverride &lt; 0 uses the configured streaming radius. Returns chunks sent. */
+    private static int streamTerrainFor(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
+                                        net.minecraft.world.phys.Vec3 vel, ServerPlayer player, int radiusOverride) {
+        if (player.level() != level) return 0;
         it.unimi.dsi.fastutil.longs.LongOpenHashSet streamed = session.streamedChunksFor(player);
         net.minecraft.server.level.ServerChunkCache chunks = level.getChunkSource();
-        int radius = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get(), 1, 4);
-        int lead = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_LEAD_TICKS.get(), 0, 40);
+        int radius = radiusOverride >= 0
+            ? net.minecraft.util.Mth.clamp(radiusOverride, 1, 4)
+            : net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get(), 1, 4);
+        int lead = radiusOverride >= 0 ? 0
+            : net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_LEAD_TICKS.get(), 0, 40);
 
         ChunkPos center = new ChunkPos(net.minecraft.core.BlockPos.containing(pos));
         it.unimi.dsi.fastutil.longs.LongOpenHashSet candidates = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
@@ -961,6 +1030,7 @@ public final class TerminalBallisticsRecorder {
                 "[CTB-CHUNKSTREAM] server stream: shell=[{},{}] total={} sentLast={} nullLast={} pending={}",
                 center.x, center.z, session.streamTotal, sentLast, nullLast, session.pendingUuid != null);
         }
+        return sentLast;
     }
 
     // ---- finalize ----------------------------------------------------------------
