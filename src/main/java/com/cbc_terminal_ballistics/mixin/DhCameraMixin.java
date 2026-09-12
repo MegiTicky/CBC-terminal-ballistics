@@ -33,6 +33,7 @@ public abstract class DhCameraMixin {
         if (!DistantHorizonsCompat.shouldPatchCamera()) return;
         Object vec = DistantHorizonsCompat.makeDhVec3d(DistantHorizonsCompat.pipCameraPosition());
         if (vec != null) {
+            DistantHorizonsCompat.countPatchRedirect();
             cir.setReturnValue(vec);
         }
     }
@@ -42,6 +43,7 @@ public abstract class DhCameraMixin {
         if (!DistantHorizonsCompat.shouldPatchCamera()) return;
         Object vec = DistantHorizonsCompat.makeDhVec3f(DistantHorizonsCompat.pipLookDirection());
         if (vec != null) {
+            DistantHorizonsCompat.countPatchRedirect();
             cir.setReturnValue(vec);
         }
     }

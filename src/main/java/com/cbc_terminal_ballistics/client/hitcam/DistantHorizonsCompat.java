@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.client.hitcam;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import net.minecraft.world.phys.Vec3;
 
@@ -50,12 +51,43 @@ public final class DistantHorizonsCompat {
         pipFrameActive = true;
         pipCamPos = camPos;
         pipLookDir = lookDir;
+        if (camPos != null) pipFrameSinceProbe = true;
     }
 
     public static void endPipFrame() {
         pipFrameActive = false;
         pipCamPos = null;
         pipLookDir = null;
+        reportPatchProbeOnce();
+    }
+
+    // --- Runtime probe: did DH actually consult the patched camera? ---------
+    // require=0 mixins that miss their target fail SILENTLY, and a missed
+    // patch renders DH LODs at the player camera inside the PiP window —
+    // terrain from "somewhere else" behind a correctly-placed diagram. These
+    // counters say, once per session, whether the redirect is really wired.
+
+    /** Incremented by DhCameraMixin each time a handler redirects a DH read. */
+    private static int patchRedirects;
+    private static boolean patchProbed;
+    private static boolean pipFrameSinceProbe;
+
+    /** Called by DhCameraMixin when one of its handlers served the PiP camera. */
+    public static void countPatchRedirect() {
+        patchRedirects++;
+    }
+
+    private static void reportPatchProbeOnce() {
+        if (patchProbed || !pipFrameSinceProbe) return;
+        patchProbed = true;
+        if (patchRedirects > 0) {
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] DH camera patch applied: DH consulted the PiP camera {}x during the first nested frame",
+                patchRedirects);
+        } else {
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-HITCAM] DH camera patch NOT consulted during the first nested frame (mixin missing or DH not rendering LODs in the view)");
+        }
     }
 
     /** The hitcam camera's absolute position for the active nested pass (null outside it). */

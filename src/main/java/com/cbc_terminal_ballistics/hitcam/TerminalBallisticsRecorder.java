@@ -145,6 +145,7 @@ public final class TerminalBallisticsRecorder {
         int streamSentLast;
         int streamNullLast;
         long lastStreamLogGameTime = -1L;
+        boolean streamGapLogged;
         /** Stuck-shell watchdog: last relayed position and count of unmoved relays. */
         Vec3 lastRelayPos;
         int stuckRelays;
@@ -1024,6 +1025,15 @@ public final class TerminalBallisticsRecorder {
         session.streamTotal += sentLast;
         session.streamSentLast = sentLast;
         session.streamNullLast = nullLast;
+        if (nullLast > 0 && !session.streamGapLogged) {
+            // Far impacts sit beyond the integrated/dedicated server's
+            // simulation distance: getChunkNow has nothing to send, so the
+            // PiP's world view there falls back to Distant Horizons LODs.
+            session.streamGapLogged = true;
+            CBCTerminalBallistics.LOGGER.info(
+                "[CTB-CHUNKSTREAM] {} chunk(s) around the shell are not loaded server-side (simulation distance) — nothing to stream for them",
+                nullLast);
+        }
         if (level.getGameTime() - session.lastStreamLogGameTime >= 40) {
             session.lastStreamLogGameTime = level.getGameTime();
             CBCTerminalBallistics.LOGGER.debug(

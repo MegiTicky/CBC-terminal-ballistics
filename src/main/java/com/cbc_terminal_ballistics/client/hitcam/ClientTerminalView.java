@@ -475,10 +475,11 @@ public final class ClientTerminalView {
         buildTimeline(primary);
         recomputeEndTick();
         CBCTerminalBallistics.LOGGER.info(
-            "[CTB-HITCAM] terminal view {} shell={} pathPts={} trimmed={} flight={} impact={} animEnd={} endTick={} anchor={} ship={}",
+            "[CTB-HITCAM] terminal view {} shell={} pathPts={} trimmed={} flight={} impact={} animEnd={} endTick={} anchor={} ship={} center={} cam0={} look0={}",
             reason, packet.projectileId(), packet.path().size(), primary.trimmedPath.size(),
             String.format("%.1f", primary.flightTicks), String.format("%.1f", primary.impactTime),
-            String.format("%.1f", primary.animEndTick), endTick - startTick, anchorKind, vsShip != null);
+            String.format("%.1f", primary.animEndTick), endTick - startTick, anchorKind, vsShip != null,
+            fmtVec(center(0)), fmtVec(cameraPos(0)), fmtVec(lookPoint(0)));
         ClientHitcam.startTerminalView();
     }
 
@@ -730,6 +731,11 @@ public final class ClientTerminalView {
     /** Diagram center (orbit target) in world space. */
     public static Vec3 center(float partialTick) {
         return toWorld(anchorCenter, partialTick);
+    }
+
+    /** Compact "x,y z" rendering of a vector for one-line hitcam diagnostics. */
+    private static String fmtVec(Vec3 v) {
+        return v == null ? "null" : String.format("%.0f,%.0f,%.0f", v.x, v.y, v.z);
     }
 
     /**
