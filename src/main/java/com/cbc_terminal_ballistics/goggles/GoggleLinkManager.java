@@ -14,6 +14,8 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -30,6 +32,7 @@ import java.util.Map;
  * defenses are watched through.
  */
 public final class GoggleLinkManager {
+    private static final Logger LOG = LogUtils.getLogger();
     public static final String LINKS_TAG = "GoggleLinks";
     public static final int MAX_LINKS = 16;
     /** Marker ship offset for links that are not on a VS ship. */
@@ -117,14 +120,32 @@ public final class GoggleLinkManager {
     private static GoggleLink linkFor(ServerLevel level, BlockPos target) {
         String dimension = level.dimension().location().toString();
         Object ship = VSCompat.shipManaging(level, target);
-        if (ship != null) {
+        Vec3 aabbMin = VSCompat.shipAABBMin(ship);
+        if (aabbMin != null) {
             long shipId = VSCompat.shipId(ship);
-            Vec3 local = VSCompat.toShipLocal(ship, Vec3.atCenterOf(target));
-            if (shipId >= 0L && local != null) {
-                return new GoggleLink(dimension, shipId, BlockPos.containing(local).asLong(), target.immutable().asLong());
+            if (shipId >= 0L) {
+                // Ship blocks arrive in shipyard coordinates (|x|,|z| > 100000);
+                // the shipyard frame is fixed while the ship sails, so the
+                // offset from the ship AABB minimum (also shipyard-space) is a
+                // stable ship-local identity — the same scheme VSAW's
+                // scope links use. A worldToShip matrix transform would be
+                // wrong here: it expects world coordinates.
+                BlockPos offset = new BlockPos(
+                    target.getX() - (int) aabbMin.x,
+                    target.getY() - (int) aabbMin.y,
+                    target.getZ() - (int) aabbMin.z);
+                return new GoggleLink(dimension, shipId, offset.asLong(), target.immutable().asLong());
             }
         }
-        return new GoggleLink(dimension, -1L, NO_SHIP_OFFSET, target.immutable().asLong());
+        // Ground fallback: a shipyard-space position without a resolvable ship
+        // is unusable for distance checks against world-space spawns — convert
+        // it to world coordinates before storing.
+        BlockPos fallback = target.immutable();
+        if (VSCompat.isShipyardCoordinate(Vec3.atCenterOf(fallback))) {
+            Vec3 world = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(fallback));
+            if (world != null) fallback = BlockPos.containing(world);
+        }
+        return new GoggleLink(dimension, -1L, NO_SHIP_OFFSET, fallback.asLong());
     }
 
     // ---- audience resolution ----------------------------------------------------
@@ -145,15 +166,44 @@ public final class GoggleLinkManager {
             if (player.level() != level) continue;
             boolean matched = false;
             boolean carriesSpotter = false;
+            boolean carriesBallisticWithLinks = false;
+            List<GoggleLink> unmatchedLinks = null;
             for (ItemStack stack : player.getInventory().items) {
                 if (stack.getItem() instanceof BallisticGogglesItem) {
-                    if (anyLinkMatches(level, stack, spawn, spawnBlock, shipCache)) matched = true;
+                    if (anyLinkMatches(level, stack, spawn, spawnBlock, shipCache)) {
+                        matched = true;
+                    } else {
+                        List<GoggleLink> playerLinks = links(stack);
+                        if (!playerLinks.isEmpty()) {
+                            carriesBallisticWithLinks = true;
+                            unmatchedLinks = playerLinks;
+                        }
+                    }
                 } else if (stack.getItem() instanceof SpotterGogglesItem) {
                     carriesSpotter = true;
                 }
             }
             if (matched) {
                 linked.add(player);
+                LOG.info("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched a link of {}",
+                    spawnBlock.getX(), spawnBlock.getY(), spawnBlock.getZ(), player.getGameProfile().getName());
+            } else if (carriesBallisticWithLinks) {
+                // One diagnostic line per shell spawn: shows why the match
+                // failed (unresolved ship, dimension, or plain distance).
+                StringBuilder detail = new StringBuilder();
+                for (GoggleLink link : unmatchedLinks) {
+                    BlockPos resolved = resolveLink(level, link, shipCache);
+                    detail.append(" [")
+                        .append(link.shipId() >= 0 ? "ship " + link.shipId() : "ground")
+                        .append(" -> ")
+                        .append(resolved == null ? "UNRESOLVED" : resolved.getX() + "," + resolved.getY() + "," + resolved.getZ())
+                        .append(" d=").append(resolved == null ? "?" :
+                            String.format("%.0f", Math.sqrt(resolved.distSqr(spawnBlock))))
+                        .append(']');
+                }
+                LOG.info("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched NO link of {} (radius {}):{}",
+                    spawnBlock.getX(), spawnBlock.getY(), spawnBlock.getZ(),
+                    player.getGameProfile().getName(), TBConfig.HITCAM_GOGGLE_MATCH_RADIUS.get(), detail);
             } else if (carriesSpotter && player.distanceToSqr(spawn) <= spotterRadiusSq) {
                 spotters.add(player);
             }
@@ -187,8 +237,17 @@ public final class GoggleLinkManager {
                 if (ship == null) return null;
                 if (shipCache != null) shipCache.put(link.shipId(), ship);
             }
-            Vec3 world = VSCompat.shipLocalToWorld(ship, Vec3.atCenterOf(BlockPos.of(link.shipOffset())));
-            return world == null ? null : BlockPos.containing(world);
+            Vec3 aabbMin = VSCompat.shipAABBMin(ship);
+            if (aabbMin == null) return null;
+            BlockPos offset = BlockPos.of(link.shipOffset());
+            BlockPos shipyard = new BlockPos(
+                offset.getX() + (int) aabbMin.x,
+                offset.getY() + (int) aabbMin.y,
+                offset.getZ() + (int) aabbMin.z);
+            // The shell spawn is a world-space projectile position; the mount
+            // resolves to shipyard coordinates first, so convert.
+            Vec3 world = VSCompat.toWorldCoordinates(level, Vec3.atCenterOf(shipyard));
+            return world == null ? shipyard : BlockPos.containing(world);
         }
         return BlockPos.of(link.fallbackPos());
     }

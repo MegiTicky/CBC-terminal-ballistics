@@ -11,7 +11,10 @@ import net.minecraftforge.fml.ModList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import java.lang.reflect.Method;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Optional Valkyrien Skies integration kept behind reflection so CBC Terminal Ballistics
@@ -234,6 +237,59 @@ public final class VSCompat {
         }
     }
 
+    /**
+     * The ship's bounding-box minimum in shipyard coordinates (the frame ship
+     * block positions arrive in — it does not move while the ship sails), or
+     * null when unavailable. Mirrors VSAW's proven AABB-min offset scheme.
+     */
+    @Nullable
+    public static Vec3 shipAABBMin(Object ship) {
+        if (ship == null) return null;
+        try {
+            Object box = ship.getClass().getMethod("getShipAABB").invoke(ship);
+            if (box == null) return null;
+            double x = ((Number) box.getClass().getMethod("minX").invoke(box)).doubleValue();
+            double y = ((Number) box.getClass().getMethod("minY").invoke(box)).doubleValue();
+            double z = ((Number) box.getClass().getMethod("minZ").invoke(box)).doubleValue();
+            return new Vec3(x, y, z);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Finds a loaded ship by id in this level. Used by the ballistic-goggle
+     * links, which store the ship id so they survive the ship moving.
+     */
+    public static Object shipById(ServerLevel level, long id) {
+        for (Object candidate : loadedShips(level)) {
+            if (shipId(candidate) == id) return candidate;
+        }
+        return null;
+    }
+
+    /**
+     * All currently loaded ships in this level. Prefers {@code getLoadedShips}
+     * (a plain collection, as VSAW uses); falls back to {@code getAllShips},
+     * which may be a Map or an index object rather than an Iterable.
+     */
+    public static Iterable<?> loadedShips(ServerLevel level) {
+        Object world = shipWorld(level);
+        if (world == null) return List.of();
+        try {
+            Object loaded = world.getClass().getMethod("getLoadedShips").invoke(world);
+            if (loaded instanceof Iterable<?> iterable) return iterable;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object all = world.getClass().getMethod("getAllShips").invoke(world);
+            if (all instanceof Map<?, ?> map) return map.values();
+            if (all instanceof Iterable<?> iterable) return iterable;
+        } catch (Throwable ignored) {
+        }
+        return List.of();
+    }
+
     /** World position transformed into the ship's local (shipyard) space, or null. */
     public static Vec3 toShipLocal(Object ship, Vec3 world) {
         return transformPositionStrict(worldToShip(ship), world);
@@ -242,29 +298,6 @@ public final class VSCompat {
     /** Ship-local position transformed into world space, or null. */
     public static Vec3 shipLocalToWorld(Object ship, Vec3 local) {
         return transformPositionStrict(shipToWorld(ship), local);
-    }
-
-    /**
-     * Finds a loaded ship by id in this level. Used by the ballistic-goggle
-     * links, which store the ship id so they survive the ship moving.
-     */
-    public static Object shipById(ServerLevel level, long id) {
-        Object world = shipWorld(level);
-        if (world == null) return null;
-        try {
-            if (getAllShipsMethod == null) {
-                getAllShipsMethod = findMethodByName(world.getClass(), "getAllShips", 0);
-                if (getAllShipsMethod != null) getAllShipsMethod.setAccessible(true);
-            }
-            if (getAllShipsMethod == null) return null;
-            Object allShips = getAllShipsMethod.invoke(world);
-            if (!(allShips instanceof Iterable<?> iterable)) return null;
-            for (Object candidate : iterable) {
-                if (shipId(candidate) == id) return candidate;
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
     }
 
     /** The level's VS ship world (server side), or null. */
