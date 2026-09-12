@@ -133,6 +133,9 @@ public final class ClientHitcam {
         mode = Mode.ARTILLERY;
         artilleryEntityId = entityId;
         artilleryGraceTicks = ARTILLERY_START_GRACE_TICKS;
+        // Symmetric to the "artillery view ended" line, so shots-vs-views is
+        // countable in the log when a PiP seems to be missing.
+        CBCTerminalBallistics.LOGGER.info("[CTB-HITCAM] artillery view started for shell {}", entityId);
         clearArtilleryGhost();
         if (!keepStage) {
             ClientTerminalView.clear();
