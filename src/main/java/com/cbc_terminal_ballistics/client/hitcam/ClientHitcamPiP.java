@@ -361,16 +361,24 @@ public final class ClientHitcamPiP {
         // stencil blit against a missing buffer rejects the whole call).
         GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, mainTarget.frameBufferId);
         GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, backupTarget.frameBufferId);
+        drainGlErrors();
         GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
             0, 0, backupTarget.width, backupTarget.height,
             GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
-        if (GL11.glGetError() != 0) {
+        int backupError = GL11.glGetError();
+        if (backupError != 0) {
             // Depth format mismatch on some drivers: retry color-only so the
             // backup (and thus the restore below) never loses the screen.
             GL30.glBlitFramebuffer(0, 0, mainTarget.width, mainTarget.height,
                 0, 0, backupTarget.width, backupTarget.height,
                 GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
             GL11.glGetError();
+            if (!failureLogged) {
+                failureLogged = true;
+                com.mojang.logging.LogUtils.getLogger()
+                    .warn("CBCTB hitcam: main screen backup blit failed, GL error 0x{} (depth not backed up)",
+                        Integer.toHexString(backupError));
+            }
         }
 
         Matrix4f oldProjection = RenderSystem.getProjectionMatrix();
@@ -422,6 +430,10 @@ public final class ClientHitcamPiP {
             // Restore the main screen from the backup, color + depth (the PiP
             // pass left its own scene's depth in the main framebuffer; see the
             // backup comment above for the format argument).
+            // The nested pass (DH, Embeddium/VS mixins) can leave stale GL
+            // errors in the queue — drain them first or the check below
+            // misattributes an old error to this blit.
+            drainGlErrors();
             GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, backupTarget.frameBufferId);
             GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, mainTarget.frameBufferId);
             GL30.glBlitFramebuffer(0, 0, backupTarget.width, backupTarget.height,
@@ -429,21 +441,34 @@ public final class ClientHitcamPiP {
                 GL30.GL_COLOR_BUFFER_BIT | GL30.GL_DEPTH_BUFFER_BIT, GL30.GL_NEAREST);
             int blitError = GL11.glGetError();
             if (blitError != 0) {
-                // Depth restore rejected on this driver: fall back to the
-                // color-only restore rather than losing the screen.
+                // Depth restore rejected: fall back to the color-only restore,
+                // then clear the main depth. Leaving the PiP scene's depth in
+                // the main framebuffer makes every later main-view draw (the
+                // hand, other mods' AFTER_LEVEL hooks) depth-test against a
+                // close-up scene — geometry layers wrong across the screen.
                 GL30.glBlitFramebuffer(0, 0, backupTarget.width, backupTarget.height,
                     0, 0, mainTarget.width, mainTarget.height,
                     GL30.GL_COLOR_BUFFER_BIT, GL30.GL_NEAREST);
                 GL11.glGetError();
+                RenderSystem.clear(GL11.GL_DEPTH_BUFFER_BIT, false);
                 if (!failureLogged) {
                     failureLogged = true;
                     com.mojang.logging.LogUtils.getLogger()
-                        .warn("CBCTB hitcam: main screen restore blit failed, GL error 0x{} (depth not restored)",
-                            Integer.toHexString(blitError));
+                        .warn("CBCTB hitcam: main screen restore blit failed, GL error 0x{} (depth cleared); read fbo status 0x{}, draw fbo status 0x{}",
+                            Integer.toHexString(blitError),
+                            Integer.toHexString(GL30.glCheckFramebufferStatus(GL30.GL_READ_FRAMEBUFFER)),
+                            Integer.toHexString(GL30.glCheckFramebufferStatus(GL30.GL_DRAW_FRAMEBUFFER)));
                 }
             }
             RenderSystem.setProjectionMatrix(oldProjection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
             mainTarget.bindWrite(true);
+        }
+    }
+
+    /** Consumes queued GL errors so a stale error is not misattributed to the next call. */
+    private static void drainGlErrors() {
+        for (int i = 0; i < 8; i++) {
+            if (GL11.glGetError() == 0) return;
         }
     }
 
