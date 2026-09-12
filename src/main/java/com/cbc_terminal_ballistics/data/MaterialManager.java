@@ -61,6 +61,7 @@ public class MaterialManager extends SimpleJsonResourceReloadListener {
                 if (obj.has("path_contains_any") && obj.get("path_contains_any").isJsonArray()) {
                     obj.getAsJsonArray("path_contains_any").forEach(e -> paths.add(new PathRule(e.getAsString(), stats)));
                 }
+                // If no selector is present, treat the file id itself as a block id for compact datapacks.
                 if (!obj.has("block") && !obj.has("blocks") && !obj.has("tag") && !obj.has("tags")
                     && !obj.has("namespace") && !obj.has("namespaces") && !obj.has("path_contains") && !obj.has("path_contains_any")) {
                     addBlock(blocks, entry.getKey().toString(), stats);
@@ -73,7 +74,7 @@ public class MaterialManager extends SimpleJsonResourceReloadListener {
         this.byTag = Map.copyOf(tags);
         this.namespaceRules = List.copyOf(namespaces);
         this.pathRules = List.copyOf(paths);
-        CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] Loaded {} block, {} tag, {} namespace and {} path terminal-ballistics material mappings",
+        CBCTerminalBallistics.LOGGER.info("Loaded {} block, {} tag, {} namespace and {} path terminal-ballistics material mappings",
             blocks.size(), tags.size(), namespaces.size(), paths.size());
     }
 
@@ -119,7 +120,7 @@ public class MaterialManager extends SimpleJsonResourceReloadListener {
     private static void addBlock(Map<ResourceLocation, MaterialStats> map, String raw, MaterialStats stats) {
         ResourceLocation id = ResourceLocation.tryParse(raw.startsWith("#") ? raw.substring(1) : raw);
         if (id != null && BuiltInRegistries.BLOCK.containsKey(id)) map.put(id, stats);
-        else if (id != null) map.put(id, stats);
+        else if (id != null) map.put(id, stats); // Allow blocks supplied by optional mods to resolve when loaded.
     }
 
     private static void addTag(Map<TagKey<Block>, MaterialStats> map, String raw, MaterialStats stats) {

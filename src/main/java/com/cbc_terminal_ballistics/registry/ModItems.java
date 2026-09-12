@@ -6,6 +6,8 @@ import com.cbc_terminal_ballistics.armor.CopycatArmorLayerItem;
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorItem;
 import com.cbc_terminal_ballistics.debug.AdvancedBlockArmorInspectionToolItem;
 import com.cbc_terminal_ballistics.debug.BallisticTestLauncherItem;
+import com.cbc_terminal_ballistics.goggles.BallisticGogglesItem;
+import com.cbc_terminal_ballistics.goggles.SpotterGogglesItem;
 import net.minecraft.world.item.Item;
 import net.minecraftforge.registries.DeferredRegister;
 import net.minecraftforge.registries.ForgeRegistries;
@@ -34,6 +36,14 @@ public final class ModItems {
     public static final RegistryObject<Item> BALLISTIC_TEST_LAUNCHER =
             ITEMS.register("ballistic_test_launcher",
                     () -> new BallisticTestLauncherItem(new Item.Properties().stacksTo(1)));
+
+    public static final RegistryObject<Item> BALLISTIC_GOGGLES =
+            ITEMS.register("ballistic_goggles",
+                    () -> new BallisticGogglesItem(new Item.Properties().stacksTo(1)));
+
+    public static final RegistryObject<Item> SPOTTER_GOGGLES =
+            ITEMS.register("spotter_goggles",
+                    () -> new SpotterGogglesItem(new Item.Properties().stacksTo(1)));
 
     private ModItems() {
     }

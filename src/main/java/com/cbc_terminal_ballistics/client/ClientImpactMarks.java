@@ -32,8 +32,11 @@ import net.minecraftforge.client.event.RenderLevelStageEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import org.joml.Matrix3f;
 import org.joml.Matrix4f;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -69,10 +72,28 @@ public final class ClientImpactMarks {
     private static final ResourceLocation GENERAL_RICOCHET_BIG_TEXTURE = new ResourceLocation(CBCTerminalBallistics.MOD_ID, "textures/impact/general/ricochet_big.png");
 
     private static final Map<BlockPos, List<ImpactMark>> MARKS = new HashMap<>();
+    /** Marks anchored to Create contraption blocks: entity UUID -> local block pos -> marks. */
+    private static final Map<java.util.UUID, Map<BlockPos, List<ImpactMark>>> CONTRAPTION_MARKS = new HashMap<>();
 
     public static void accept(BlockPos pos, List<ImpactMark> marks) {
         if (marks.isEmpty()) MARKS.remove(pos);
         else MARKS.put(pos.immutable(), List.copyOf(marks));
+    }
+
+    public static void acceptContraption(java.util.UUID contraptionUuid, BlockPos localPos, List<ImpactMark> marks) {
+        Map<BlockPos, List<ImpactMark>> byPos = CONTRAPTION_MARKS.get(contraptionUuid);
+        if (marks.isEmpty()) {
+            if (byPos != null) {
+                byPos.remove(localPos.immutable());
+                if (byPos.isEmpty()) CONTRAPTION_MARKS.remove(contraptionUuid);
+            }
+            return;
+        }
+        if (byPos == null) {
+            byPos = new HashMap<>();
+            CONTRAPTION_MARKS.put(contraptionUuid, byPos);
+        }
+        byPos.put(localPos.immutable(), List.copyOf(marks));
     }
 
     @SubscribeEvent
@@ -81,12 +102,17 @@ public final class ClientImpactMarks {
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
             MARKS.clear();
+            CONTRAPTION_MARKS.clear();
             return;
         }
 
         long now = mc.level.getGameTime();
         int lifetime = overlayLifetime();
         MARKS.entrySet().removeIf(entry -> entry.getValue().stream().allMatch(mark -> now - mark.gameTime() >= lifetime));
+        CONTRAPTION_MARKS.values().removeIf(byPos -> {
+            byPos.values().removeIf(marks -> marks.stream().allMatch(mark -> now - mark.gameTime() >= lifetime));
+            return byPos.isEmpty();
+        });
 
         // --- ADDED PERSISTENT FLAME LOGIC ---
         for (Map.Entry<BlockPos, List<ImpactMark>> entry : MARKS.entrySet()) {
@@ -145,7 +171,67 @@ public final class ClientImpactMarks {
                 }
             }
         }
+        contraptionFlameParticles(mc, now);
         // ------------------------------------
+    }
+
+    /** Flame/smoke particles for marks anchored to Create contraption blocks (world point via live transform). */
+    private static void contraptionFlameParticles(Minecraft mc, long now) {
+        for (Map.Entry<java.util.UUID, Map<BlockPos, List<ImpactMark>>> shipEntry : CONTRAPTION_MARKS.entrySet()) {
+            net.minecraft.world.entity.Entity contraption = findContraption(mc.level, shipEntry.getKey());
+            if (contraption == null) continue;
+            for (Map.Entry<BlockPos, List<ImpactMark>> entry : shipEntry.getValue().entrySet()) {
+                BlockPos localPos = entry.getKey();
+                for (ImpactMark mark : entry.getValue()) {
+                    long age = now - mark.gameTime();
+                    if (age < 60 && mark.kind() == ImpactMarkKind.HOLE && mark.surface() == ImpactSurfaceType.METALLIC) {
+                        float scale = switch (mark.caliber()) {
+                            case AUTOCANNON -> 0.4f;
+                            case HEAVY_AUTOCANNON, SMALL, SMALL_MEDIUM -> 1.0f;
+                            case MEDIUM -> 1.5f;
+                            case BIG -> 2.5f;
+                        };
+                        if (mc.level.random.nextFloat() < 0.3f * scale) {
+                            Vec3 localNormal = Vec3.atLowerCornerOf(mark.face().getNormal());
+                            double jitterX = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                            double jitterY = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                            double jitterZ = (mc.level.random.nextDouble() - 0.5) * 0.25 * scale;
+                            Vec3 localPos3 = mark.absolute(localPos)
+                                .add(localNormal.scale(0.05))
+                                .add(jitterX, jitterY, jitterZ);
+                            Vec3 worldPos = ContraptionCompat.toGlobalVector(contraption, localPos3, 1.0F);
+                            Vec3 worldPos2 = ContraptionCompat.toGlobalVector(contraption, localPos3.add(localNormal), 1.0F);
+                            if (worldPos == null) continue;
+                            Vec3 worldNormal = worldPos2 != null ? worldPos2.subtract(worldPos).normalize() : localNormal;
+                            mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.FLAME,
+                                worldPos.x, worldPos.y, worldPos.z,
+                                worldNormal.x * 0.02 * scale,
+                                worldNormal.y * 0.02 * scale + (0.01 * scale),
+                                worldNormal.z * 0.02 * scale);
+                            if (mc.level.random.nextFloat() < 0.5f) {
+                                mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.SMOKE,
+                                    worldPos.x, worldPos.y, worldPos.z,
+                                    worldNormal.x * 0.01 * scale,
+                                    worldNormal.y * 0.04 * scale,
+                                    worldNormal.z * 0.01 * scale);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Nullable
+    private static net.minecraft.world.entity.Entity findContraption(Level level, java.util.UUID uuid) {
+        if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
+            // ClientLevel has no UUID lookup in 1.20.1; contraption entities are few,
+            // so a linear scan over rendered entities is fine.
+            for (net.minecraft.world.entity.Entity entity : clientLevel.entitiesForRendering()) {
+                if (entity.getUUID().equals(uuid)) return entity;
+            }
+        }
+        return null;
     }
 
     @SubscribeEvent
@@ -171,6 +257,7 @@ public final class ClientImpactMarks {
             BlockPos renderPos = pos;
             BlockState state = mc.level.getBlockState(renderPos);
             if (state.isAir() && mc.level instanceof net.minecraft.client.multiplayer.ClientLevel) {
+                // Try VS shipyard coordinates first
                 net.minecraft.client.multiplayer.ClientLevel clientLevel = (net.minecraft.client.multiplayer.ClientLevel) mc.level;
                 BlockPos shipyardPos = VSClientCompat.toShipyardCoordinates(clientLevel, pos);
                 if (!shipyardPos.equals(pos)) {
@@ -178,6 +265,13 @@ public final class ClientImpactMarks {
                     if (!shipState.isAir()) {
                         renderPos = shipyardPos;
                         state = shipState;
+                    }
+                }
+                // Try Create contraption blocks
+                if (state.isAir()) {
+                    BlockState contraptionState = ContraptionCompat.blockStateAt(mc.level, pos);
+                    if (contraptionState != null) {
+                        state = contraptionState;
                     }
                 }
             }
@@ -191,11 +285,79 @@ public final class ClientImpactMarks {
                 if (age < 0 || age >= lifetime) {
                     continue;
                 }
-                renderMark(buffers, poseStack, mc.level, renderPos, mark, camera, age, lifetime);
+                renderMark(buffers, poseStack, mc.level, renderPos, state, mark, camera, age, lifetime);
             }
         }
 
+        renderContraptionMarks(event, mc, now, lifetime, camera, poseStack, buffers);
+
         buffers.endBatch();
+    }
+
+    /**
+     * Render marks anchored to Create contraption blocks. Each frame the block's
+     * live world position is resolved from the owning contraption entity, and the
+     * decal geometry is drawn in the contraption's rotated frame (basis vectors
+     * sampled from toGlobalVector), so marks translate AND rotate with the ship.
+     */
+    private static void renderContraptionMarks(RenderLevelStageEvent event, Minecraft mc, long now, int lifetime,
+                                               Vec3 camera, PoseStack poseStack, MultiBufferSource.BufferSource buffers) {
+        if (CONTRAPTION_MARKS.isEmpty()) return;
+        float partialTick = event.getPartialTick();
+        for (Map.Entry<java.util.UUID, Map<BlockPos, List<ImpactMark>>> shipEntry : CONTRAPTION_MARKS.entrySet()) {
+            net.minecraft.world.entity.Entity contraption = findContraption(mc.level, shipEntry.getKey());
+            if (contraption == null) continue;
+            for (Map.Entry<BlockPos, List<ImpactMark>> entry : shipEntry.getValue().entrySet()) {
+                BlockPos localPos = entry.getKey();
+                BlockState state = ContraptionCompat.blockStateForLocal(contraption, localPos);
+                if (state == null || state.isAir()) continue;
+                Vec3 worldCenter = ContraptionCompat.worldCenterForLocal(contraption, localPos, partialTick);
+                if (worldCenter == null) continue;
+                if (worldCenter.distanceToSqr(mc.player.position()) > 128 * 128) continue;
+
+                for (ImpactMark mark : entry.getValue()) {
+                    long age = now - mark.gameTime();
+                    if (age < 0 || age >= lifetime) continue;
+                    // Attachment/clip checks run in block-local space (geomPos = ZERO).
+                    List<ClippedFaceRect> rects = prepareMark(mc.level, BlockPos.ZERO, state, mark);
+                    if (rects.isEmpty()) continue;
+
+                    Matrix4f basis = contraptionBasisMatrix(contraption, localPos, partialTick, worldCenter);
+                    if (basis == null) continue;
+
+                    poseStack.pushPose();
+                    poseStack.translate(worldCenter.x - camera.x, worldCenter.y - camera.y, worldCenter.z - camera.z);
+                    poseStack.mulPoseMatrix(basis);
+                    poseStack.translate(-0.5D, -0.5D, -0.5D);
+                    emitMark(buffers, poseStack, mark, age, lifetime, rects);
+                    poseStack.popPose();
+                }
+            }
+        }
+    }
+
+    /**
+     * Build the local->world rotation of the contraption by sampling toGlobalVector
+     * around the block center. Exact for any contraption type/rotation, no yaw/pitch
+     * sign conventions required.
+     */
+    @Nullable
+    static Matrix4f contraptionBasisMatrix(net.minecraft.world.entity.Entity contraption, BlockPos localPos, float partialTick, Vec3 worldCenter) {
+        Vec3 localCenter = Vec3.atCenterOf(localPos);
+        Vec3 ex = ContraptionCompat.toGlobalVector(contraption, localCenter.add(1.0D, 0.0D, 0.0D), partialTick);
+        Vec3 ey = ContraptionCompat.toGlobalVector(contraption, localCenter.add(0.0D, 1.0D, 0.0D), partialTick);
+        Vec3 ez = ContraptionCompat.toGlobalVector(contraption, localCenter.add(0.0D, 0.0D, 1.0D), partialTick);
+        if (ex == null || ey == null || ez == null) return null;
+        ex = ex.subtract(worldCenter);
+        ey = ey.subtract(worldCenter);
+        ez = ez.subtract(worldCenter);
+        Matrix4f matrix = new Matrix4f();
+        // joml names elements m<column><row>: local X axis maps to the first column, etc.
+        matrix.m00((float) ex.x); matrix.m01((float) ex.y); matrix.m02((float) ex.z); matrix.m03(0.0F);
+        matrix.m10((float) ey.x); matrix.m11((float) ey.y); matrix.m12((float) ey.z); matrix.m13(0.0F);
+        matrix.m20((float) ez.x); matrix.m21((float) ez.y); matrix.m22((float) ez.z); matrix.m23(0.0F);
+        matrix.m30(0.0F); matrix.m31(0.0F); matrix.m32(0.0F); matrix.m33(1.0F);
+        return matrix;
     }
 
     private static int overlayLifetime() {
@@ -208,17 +370,30 @@ public final class ClientImpactMarks {
         return !shape.isEmpty();
     }
 
-    private static void renderMark(MultiBufferSource buffers, PoseStack poseStack, Level level, BlockPos pos, ImpactMark mark, Vec3 camera, long age, int lifetime) {
-        Vec3 absolute = mark.absolute(pos);
-        if (!intersectsAttachment(level, pos, mark, absolute)) return;
+    /** Attachment + edge-clip checks; returns the visible face rects (empty when the mark cannot render). */
+    private static List<ClippedFaceRect> prepareMark(Level level, BlockPos geomPos, BlockState resolvedState, ImpactMark mark) {
+        if (!intersectsAttachment(level, geomPos, resolvedState, mark, mark.absolute(geomPos))) return List.of();
+        List<ClippedFaceRect> rects = clippedFaceRects(level, geomPos, resolvedState, mark);
+        if (rects.isEmpty()) return List.of();
+        return rects;
+    }
 
-        // 16x16 impact textures are rendered 1:1 with a Minecraft block face.
-        // Build the decal on the actual collision-shape face.  Pieces that
-        // cross a block-cell edge are rendered only when that neighboring cell
-        // has a solid/copycat/framed block supporting the overflow.
-        List<ClippedFaceRect> rects = clippedFaceRects(level, pos, mark);
+    private static void renderMark(MultiBufferSource buffers, PoseStack poseStack, Level level, BlockPos pos, BlockState resolvedState, ImpactMark mark, Vec3 camera, long age, int lifetime) {
+        List<ClippedFaceRect> rects = prepareMark(level, pos, resolvedState, mark);
         if (rects.isEmpty()) return;
 
+        poseStack.pushPose();
+        boolean transformedWithShip = level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel
+            && VSClientCompat.transformRenderWithShip(clientLevel, pos, poseStack, camera);
+        if (!transformedWithShip) {
+            poseStack.translate(pos.getX() - camera.x, pos.getY() - camera.y, pos.getZ() - camera.z);
+        }
+        emitMark(buffers, poseStack, mark, age, lifetime, rects);
+        poseStack.popPose();
+    }
+
+    /** Emit the decal quads for the already-prepared face rects. The pose must already place block-local (0..1) space. */
+    private static void emitMark(MultiBufferSource buffers, PoseStack poseStack, ImpactMark mark, long age, int lifetime, List<ClippedFaceRect> rects) {
         float alpha = switch (mark.kind()) {
             case HOLE, EXIT_HOLE -> 0.95F;
             case STREAK -> 0.90F;
@@ -234,17 +409,6 @@ public final class ClientImpactMarks {
         Vec3 normal = Vec3.atLowerCornerOf(face.getNormal());
         Vec3 normalOffset = normal.scale(0.003D);
         VertexConsumer buffer = buffers.getBuffer(RenderType.entityTranslucent(texture(mark)));
-
-        poseStack.pushPose();
-        boolean transformedWithShip = level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel
-            && VSClientCompat.transformRenderWithShip(clientLevel, pos, poseStack, camera);
-        if (transformedWithShip) {
-            // VS render transform already applies -camera, ship-to-world, and block-position translation.
-            // Keep the mark in block-local shipyard coordinates so it follows ship motion/rotation.
-            poseStack.translate(0.0D, 0.0D, 0.0D);
-        } else {
-            poseStack.translate(pos.getX() - camera.x, pos.getY() - camera.y, pos.getZ() - camera.z);
-        }
 
         PoseStack.Pose pose = poseStack.last();
         Matrix4f matrix = pose.pose();
@@ -271,11 +435,10 @@ public final class ClientImpactMarks {
             emitClippedFaceRect(buffer, matrix, normalMatrix, rect, normalOffset, (float) normal.x, (float) normal.y, (float) normal.z,
                 uMinTex, vMinTex, uMaxTex, vMaxTex, red, green, blue, alpha, light);
         }
-        poseStack.popPose();
     }
 
-    private static List<ClippedFaceRect> clippedFaceRects(Level level, BlockPos pos, ImpactMark mark) {
-        VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
+    private static List<ClippedFaceRect> clippedFaceRects(Level level, BlockPos pos, BlockState resolvedState, ImpactMark mark) {
+        VoxelShape shape = resolvedState.getCollisionShape(level, pos);
         if (shape.isEmpty()) return List.of();
         AABB bounds = shape.bounds();
 
@@ -363,7 +526,12 @@ public final class ClientImpactMarks {
     private static boolean isSupportedOverflowNeighbor(Level level, BlockPos pos, Direction face, int du, int dv) {
         BlockPos neighbor = pos.offset(neighborDx(face, du, dv), neighborDy(face, du, dv), neighborDz(face, du, dv));
         BlockState state = level.getBlockState(neighbor);
-        if (state.isAir()) return false;
+        if (state.isAir()) {
+            // Contraption blocks are not placed in the world; resolve via ContraptionCompat
+            // so marks on contraption surfaces may overflow onto adjacent hull blocks.
+            state = ContraptionCompat.blockStateAt(level, neighbor);
+            if (state == null) return false;
+        }
         if (isCopycatOrFramedBlock(state)) {
             return true;
         }
@@ -492,8 +660,8 @@ public final class ClientImpactMarks {
         }
     }
 
-    private static boolean intersectsAttachment(Level level, BlockPos pos, ImpactMark mark, Vec3 absolute) {
-        VoxelShape shape = level.getBlockState(pos).getCollisionShape(level, pos);
+    private static boolean intersectsAttachment(Level level, BlockPos pos, BlockState resolvedState, ImpactMark mark, Vec3 absolute) {
+        VoxelShape shape = resolvedState.getCollisionShape(level, pos);
         if (shape.isEmpty()) return false;
         AABB box = shape.bounds().move(pos);
         Vec3 p = absolute.add(Vec3.atLowerCornerOf(mark.face().getNormal()).scale(0.003D));

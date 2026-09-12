@@ -30,16 +30,35 @@ import java.util.Map;
 @Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientEmbeddedShells {
     private static final Map<BlockPos, List<EmbeddedShell>> SHELLS = new HashMap<>();
+    /** Shells anchored to Create contraption blocks: entity UUID -> local block pos -> shells. */
+    private static final Map<java.util.UUID, Map<BlockPos, List<EmbeddedShell>>> CONTRAPTION_SHELLS = new HashMap<>();
 
     public static void accept(BlockPos pos, List<EmbeddedShell> shells) {
         if (shells.isEmpty()) SHELLS.remove(pos);
         else SHELLS.put(pos.immutable(), List.copyOf(shells));
     }
 
+    public static void acceptContraption(java.util.UUID contraptionUuid, BlockPos localPos, List<EmbeddedShell> shells) {
+        Map<BlockPos, List<EmbeddedShell>> byPos = CONTRAPTION_SHELLS.get(contraptionUuid);
+        if (shells.isEmpty()) {
+            if (byPos != null) {
+                byPos.remove(localPos.immutable());
+                if (byPos.isEmpty()) CONTRAPTION_SHELLS.remove(contraptionUuid);
+            }
+            return;
+        }
+        if (byPos == null) {
+            byPos = new HashMap<>();
+            CONTRAPTION_SHELLS.put(contraptionUuid, byPos);
+        }
+        byPos.put(localPos.immutable(), List.copyOf(shells));
+    }
+
     @net.minecraftforge.eventbus.api.SubscribeEvent
     public static void clientTick(TickEvent.ClientTickEvent event) {
         if (event.phase == TickEvent.Phase.END && Minecraft.getInstance().level == null) {
             SHELLS.clear();
+            CONTRAPTION_SHELLS.clear();
         }
     }
 
@@ -72,7 +91,65 @@ public final class ClientEmbeddedShells {
             ShellRender candidate = candidates.get(i);
             renderBlockShells(mc.level, candidate.pos(), List.of(candidate.shell()), poseStack, camera, buffers);
         }
+
+        // --- Create contraption-anchored shells ---
+        // The world has air at contraption block positions, so these are anchored to the
+        // owning entity and rendered in its live transformed frame (they follow the ship).
+        float partialTick = event.getPartialTick();
+        List<ContraShellRender> contraCandidates = new ArrayList<>();
+        for (Map.Entry<java.util.UUID, Map<BlockPos, List<EmbeddedShell>>> shipEntry : CONTRAPTION_SHELLS.entrySet()) {
+            net.minecraft.world.entity.Entity contraption = findContraption(mc.level, shipEntry.getKey());
+            if (contraption == null) continue;
+            for (Map.Entry<BlockPos, List<EmbeddedShell>> entry : shipEntry.getValue().entrySet()) {
+                BlockPos localPos = entry.getKey();
+                // Resolve the real hull block state via ContraptionCompat instead of the
+                // world query (which is always air for contraption blocks).
+                BlockState state = com.cbc_terminal_ballistics.util.ContraptionCompat.blockStateForLocal(contraption, localPos);
+                if (state == null || state.isAir()) continue;
+                Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.worldCenterForLocal(contraption, localPos, partialTick);
+                if (worldCenter == null || worldCenter.distanceToSqr(mc.player.position()) > 128 * 128) continue;
+                for (EmbeddedShell shell : entry.getValue()) {
+                    if (shell.visualState() != null || (shell.visualItem() != null && !shell.visualItem().isEmpty())) {
+                        contraCandidates.add(new ContraShellRender(contraption, localPos, worldCenter, shell));
+                    }
+                }
+            }
+        }
+        contraCandidates.sort(Comparator.comparingLong((ContraShellRender shell) -> shell.shell().gameTime()).reversed());
+        for (int i = 0; i < Math.min(limit, contraCandidates.size()); i++) {
+            ContraShellRender candidate = contraCandidates.get(i);
+            renderContraptionBlockShells(candidate.contraption(), candidate.localPos(), candidate.worldCenter(),
+                List.of(candidate.shell()), poseStack, camera, buffers, partialTick);
+        }
         buffers.endBatch();
+    }
+
+    private record ContraShellRender(net.minecraft.world.entity.Entity contraption, BlockPos localPos, Vec3 worldCenter, EmbeddedShell shell) {}
+
+    @javax.annotation.Nullable
+    private static net.minecraft.world.entity.Entity findContraption(Level level, java.util.UUID uuid) {
+        if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
+            // ClientLevel has no UUID lookup in 1.20.1; linear scan is fine (contraptions are few).
+            for (net.minecraft.world.entity.Entity entity : clientLevel.entitiesForRendering()) {
+                if (entity.getUUID().equals(uuid)) return entity;
+            }
+        }
+        return null;
+    }
+
+    private static void renderContraptionBlockShells(net.minecraft.world.entity.Entity contraption, BlockPos localPos, Vec3 worldCenter,
+                                                     List<EmbeddedShell> shells, PoseStack poseStack, Vec3 camera,
+                                                     MultiBufferSource.BufferSource buffers, float partialTick) {
+        Matrix4f basis = ClientImpactMarks.contraptionBasisMatrix(contraption, localPos, partialTick, worldCenter);
+        if (basis == null) return;
+        poseStack.pushPose();
+        poseStack.translate(worldCenter.x - camera.x, worldCenter.y - camera.y, worldCenter.z - camera.z);
+        poseStack.mulPoseMatrix(basis);
+        poseStack.translate(-0.5D, -0.5D, -0.5D);
+        for (EmbeddedShell shell : shells) {
+            renderShell(contraption.level(), poseStack, buffers, shell, 0.0D);
+        }
+        poseStack.popPose();
     }
 
     private static void renderBlockShells(Level level, BlockPos pos, List<EmbeddedShell> shells, PoseStack poseStack,
@@ -85,13 +162,13 @@ public final class ClientEmbeddedShells {
         }
 
         for (EmbeddedShell shell : shells) {
-            renderShell(level, pos, poseStack, buffers, shell);
+            renderShell(level, poseStack, buffers, shell, 0.0D);
         }
         poseStack.popPose();
     }
 
-    private static void renderShell(Level level, BlockPos pos, PoseStack poseStack,
-                                    MultiBufferSource buffers, EmbeddedShell shell) {
+    private static void renderShell(Level level, PoseStack poseStack,
+                                    MultiBufferSource buffers, EmbeddedShell shell, double baseOffset) {
         BlockState state = shell.visualState();
         ItemStack item = shell.visualItem();
         if (state == null && (item == null || item.isEmpty())) return;
@@ -105,9 +182,9 @@ public final class ClientEmbeddedShells {
         Vec3 horizontal = new Vec3(axis.x, 0.0D, axis.z);
         poseStack.pushPose();
         double depthOffset = shell.depth() - 0.5D;
-        poseStack.translate(shell.x() + axis.x * depthOffset,
-            shell.y() + axis.y * depthOffset,
-            shell.z() + axis.z * depthOffset);
+        poseStack.translate(shell.x() + baseOffset + axis.x * depthOffset,
+            shell.y() + baseOffset + axis.y * depthOffset,
+            shell.z() + baseOffset + axis.z * depthOffset);
         if (axis.horizontalDistanceSqr() > 1.0E-4D && Math.abs(axis.y) > 1.0E-2D) {
             poseStack.mulPoseMatrix(new Matrix4f(CBCReflect.facing(axis.reverse(), horizontal.normalize())));
             poseStack.mulPoseMatrix(new Matrix4f(CBCReflect.facing(horizontal.normalize())));

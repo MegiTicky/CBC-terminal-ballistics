@@ -11,7 +11,10 @@ import net.minecraftforge.fml.ModList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
 import java.lang.reflect.Method;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Optional Valkyrien Skies integration kept behind reflection so CBC Terminal Ballistics
@@ -52,6 +55,16 @@ public final class VSCompat {
             }
         }
         return loaded;
+    }
+
+    /**
+     * True when a position uses VS shipyard coordinates (the magnitude VS
+     * reserves for ship-local block positions, which the rest of this class
+     * assumes when deciding whether a point needs world conversion).
+     */
+    public static boolean isShipyardCoordinate(Vec3 position) {
+        return position != null && (position.x < -100000 || position.x > 100000
+            || position.z < -100000 || position.z > 100000);
     }
 
     /**
@@ -208,6 +221,100 @@ public final class VSCompat {
         return null;
     }
 
+    /** The VS ship managing the block containing {@code pos}, or null. */
+    public static Object shipManaging(Level level, BlockPos pos) {
+        return getShipManagingPos(level, pos);
+    }
+
+    /** The VS ship id, or -1 when unavailable. */
+    public static long shipId(Object ship) {
+        if (ship == null) return -1L;
+        try {
+            Object result = ship.getClass().getMethod("getId").invoke(ship);
+            return result instanceof Number number ? number.longValue() : -1L;
+        } catch (Throwable ignored) {
+            return -1L;
+        }
+    }
+
+    /**
+     * The ship's bounding-box minimum in shipyard coordinates (the frame ship
+     * block positions arrive in — it does not move while the ship sails), or
+     * null when unavailable. Mirrors VSAW's proven AABB-min offset scheme.
+     */
+    @Nullable
+    public static Vec3 shipAABBMin(Object ship) {
+        if (ship == null) return null;
+        try {
+            Object box = ship.getClass().getMethod("getShipAABB").invoke(ship);
+            if (box == null) return null;
+            double x = ((Number) box.getClass().getMethod("minX").invoke(box)).doubleValue();
+            double y = ((Number) box.getClass().getMethod("minY").invoke(box)).doubleValue();
+            double z = ((Number) box.getClass().getMethod("minZ").invoke(box)).doubleValue();
+            return new Vec3(x, y, z);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Finds a loaded ship by id in this level. Used by the ballistic-goggle
+     * links, which store the ship id so they survive the ship moving.
+     */
+    public static Object shipById(ServerLevel level, long id) {
+        for (Object candidate : loadedShips(level)) {
+            if (shipId(candidate) == id) return candidate;
+        }
+        return null;
+    }
+
+    /**
+     * All currently loaded ships in this level. Prefers {@code getLoadedShips}
+     * (a plain collection, as VSAW uses); falls back to {@code getAllShips},
+     * which may be a Map or an index object rather than an Iterable.
+     */
+    public static Iterable<?> loadedShips(ServerLevel level) {
+        Object world = shipWorld(level);
+        if (world == null) return List.of();
+        try {
+            Object loaded = world.getClass().getMethod("getLoadedShips").invoke(world);
+            if (loaded instanceof Iterable<?> iterable) return iterable;
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object all = world.getClass().getMethod("getAllShips").invoke(world);
+            if (all instanceof Map<?, ?> map) return map.values();
+            if (all instanceof Iterable<?> iterable) return iterable;
+        } catch (Throwable ignored) {
+        }
+        return List.of();
+    }
+
+    /** World position transformed into the ship's local (shipyard) space, or null. */
+    public static Vec3 toShipLocal(Object ship, Vec3 world) {
+        return transformPositionStrict(worldToShip(ship), world);
+    }
+
+    /** Ship-local position transformed into world space, or null. */
+    public static Vec3 shipLocalToWorld(Object ship, Vec3 local) {
+        return transformPositionStrict(shipToWorld(ship), local);
+    }
+
+    /** The level's VS ship world (server side), or null. */
+    private static Object shipWorld(ServerLevel level) {
+        try {
+            MinecraftServer server = level.getServer();
+            if (getShipObjectWorldMethod == null) {
+                getShipObjectWorldMethod = findMethodByName(server.getClass(), "getShipObjectWorld", 0);
+                if (getShipObjectWorldMethod == null) return null;
+                getShipObjectWorldMethod.setAccessible(true);
+            }
+            return getShipObjectWorldMethod.invoke(server);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     /**
      * Direct access to ship world via MinecraftServer's implementation of IShipObjectWorldServerProvider.
      * This bypasses VSGameUtilsKt entirely to avoid client-only method signatures.
@@ -220,20 +327,11 @@ public final class VSCompat {
         if (!(level instanceof ServerLevel serverLevel)) return null;
 
         try {
-            // Step 1: Get MinecraftServer
-            MinecraftServer server = serverLevel.getServer();
-
-            // Step 2: Get shipObjectWorld - use getDeclaredMethods() to avoid interface verification
-            if (getShipObjectWorldMethod == null) {
-                getShipObjectWorldMethod = findMethodByName(server.getClass(), "getShipObjectWorld", 0);
-                if (getShipObjectWorldMethod == null) return null;
-                getShipObjectWorldMethod.setAccessible(true);
-            }
-
-            Object shipWorld = getShipObjectWorldMethod.invoke(server);
+            // Step 1: Get the ship world (bypasses VSGameUtilsKt verification issues)
+            Object shipWorld = shipWorld(serverLevel);
             if (shipWorld == null) return null;
 
-            // Step 3: Get dimensionId from Level
+            // Step 2: Get dimensionId from Level
             if (getDimensionIdMethod == null) {
                 getDimensionIdMethod = findMethodByName(level.getClass(), "getDimensionId", 0);
                 if (getDimensionIdMethod == null) {
@@ -250,7 +348,7 @@ public final class VSCompat {
 
             Object dimensionId = getDimensionIdMethod.invoke(level);
 
-            // Step 4: Get allShips
+            // Step 3: Get allShips and the by-chunk lookup on it
             if (getAllShipsMethod == null) {
                 getAllShipsMethod = findMethodByName(shipWorld.getClass(), "getAllShips", 0);
                 if (getAllShipsMethod != null) {
@@ -262,7 +360,7 @@ public final class VSCompat {
 
             Object allShips = getAllShipsMethod.invoke(shipWorld);
 
-            // Step 5: Check isChunkInShipyard
+            // Step 4: Check isChunkInShipyard
             int chunkX = pos.getX() >> 4;
             int chunkZ = pos.getZ() >> 4;
 
@@ -282,7 +380,7 @@ public final class VSCompat {
                 }
             }
 
-            // Step 6: Get ship by chunk position
+            // Step 5: Get ship by chunk position
             if (getByChunkPosMethod == null) {
                 getByChunkPosMethod = findMethodByName(allShips.getClass(), "getByChunkPos", 3);
                 if (getByChunkPosMethod != null) {

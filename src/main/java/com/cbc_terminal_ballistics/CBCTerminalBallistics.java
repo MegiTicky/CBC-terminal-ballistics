@@ -6,10 +6,15 @@ import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.CbcArmorCompat;
 import com.cbc_terminal_ballistics.compat.CbcInspectionCompat;
 import com.cbc_terminal_ballistics.debug.TBDebug;
+import com.cbc_terminal_ballistics.hitcam.StreamPreferences;
+import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.data.CriticalBlockManager;
 import com.cbc_terminal_ballistics.data.IgnoredBlockManager;
 import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.network.TBNetwork;
+import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
+import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.cbc_terminal_ballistics.registry.ModBlockEntities;
 import com.cbc_terminal_ballistics.registry.ModBlocks;
 import com.cbc_terminal_ballistics.registry.ModCreativeTabs;
@@ -51,6 +56,7 @@ public class CBCTerminalBallistics {
 
         ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, TBConfig.SERVER_SPEC);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, TBConfig.COMMON_SPEC);
+        ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, TBConfig.CLIENT_SPEC);
         TBNetwork.register();
         MinecraftForge.EVENT_BUS.register(this);
         TBDebug.startupDiagnostics();
@@ -67,6 +73,7 @@ public class CBCTerminalBallistics {
     public void addReloadListeners(AddReloadListenerEvent event) {
         event.addListener(MaterialManager.INSTANCE);
         event.addListener(IgnoredBlockManager.INSTANCE);
+        event.addListener(CriticalBlockManager.INSTANCE);
     }
 
     @SubscribeEvent
@@ -84,8 +91,16 @@ public class CBCTerminalBallistics {
     }
 
     @SubscribeEvent
+    public void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            StreamPreferences.clear(player.getUUID());
+        }
+    }
+
+    @SubscribeEvent
     public void onServerTick(TickEvent.ServerTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
+        TerminalBallisticsRecorder.onServerTick(event.getServer());
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
             TemporaryBlockPassage.restore(level);
         }
@@ -98,16 +113,11 @@ public class CBCTerminalBallistics {
         }
         if (event.getServer().getTickCount() % 1200 != 0) return;
         for (net.minecraft.server.level.ServerLevel level : event.getServer().getAllLevels()) {
-            for (net.minecraft.core.BlockPos pos : ArmorIntegritySavedData.get(level).cleanup(level)) {
-                TBImpactService.clearMarks(level, pos);
+            for (ArmorIntegritySavedData.Entry entry : ArmorIntegritySavedData.get(level).cleanup(level)) {
+                TBImpactService.clearMarksForEntry(level, entry);
             }
-            for (net.minecraft.core.BlockPos pos : EmbeddedShellSavedData.get(level).cleanup(level)) {
-                EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
-                if (entry == null || entry.shells.isEmpty()) {
-                    TBImpactService.clearEmbeddedShells(level, pos);
-                } else {
-                    TBImpactService.syncEmbeddedShellsToPlayers(level, pos, java.util.List.copyOf(entry.shells));
-                }
+            for (EmbeddedShellSavedData.Entry entry : EmbeddedShellSavedData.get(level).cleanup(level)) {
+                TBImpactService.clearShellsForEntry(level, entry);
             }
         }
     }

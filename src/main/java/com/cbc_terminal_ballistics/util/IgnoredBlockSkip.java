@@ -21,9 +21,9 @@ import java.util.Optional;
  * CBC then continues the ray beyond the block (hitting whatever is really behind it, no
  * tunneling) and never removes or notifies the block itself.
  *
- * <p>Consumed from a {@code clipAndDamage} {@code BlockHitResult} store interception
- * (see {@code AbstractCannonProjectileContraptionMixin} on vs2.3 and
- * {@code AbstractCannonProjectileIgnoredBlockMixin} on main).
+ * <p>Consumed from a {@code clipAndDamage} {@code BlockHitResult} store interception in
+ * {@code AbstractCannonProjectileContraptionMixin} (both branches — main now shares vs2.3's
+ * fold-in of the skip into the contraption mixin).
  */
 public final class IgnoredBlockSkip {
     private IgnoredBlockSkip() {}

@@ -47,6 +47,52 @@ public final class ProjectileClassifier {
         return text.contains("ap") || text.contains("shot") || text.contains("inert");
     }
 
+    /**
+     * APHE-family shell: an AP-piercing name that also carries explosive
+     * filler. Only this family is excluded from HE camera widening. Note
+     * "shrapnel" contains "ap", so the loose {@link #isApStyle} must not be
+     * reused here.
+     */
+    public static boolean isApheType(Entity projectile) {
+        ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        return text.contains("aphe") || text.contains("ap_he") || text.contains("ap-he")
+            || text.contains("ap shell") || text.contains("ap_shell");
+    }
+
+    /**
+     * Explosive shell by NAME — the predefined list drives the terminal view's
+     * HE pipeline: an explosive shell whose flight ends always yields a blast
+     * in the x-ray (synthesized if no real detonation was attributed), no
+     * explosion detection needed. Whole-token matching so "shell" never trips
+     * the "he" rule; "he_mediumshell" matches via its "he" token. APHE-family
+     * shells count here too (they carry filler) — the APHE check only decides
+     * camera widening downstream.
+     */
+    public static boolean isExplosiveShell(Entity projectile) {
+        ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
+        String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);
+        String cls = projectile.getClass().getName().toLowerCase(Locale.ROOT);
+        String text = path + " " + cls;
+        for (String hint : EXPLOSIVE_HINTS) {
+            if (text.contains(hint)) return true;
+        }
+        for (String token : text.split("[^a-z0-9]+")) {
+            if (token.equals("he") || token.equals("heat") || token.equals("frag")
+                || token.equals("hefrag") || token.equals("shrapnel") || token.equals("sharpenel")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Substring hints strong enough to match anywhere in the id/class name. */
+    private static final String[] EXPLOSIVE_HINTS = {
+        "shrapnel", "sharpenel", "hefrag", "incendiary", "explosive"
+    };
+
     public static double shellSpallCountModifier(Entity projectile) {
         ResourceLocation id = ForgeRegistries.ENTITY_TYPES.getKey(projectile.getType());
         String path = id == null ? "" : id.getPath().toLowerCase(Locale.ROOT);

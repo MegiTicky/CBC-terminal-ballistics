@@ -144,7 +144,17 @@ repositories {
     //     dir 'libs'
     // }
     flatDir {
-        dirs vs24ReferenceModsDir
+        // The reference dir keeps each mod's jar inside its own version
+        // subdirectory (e.g. cbcmoreshells-1.0.0/cbcmoreshells-1.0.0.jar),
+        // and flatDir does not recurse — so search the subdirectories too.
+        dirs ({ def dirs = [vs24ReferenceModsDir]
+            if (vs24ReferenceModsDir.exists()) {
+                vs24ReferenceModsDir.listFiles({ File f -> f.isDirectory() } as FileFilter)
+                    ?.sort { it.name }
+                    .each { dirs << it }
+            }
+            dirs
+        } as Object[])
     }
     maven {
         url = 'https://maven.tterrag.com/'

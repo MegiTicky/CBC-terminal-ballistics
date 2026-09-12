@@ -2,6 +2,7 @@ package com.cbc_terminal_ballistics.mixin;
 
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.hitcam.HitcamRecorder;
+import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import net.minecraft.world.entity.Entity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Pseudo;
@@ -14,7 +15,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class AbstractAutocannonProjectileTickMixin {
     @Inject(method = {"tick", "m_8119_"}, at = @At("HEAD"), cancellable = true, remap = false)
     private void ctb$slowAutocannonProjectileTick(CallbackInfo ci) {
-        HitcamRecorder.record((Entity) (Object) this);
-        if (TBProjectileSlowdown.shouldSkip((Entity) (Object) this)) ci.cancel();
+        Entity self = (Entity) (Object) this;
+        if (HitcamRecorder.record(self)) TerminalBallisticsRecorder.onProjectileSpawned(self);
+        if (TBProjectileSlowdown.shouldSkip(self)) ci.cancel();
     }
 }

@@ -16,7 +16,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.Method;
 
 /** Client-only optional Valkyrien Skies rendering hooks. */
-final class VSClientCompat {
+public final class VSClientCompat {
     private static final Logger LOG = LoggerFactory.getLogger("CBCTB/VSClientCompat");
     private static final String VS_GAME_UTILS = "org.valkyrienskies.mod.common.VSGameUtilsKt";
     private static final String VS_CLIENT_GAME_UTILS = "org.valkyrienskies.mod.common.VSClientGameUtils";
@@ -96,20 +96,23 @@ final class VSClientCompat {
         return worldPos;
     }
 
-    private static Iterable<?> getShipsIntersecting(ClientLevel level, BlockPos pos) {
+    private static Iterable<?> getShipsIntersectingBox(ClientLevel level, AABB aabb) {
         try {
             Method method = getShipsIntersectingMethod();
             if (method == null) return null;
-
-            AABB aabb = new AABB(pos.getX() - 1, pos.getY() - 1, pos.getZ() - 1,
-                                 pos.getX() + 2, pos.getY() + 2, pos.getZ() + 2);
             Object result = method.invoke(null, level, aabb);
             if (result instanceof Iterable<?> iter) return iter;
         } catch (Throwable t) {
-            LOG.debug("[CBCTB] getShipsIntersecting: exception: {}", t.getMessage());
+            LOG.debug("[CBCTB] getShipsIntersectingBox: exception: {}", t.getMessage());
             shipsIntersectingLookupFailed = true;
         }
         return null;
+    }
+
+    private static Iterable<?> getShipsIntersecting(ClientLevel level, BlockPos pos) {
+        AABB aabb = new AABB(pos.getX() - 1, pos.getY() - 1, pos.getZ() - 1,
+                             pos.getX() + 2, pos.getY() + 2, pos.getZ() + 2);
+        return getShipsIntersectingBox(level, aabb);
     }
 
     private static Method getShipsIntersectingMethod() {
@@ -139,6 +142,93 @@ final class VSClientCompat {
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    // ---- shipyard -> world (moving-ship re-anchoring) ---------------------------
+
+    private static Method shipToWorldMatrixMethod;
+
+    private static Object shipToWorld(Object ship) {
+        if (ship == null) return null;
+        try {
+            Method direct = ship.getClass().getMethod("getShipToWorld");
+            Object matrix = direct.invoke(ship);
+            if (matrix != null) return matrix;
+        } catch (Throwable ignored) {}
+        try {
+            Method transformGetter = ship.getClass().getMethod("getTransform");
+            Object transform = transformGetter.invoke(ship);
+            if (transform == null) return null;
+            if (shipToWorldMatrixMethod == null) {
+                shipToWorldMatrixMethod = transform.getClass().getMethod("getShipToWorld");
+            }
+            return shipToWorldMatrixMethod.invoke(transform);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * The ship whose current transform maps {@code shipyardRef} closest to
+     * {@code worldRef} among the ships intersecting that world position, or
+     * null when none matches closely enough (ship unloaded). Used to re-anchor
+     * hitcam geometry stored in shipyard coordinates to the live ship.
+     */
+    public static Object shipForReanchor(ClientLevel level, Vec3 worldRef, Vec3 shipyardRef) {
+        if (!isLoaded() || level == null) return null;
+        // Primary route: the ship managing the exact world block the snapshot
+        // was anchored to. Exact-position lookup cannot match a wrong ship, and
+        // unlike the box scan below it does not degrade as the ship sails away
+        // from the snapshot point.
+        Object direct = getLoadedShipManagingPos(level, BlockPos.containing(worldRef));
+        if (direct != null && shipMatches(direct, worldRef, shipyardRef, 256.0D)) {
+            return direct;
+        }
+        // Fallback: scan ships intersecting a box around the snapshot point.
+        AABB box = new AABB(worldRef.x - 64.0D, worldRef.y - 64.0D, worldRef.z - 64.0D,
+            worldRef.x + 64.0D, worldRef.y + 64.0D, worldRef.z + 64.0D);
+        Iterable<?> ships = getShipsIntersectingBox(level, box);
+        if (ships == null) {
+            LOG.debug("[CTB-HITCAM] ship reanchor: box scan unavailable (direct={} worldRef={})",
+                direct != null, worldRef);
+            return null;
+        }
+        Object best = null;
+        double bestError = Double.MAX_VALUE;
+        for (Object ship : ships) {
+            Object matrix = shipToWorld(ship);
+            if (matrix == null) continue;
+            Vec3 candidate = transformPosition(matrix, shipyardRef);
+            if (candidate == null) continue;
+            double error = candidate.distanceToSqr(worldRef);
+            if (error < bestError) {
+                bestError = error;
+                best = ship;
+            }
+        }
+        // Loose cap: only trust a match when the mapping lands near the
+        // snapshot world position (allows for the ship moving between the
+        // impact and this frame, but rejects a wrong/unrelated ship).
+        if (best != null && bestError < 48.0D * 48.0D) return best;
+        LOG.debug("[CTB-HITCAM] ship reanchor: no match (direct={} bestError={} worldRef={})",
+            direct != null, best == null ? "none" : String.format("%.1f", Math.sqrt(bestError)), worldRef);
+        return null;
+    }
+
+    /** Sanity check: the ship's matrix must map the shipyard ref near the snapshot world ref. */
+    private static boolean shipMatches(Object ship, Vec3 worldRef, Vec3 shipyardRef, double tolerance) {
+        Object matrix = shipToWorld(ship);
+        if (matrix == null) return false;
+        Vec3 candidate = transformPosition(matrix, shipyardRef);
+        return candidate != null && candidate.distanceToSqr(worldRef) <= tolerance * tolerance;
+    }
+
+    /** Map a shipyard-space point to the world using the live ship transform. */
+    public static Vec3 shipyardToWorld(Object ship, Vec3 shipyardPos) {
+        if (ship == null || shipyardPos == null) return null;
+        Object matrix = shipToWorld(ship);
+        if (matrix == null) return null;
+        return transformPosition(matrix, shipyardPos);
     }
 
     private static Vec3 transformPosition(Object matrix, Vec3 position) {

@@ -6,7 +6,7 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public final class TBNetwork {
-    private static final String VERSION = "13";
+    private static final String VERSION = "23";
     public static SimpleChannel CHANNEL;
 
     public static void register() {
@@ -57,10 +57,35 @@ public final class TBNetwork {
             .decoder(ServerboundSetLauncherVelocityPacket::decode)
             .consumerMainThread(ServerboundSetLauncherVelocityPacket::handle)
             .add();
+        CHANNEL.messageBuilder(ServerboundStreamPreferencePacket.class, id++)
+            .encoder(ServerboundStreamPreferencePacket::encode)
+            .decoder(ServerboundStreamPreferencePacket::decode)
+            .consumerMainThread(ServerboundStreamPreferencePacket::handle)
+            .add();
+        CHANNEL.messageBuilder(ClientboundTestRayPacket.class, id++)
+            .encoder(ClientboundTestRayPacket::encode)
+            .decoder(ClientboundTestRayPacket::decode)
+            .consumerMainThread(ClientboundTestRayPacket::handle)
+            .add();
         CHANNEL.messageBuilder(ClientboundHitcamPacket.class, id++)
             .encoder(ClientboundHitcamPacket::encode)
             .decoder(ClientboundHitcamPacket::decode)
             .consumerMainThread(ClientboundHitcamPacket::handle)
+            .add();
+        CHANNEL.messageBuilder(ClientboundTrackProjectilePacket.class, id++)
+            .encoder(ClientboundTrackProjectilePacket::encode)
+            .decoder(ClientboundTrackProjectilePacket::decode)
+            .consumerMainThread(ClientboundTrackProjectilePacket::handle)
+            .add();
+        CHANNEL.messageBuilder(ClientboundTerminalBallisticsPacket.class, id++)
+            .encoder(ClientboundTerminalBallisticsPacket::encode)
+            .decoder(ClientboundTerminalBallisticsPacket::decode)
+            .consumerMainThread(ClientboundTerminalBallisticsPacket::handle)
+            .add();
+        CHANNEL.messageBuilder(ClientboundArtilleryUpdatePacket.class, id++)
+            .encoder(ClientboundArtilleryUpdatePacket::encode)
+            .decoder(ClientboundArtilleryUpdatePacket::decode)
+            .consumerMainThread(ClientboundArtilleryUpdatePacket::handle)
             .add();
     }
 

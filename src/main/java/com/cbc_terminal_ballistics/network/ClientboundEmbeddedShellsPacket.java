@@ -12,14 +12,25 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.fml.DistExecutor;
 import net.minecraftforge.network.NetworkEvent;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.function.Supplier;
 
-public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> shells) {
+/**
+ * Syncs embedded shells for one block. For shells anchored to a Create contraption,
+ * {@code contraptionUuid} and {@code localPos} identify the hull block in
+ * contraption-local coordinates; {@code pos} is then only informational.
+ */
+public record ClientboundEmbeddedShellsPacket(BlockPos pos, @Nullable UUID contraptionUuid, @Nullable BlockPos localPos, List<EmbeddedShell> shells) {
     public void encode(FriendlyByteBuf buf) {
         buf.writeBlockPos(pos);
+        buf.writeBoolean(contraptionUuid != null);
+        if (contraptionUuid != null) {
+            buf.writeUUID(contraptionUuid);
+            buf.writeBlockPos(localPos);
+        }
         buf.writeVarInt(shells.size());
         for (EmbeddedShell shell : shells) {
             buf.writeUUID(shell.id());
@@ -42,6 +53,12 @@ public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> 
 
     public static ClientboundEmbeddedShellsPacket decode(FriendlyByteBuf buf) {
         BlockPos pos = buf.readBlockPos();
+        UUID contraptionUuid = null;
+        BlockPos localPos = null;
+        if (buf.readBoolean()) {
+            contraptionUuid = buf.readUUID();
+            localPos = buf.readBlockPos();
+        }
         int count = buf.readVarInt();
         List<EmbeddedShell> shells = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
@@ -51,7 +68,7 @@ public record ClientboundEmbeddedShellsPacket(BlockPos pos, List<EmbeddedShell> 
             shells.add(new EmbeddedShell(id, caliber, face, buf.readFloat(), buf.readFloat(), buf.readFloat(),
                 buf.readFloat(), buf.readFloat(), buf.readFloat(), readVisualState(buf), readVisualItem(buf), buf.readFloat(), buf.readLong()));
         }
-        return new ClientboundEmbeddedShellsPacket(pos, shells);
+        return new ClientboundEmbeddedShellsPacket(pos, contraptionUuid, localPos, shells);
     }
 
     private static net.minecraft.world.level.block.state.BlockState readVisualState(FriendlyByteBuf buf) {

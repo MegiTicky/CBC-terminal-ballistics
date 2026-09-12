@@ -22,11 +22,13 @@ public final class HitcamRecorder {
     private static Entity lastProjectile;
     private static Field orientationField;
 
-    public static void record(Entity projectile) {
-        if (!TBConfig.HITCAM_ENABLED.get()) return;
-        if (projectile.isRemoved()) return;
-        lastProjectile = projectile;
+    /** @return true only for a projectile's first recorded tick. */
+    public static boolean record(Entity projectile) {
+        if (!TBConfig.HITCAM_ENABLED.get()) return false;
+        if (projectile.isRemoved()) return false;
         Deque<HitcamSample> deque = RECORDS.computeIfAbsent(projectile, e -> new ArrayDeque<>());
+        boolean first = deque.isEmpty();
+        lastProjectile = projectile;
         Vec3 pos = projectile.position();
         Vec3 orient = orientationOf(projectile);
         deque.addLast(new HitcamSample(pos.x, pos.y, pos.z, (float) orient.x, (float) orient.y, (float) orient.z));
@@ -34,6 +36,7 @@ public final class HitcamRecorder {
         while (deque.size() > max) {
             deque.pollFirst();
         }
+        return first;
     }
 
     private static Vec3 orientationOf(Entity projectile) {
@@ -67,7 +70,12 @@ public final class HitcamRecorder {
 
     public static List<HitcamSample> lastSamples() {
         if (lastProjectile == null) return List.of();
-        Deque<HitcamSample> deque = RECORDS.get(lastProjectile);
+        return samplesOf(lastProjectile);
+    }
+
+    public static List<HitcamSample> samplesOf(Entity projectile) {
+        if (projectile == null) return List.of();
+        Deque<HitcamSample> deque = RECORDS.get(projectile);
         return deque == null ? List.of() : new ArrayList<>(deque);
     }
 

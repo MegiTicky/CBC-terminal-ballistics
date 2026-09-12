@@ -10,12 +10,15 @@ import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.goggles.BallisticGogglesItem;
+import com.cbc_terminal_ballistics.goggles.GoggleLinkManager;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
-import com.cbc_terminal_ballistics.network.ClientboundHitcamPacket;
-import com.cbc_terminal_ballistics.network.TBNetwork;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.CommandDispatcher;
+import com.cbc_terminal_ballistics.network.ClientboundTestRayPacket;
+import com.cbc_terminal_ballistics.network.TBNetwork;
+import net.minecraftforge.network.PacketDistributor;
 import net.minecraft.ChatFormatting;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -23,11 +26,13 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.network.PacketDistributor;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.fml.ModList;
 
 import java.util.ArrayList;
@@ -64,9 +69,71 @@ public final class TBCommands {
                 .executes(ctx -> checkArmor(ctx.getSource(), false))
                 .then(Commands.literal("fix")
                     .executes(ctx -> checkArmor(ctx.getSource(), true))))
+            .then(Commands.literal("testray")
+                .executes(ctx -> testRay(ctx.getSource()))
+                .then(Commands.argument("distance", IntegerArgumentType.integer(1, 200))
+                    .executes(ctx -> testRay(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "distance")))))
             .then(Commands.literal("hitcam")
                 .executes(ctx -> hitcamReplay(ctx.getSource()))
-                .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource())))));
+                .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource()))))
+            .then(Commands.literal("goggles")
+                .then(Commands.literal("list").executes(ctx -> gogglesList(ctx.getSource())))
+                .then(Commands.literal("clear").executes(ctx -> gogglesClear(ctx.getSource()))))
+    );
+    }
+
+    /** Held ballistic goggles, main hand then off hand, or null. */
+    private static ItemStack heldGoggles(ServerPlayer player) {
+        if (player.getMainHandItem().getItem() instanceof BallisticGogglesItem) return player.getMainHandItem();
+        if (player.getOffhandItem().getItem() instanceof BallisticGogglesItem) return player.getOffhandItem();
+        return null;
+    }
+
+    private static int gogglesList(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        ItemStack goggles = heldGoggles(player);
+        if (goggles == null) {
+            source.sendFailure(Component.literal("Hold ballistic goggles in your main or off hand."));
+            return 0;
+        }
+        List<GoggleLinkManager.GoggleLink> links = GoggleLinkManager.links(goggles);
+        if (links.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("No cannon mounts linked. Right-click one with the goggles to link it."), false);
+            return 1;
+        }
+        ServerLevel level = player.serverLevel();
+        source.sendSuccess(() -> Component.literal(links.size() + " linked cannon mount(s):"), false);
+        for (GoggleLinkManager.GoggleLink link : links) {
+            BlockPos resolved = GoggleLinkManager.resolveLink(level, link, null);
+            String where = link.shipId() >= 0 ? "ship " + link.shipId() : "world";
+            String pos = resolved != null
+                ? resolved.getX() + ", " + resolved.getY() + ", " + resolved.getZ()
+                : "unresolved (" + link.fallbackPos() + ")";
+            String dim = link.dimension();
+            source.sendSuccess(() -> Component.literal("  " + where + " @ " + pos + " [" + dim + "]"), false);
+        }
+        return links.size();
+    }
+
+    private static int gogglesClear(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        ItemStack goggles = heldGoggles(player);
+        if (goggles == null) {
+            source.sendFailure(Component.literal("Hold ballistic goggles in your main or off hand."));
+            return 0;
+        }
+        int count = GoggleLinkManager.linkCount(goggles);
+        GoggleLinkManager.clearLinks(goggles);
+        source.sendSuccess(() -> Component.literal("Removed " + count + " goggle link(s)."), false);
+        return count;
     }
 
     private static int hitcamReplay(CommandSourceStack source) {
@@ -85,7 +152,7 @@ public final class TBCommands {
             net.minecraft.world.entity.Entity last = com.cbc_terminal_ballistics.hitcam.HitcamRecorder.lastProjectile();
             String typeKey = net.minecraft.world.entity.EntityType.getKey(last.getType()).toString();
             TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                new ClientboundHitcamPacket(typeKey, samples, null));
+                new com.cbc_terminal_ballistics.network.ClientboundHitcamPacket(typeKey, samples, null));
             source.sendSuccess(() -> Component.literal("Playing hitcam replay of the last projectile flight (" + samples.size() + " samples, " + typeKey + ")."), false);
             return 1;
         } catch (Exception ex) {
@@ -98,7 +165,7 @@ public final class TBCommands {
         try {
             ServerPlayer player = source.getPlayerOrException();
             TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                new ClientboundHitcamPacket("", List.of(), null));
+                new com.cbc_terminal_ballistics.network.ClientboundHitcamPacket("", List.of(), null));
             source.sendSuccess(() -> Component.literal("Stopped hitcam replay."), false);
             return 1;
         } catch (Exception ex) {
@@ -194,11 +261,19 @@ public final class TBCommands {
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
         int syncedBlocks = 0;
         int syncedMarks = 0;
-        for (Map.Entry<Long, ArmorIntegritySavedData.Entry> mapEntry : data.entriesView().entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
-            ArmorIntegritySavedData.Entry entry = data.getEntry(level, pos);
-            if (entry == null || entry.marks.isEmpty()) continue;
-            TBImpactService.syncMarksToPlayers(level, pos, List.copyOf(entry.marks));
+        for (ArmorIntegritySavedData.Entry entry
+             : new java.util.HashMap<>(data.entriesView()).values()) {
+            if (entry.marks.isEmpty()) continue;
+            if (entry.contraptionUuid != null && entry.localPos != null) {
+                // Contraption-anchored marks are synced with their entity identity.
+                net.minecraft.world.entity.Entity contraption = level.getEntity(entry.contraptionUuid);
+                if (contraption == null) continue;
+                TBImpactService.syncMarksToPlayers(level, entry.localPos, entry.contraptionUuid, entry.localPos, List.copyOf(entry.marks));
+            } else {
+                BlockPos pos = entry.keyPos();
+                if (data.getEntry(level, pos) == null) continue;
+                TBImpactService.syncMarksToPlayers(level, pos, List.copyOf(entry.marks));
+            }
             syncedBlocks++;
             syncedMarks += entry.marks.size();
         }
@@ -211,12 +286,10 @@ public final class TBCommands {
     private static int deleteImpactMarks(CommandSourceStack source) {
         ServerLevel level = source.getLevel();
         ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
-        List<BlockPos> positions = data.entriesView().entrySet().stream()
-            .map(entry -> BlockPos.of(entry.getKey()))
-            .toList();
+        List<ArmorIntegritySavedData.Entry> removed = new java.util.ArrayList<>(data.entriesView().values());
         int count = data.clearAll();
-        for (BlockPos pos : positions) {
-            TBImpactService.clearMarks(level, pos);
+        for (ArmorIntegritySavedData.Entry entry : removed) {
+            TBImpactService.clearMarksForEntry(level, entry);
         }
         source.sendSuccess(() -> Component.literal("Deleted impact/integrity data for " + count + " blocks."), true);
         return count;
@@ -226,11 +299,17 @@ public final class TBCommands {
         ServerLevel level = source.getLevel();
         int syncedBlocks = 0;
         int syncedShells = 0;
-        for (Map.Entry<Long, EmbeddedShellSavedData.Entry> mapEntry : EmbeddedShellSavedData.get(level).entriesView().entrySet()) {
-            BlockPos pos = BlockPos.of(mapEntry.getKey());
-            EmbeddedShellSavedData.Entry entry = EmbeddedShellSavedData.get(level).getEntry(level, pos);
-            if (entry == null || entry.shells.isEmpty()) continue;
-            TBImpactService.syncEmbeddedShellsToPlayers(level, pos, List.copyOf(entry.shells));
+        for (EmbeddedShellSavedData.Entry entry
+             : new java.util.HashMap<>(EmbeddedShellSavedData.get(level).entriesView()).values()) {
+            if (entry.shells.isEmpty()) continue;
+            if (entry.contraptionUuid != null && entry.localPos != null) {
+                net.minecraft.world.entity.Entity contraption = level.getEntity(entry.contraptionUuid);
+                if (contraption == null) continue;
+                TBImpactService.syncEmbeddedShellsToPlayers(level, entry.localPos, entry.contraptionUuid, entry.localPos, List.copyOf(entry.shells));
+            } else {
+                BlockPos pos = entry.keyPos();
+                TBImpactService.syncEmbeddedShellsToPlayers(level, pos, List.copyOf(entry.shells));
+            }
             syncedBlocks++;
             syncedShells += entry.shells.size();
         }
@@ -242,9 +321,11 @@ public final class TBCommands {
 
     private static int deleteEmbeddedShells(CommandSourceStack source) {
         ServerLevel level = source.getLevel();
-        List<BlockPos> positions = EmbeddedShellSavedData.get(level).entriesView().keySet().stream().map(BlockPos::of).toList();
+        List<EmbeddedShellSavedData.Entry> removed = new java.util.ArrayList<>(EmbeddedShellSavedData.get(level).entriesView().values());
         int count = EmbeddedShellSavedData.get(level).clearAll();
-        for (BlockPos pos : positions) TBImpactService.clearEmbeddedShells(level, pos);
+        for (EmbeddedShellSavedData.Entry entry : removed) {
+            TBImpactService.clearShellsForEntry(level, entry);
+        }
         source.sendSuccess(() -> Component.literal("Deleted embedded shell data for " + count + " blocks."), true);
         return count;
     }
@@ -341,6 +422,88 @@ public final class TBCommands {
         }
 
         return totalExceeded;
+    }
+
+    private static int testRay(CommandSourceStack source) {
+        return testRay(source, 50);
+    }
+
+    private static int testRay(CommandSourceStack source, int distance) {
+        try {
+            ServerPlayer player = source.getPlayerOrException();
+            Vec3 eyePos = player.getEyePosition();
+            Vec3 lookVec = player.getLookAngle();
+            Vec3 from = eyePos;
+            Vec3 to = eyePos.add(lookVec.scale(distance));
+
+            source.sendSuccess(() -> Component.literal("=== Contraption Ray Test ===").withStyle(ChatFormatting.GOLD), false);
+            source.sendSuccess(() -> Component.literal(String.format("From: %.2f, %.2f, %.2f", from.x, from.y, from.z)), false);
+            source.sendSuccess(() -> Component.literal(String.format("To:   %.2f, %.2f, %.2f", to.x, to.y, to.z)), false);
+
+            if (!com.cbc_terminal_ballistics.util.ContraptionCompat.isLoaded()) {
+                source.sendSuccess(() -> Component.literal("Create is not loaded!").withStyle(ChatFormatting.RED), false);
+                return 0;
+            }
+
+            long startMs = System.nanoTime();
+            com.cbc_terminal_ballistics.util.ContraptionCompat.ContraptionHit hit =
+                com.cbc_terminal_ballistics.util.ContraptionCompat.raycastDebug(source.getLevel(), from, to, source);
+            long elapsedUs = (System.nanoTime() - startMs) / 1000;
+
+            source.sendSuccess(() -> Component.literal("Raycast completed in " + elapsedUs + " us"), false);
+
+            if (hit == null) {
+                source.sendSuccess(() -> Component.literal("No contraption hit.").withStyle(ChatFormatting.YELLOW), false);
+            } else {
+                source.sendSuccess(() -> Component.literal("HIT!").withStyle(ChatFormatting.GREEN), false);
+                source.sendSuccess(() -> Component.literal(String.format("  World pos: %s", hit.worldPos())), false);
+                source.sendSuccess(() -> Component.literal(String.format("  Hit loc: %.2f, %.2f, %.2f", hit.hitLocation().x, hit.hitLocation().y, hit.hitLocation().z)), false);
+                source.sendSuccess(() -> Component.literal(String.format("  Face: %s", hit.direction())), false);
+                source.sendSuccess(() -> Component.literal(String.format("  State: %s", hit.state())), false);
+            }
+
+            // Collect block AABB data for client-side debug rendering
+            List<double[]> blockDataList = new ArrayList<>();
+            try {
+                List<net.minecraft.world.entity.Entity> entities =
+                    com.cbc_terminal_ballistics.util.ContraptionCompat.findNearbyContraptionEntities(source.getLevel(), from, to);
+                for (net.minecraft.world.entity.Entity entity : entities) {
+                    Object contraption = com.cbc_terminal_ballistics.util.ContraptionCompat.getContraptionObject(entity);
+                    if (contraption == null) continue;
+                    java.util.Map<BlockPos, ?> blocks = com.cbc_terminal_ballistics.util.ContraptionCompat.getBlocksObject(contraption);
+                    if (blocks == null) continue;
+                    for (BlockPos localPos : blocks.keySet()) {
+                        Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.toGlobalVector(entity, Vec3.atCenterOf(localPos), 0f);
+                        if (worldCenter == null) continue;
+                        blockDataList.add(new double[]{
+                            worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
+                            worldCenter.x + 0.5, worldCenter.y + 0.5, worldCenter.z + 0.5,
+                            worldCenter.x, worldCenter.y, worldCenter.z
+                        });
+                    }
+                }
+            } catch (Throwable ignored) {}
+
+            double[] blockData = new double[blockDataList.size() * 9];
+            for (int i = 0; i < blockDataList.size(); i++) {
+                System.arraycopy(blockDataList.get(i), 0, blockData, i * 9, 9);
+            }
+
+            ClientboundTestRayPacket packet = new ClientboundTestRayPacket(
+                from, to,
+                hit != null ? hit.hitLocation() : null,
+                hit != null ? hit.worldPos() : null,
+                hit != null,
+                blockData,
+                blockDataList.size()
+            );
+            TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+
+            return 1;
+        } catch (Exception ex) {
+            source.sendFailure(Component.literal("Error: " + ex.getMessage()));
+            return 0;
+        }
     }
 
     private TBCommands() {}

@@ -22,3 +22,4 @@ public abstract class AutocannonProjectileMixin {
         if (result != null) cir.setReturnValue(result);
     }
 }
+

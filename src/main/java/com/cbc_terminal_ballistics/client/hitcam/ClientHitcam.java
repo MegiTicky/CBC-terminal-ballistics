@@ -1,27 +1,41 @@
 package com.cbc_terminal_ballistics.client.hitcam;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.hitcam.HitcamSample;
+import com.cbc_terminal_ballistics.network.ServerboundStreamPreferencePacket;
+import com.cbc_terminal_ballistics.network.TBNetwork;
 import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Client-side playback of a recorded projectile flight. The live world keeps
- * ticking untouched; this only advances a virtual playhead over per-tick
- * samples. Slow motion is just a slower playhead rate, exactly like the
- * approach used by replay mods, minus the need to pause or slow the world.
+ * Client-side hitcam state. Three mutually exclusive modes, newest event wins:
+ * REPLAY (the manual /cbctb hitcam ghost playback over recorded samples),
+ * ARTILLERY (a live chase camera locked onto a just-fired projectile entity)
+ * and TERMINAL (the post-impact x-ray diagram orbit view). The live world
+ * keeps ticking untouched in every mode.
  */
 @Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientHitcam {
     private static final int HOLD_TICKS = 40;
 
-    private static boolean active;
+    private enum Mode { NONE, REPLAY, ARTILLERY, TERMINAL }
+
+    private static Mode mode = Mode.NONE;
+
+    // REPLAY state
     private static String entityTypeKey = "";
     private static String outcomeSummary;
     private static List<HitcamSample> samples = List.of();
@@ -31,9 +45,46 @@ public final class ClientHitcam {
     private static float lastPartialTick = -1.0F;
     private static float currentSpeed = 1.0F;
 
+    // ARTILLERY state
+    private static int artilleryEntityId = -1;
+    // Server-relayed shell state for when the projectile is beyond client
+    // tracking range (CBC keeps simulating it server-side; the vanilla tracker
+    // has despawned the client copy there).
+    private static String artilleryGhostTypeKey = "";
+    private static Vec3 artilleryGhostPos = Vec3.ZERO;
+    private static Vec3 artilleryGhostVel = Vec3.ZERO;
+    private static long artilleryGhostUpdateGameTime;
+    private static boolean artilleryGhostAlive;
+    /** Ticks of silence after which the relay is considered lost. */
+    private static final int ARTILLERY_GHOST_TIMEOUT_TICKS = 10;
+    /** Ticks after {@link #startArtillery} during which the view cannot end, bridging
+     * the gap until the first relay for a retargeted (e.g. rebind) shell arrives. */
+    private static final int ARTILLERY_START_GRACE_TICKS = 5;
+    private static int artilleryGraceTicks;
+    /** Game time of the last relay packet with live data; keeps streamed terrain cached a moment past view-mode flickers. */
+    private static long lastArtilleryRelayGameTime = Long.MIN_VALUE;
+
+    /**
+     * One non-focused shell of a salvo, as relayed by the server. The vanilla
+     * tracker despawns these client-side once they leave tracking range; the
+     * relay keeps enough state to draw them as ghosts in the PiP.
+     */
+    public static final class SalvoGhost {
+        public String typeKey = "";
+        public Vec3 pos = Vec3.ZERO;
+        public Vec3 vel = Vec3.ZERO;
+        public long updateGameTime;
+    }
+
+    /** Relays after which a silent salvo ghost is dropped. */
+    private static final int SALVO_GHOST_TIMEOUT_TICKS = 20;
+    /** Hard cap on concurrently drawn salvo ghosts; the oldest entry gives way. */
+    private static final int SALVO_GHOST_CAP = 24;
+    private static final Map<Integer, SalvoGhost> salvoGhosts = new LinkedHashMap<>();
+
     public static void start(String typeKey, List<HitcamSample> recorded, String summary) {
         if (recorded.size() < 2) return;
-        active = true;
+        mode = Mode.REPLAY;
         entityTypeKey = typeKey == null ? "" : typeKey;
         outcomeSummary = summary;
         samples = List.copyOf(recorded);
@@ -42,16 +93,278 @@ public final class ClientHitcam {
         holdTicks = 0;
         lastPartialTick = -1.0F;
         currentSpeed = 1.0F;
+        artilleryEntityId = -1;
+        ClientTerminalView.clear();
+    }
+
+    /** Artillery view: follow this live projectile entity until it is gone. */
+    public static void startArtillery(int entityId, boolean rebind) {
+        if (!TBConfig.HITCAM_ENABLED.get()) return;
+        sendStreamPreference();
+        // Sticky chase cam: while a shell is being followed live, a fresh track
+        // packet for a DIFFERENT shell of a burst/broadside no longer switches
+        // the camera — the followed shell plays start-to-finish and the
+        // newcomer only shows as a salvo ghost (its relay still lands here) and
+        // later in the terminal x-ray. A rebind of the FOLLOWED shell (chunk
+        // unload re-created it with a new entity id) must always retarget.
+        if (!rebind && TBConfig.ARTILLERY_STICKY_CHASE.get()
+            && mode == Mode.ARTILLERY && hasLiveArtilleryTarget()
+            && entityId != artilleryEntityId) {
+            return;
+        }
+        // A newly fired shell must not cut a terminal animation that is still
+        // on screen (salvo fire made the x-ray flash for a moment, then vanish
+        // when the next gun's track packet arrived). Its own terminal packet
+        // parks and plays when the animation finishes.
+        if (mode == Mode.TERMINAL && ClientTerminalView.animationInProgress()) {
+            CBCTerminalBallistics.LOGGER.debug(
+                "[CTB-HITCAM] ignoring track packet for shell {} — terminal animation in progress", entityId);
+            return;
+        }
+        // A burst stage merely in its quiet hold no longer blocks the chase
+        // cam: since HE shells dispatch a terminal packet on every removal, a
+        // stage is alive during almost the whole engagement and the old
+        // blanket guard suppressed the artillery view for every salvo shell.
+        // Preempt it instead, KEEPING the stage parked so this shell's own
+        // terminal packet still merges into it on arrival.
+        boolean keepStage = mode == Mode.TERMINAL
+            && TBConfig.HITCAM_TERMINAL_BURST.get()
+            && !ClientTerminalView.expired();
+        mode = Mode.ARTILLERY;
+        artilleryEntityId = entityId;
+        artilleryGraceTicks = ARTILLERY_START_GRACE_TICKS;
+        clearArtilleryGhost();
+        if (!keepStage) {
+            ClientTerminalView.clear();
+        }
+        resetReplay();
+    }
+
+    /** Terminal view packet arrived; called by {@link ClientTerminalView#accept}. */
+    public static void startTerminalView() {
+        sendStreamPreference();
+        mode = Mode.TERMINAL;
+        artilleryEntityId = -1;
+        clearArtilleryGhost();
+        resetReplay();
+    }
+
+    /**
+     * Tells the server whether this client wants hitcam terrain streaming.
+     * The server sends the chunks but cannot read a client config file, so
+     * the preference is relayed on login and at every view start — live
+     * config edits therefore apply at the next shot.
+     */
+    private static void sendStreamPreference() {
+        if (TBNetwork.CHANNEL == null) return;
+        TBNetwork.CHANNEL.sendToServer(new ServerboundStreamPreferencePacket(
+            TBConfig.HITCAM_TERRAIN_STREAM.get(), TBConfig.HITCAM_TERMINAL_STREAM.get()));
+    }
+
+    @SubscribeEvent
+    public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+        sendStreamPreference();
     }
 
     public static void stop() {
-        active = false;
+        mode = Mode.NONE;
+        artilleryEntityId = -1;
+        artilleryGraceTicks = 0;
+        clearArtilleryGhost();
+        salvoGhosts.clear();
+        ArtilleryChunkCache.setActive(false);
+        ClientTerminalView.clear();
+        resetReplay();
+    }
+
+    private static void clearArtilleryGhost() {
+        artilleryGhostTypeKey = "";
+        artilleryGhostPos = Vec3.ZERO;
+        artilleryGhostVel = Vec3.ZERO;
+        artilleryGhostAlive = false;
+    }
+
+    /** Server relay: authoritative shell state from beyond tracking range. */
+    public static void onArtilleryUpdate(int entityId, String typeKey, Vec3 pos, Vec3 vel, boolean removed) {
+        if (!TBConfig.HITCAM_ENABLED.get()) return;
+        Minecraft mc = Minecraft.getInstance();
+        long now = mc.level != null ? mc.level.getGameTime() : 0L;
+        // Salvo registry: record EVERY shell's relay, not just the focused
+        // one — this is the only data that survives past client tracking
+        // range, and it is what keeps a broadside looking like a broadside.
+        if (removed) {
+            salvoGhosts.remove(entityId);
+        } else {
+            SalvoGhost ghost = salvoGhosts.get(entityId);
+            if (ghost == null) {
+                ghost = new SalvoGhost();
+                salvoGhosts.put(entityId, ghost);
+                while (salvoGhosts.size() > SALVO_GHOST_CAP) {
+                    Iterator<Integer> keys = salvoGhosts.keySet().iterator();
+                    keys.next();
+                    keys.remove();
+                }
+            }
+            ghost.typeKey = typeKey == null ? "" : typeKey;
+            ghost.pos = pos;
+            ghost.vel = vel;
+            ghost.updateGameTime = now;
+        }
+        if (removed) {
+            // Only the followed shell's death may end the view. Removal notices
+            // for other shells (e.g. an older one expiring somewhere else) must
+            // not kill the current chase cam.
+            if (mode == Mode.ARTILLERY && artilleryEntityId >= 0 && entityId != artilleryEntityId) return;
+            artilleryGhostAlive = false;
+            // Sticky transfer: when the followed shell is gone and no terminal
+            // engagement took over the view (an x-ray dispatch flips the mode
+            // before this relay arrives — a fizzle into terrain leaves us
+            // here), keep chasing the next shell that is still flying instead
+            // of ending the view, so bursts keep showing complete flights.
+            if (mode == Mode.ARTILLERY && TBConfig.ARTILLERY_STICKY_CHASE.get()) {
+                int next = oldestFreshSalvoGhost(entityId);
+                if (next >= 0) {
+                    artilleryEntityId = next;
+                    artilleryGraceTicks = ARTILLERY_START_GRACE_TICKS;
+                    // Seed the focused ghost from the registry so the camera
+                    // has a real position for the ~2 ticks until the next
+                    // relay (a cleared ghost extrapolates from world origin).
+                    SalvoGhost seed = salvoGhosts.get(next);
+                    if (seed != null) {
+                        artilleryGhostTypeKey = seed.typeKey;
+                        artilleryGhostPos = seed.pos;
+                        artilleryGhostVel = seed.vel;
+                        artilleryGhostUpdateGameTime = seed.updateGameTime;
+                        artilleryGhostAlive = true;
+                    } else {
+                        clearArtilleryGhost();
+                    }
+                }
+            }
+            return;
+        }
+        if (mode == Mode.ARTILLERY && artilleryEntityId >= 0 && artilleryEntityId != entityId) return;
+        if (mode == Mode.NONE) {
+            mode = Mode.ARTILLERY;
+            artilleryEntityId = entityId;
+            sendStreamPreference();
+            ClientTerminalView.clear();
+            resetReplay();
+        }
+        artilleryGhostTypeKey = typeKey == null ? "" : typeKey;
+        artilleryGhostPos = pos;
+        artilleryGhostVel = vel;
+        artilleryGhostAlive = true;
+        artilleryGhostUpdateGameTime = now;
+        lastArtilleryRelayGameTime = now;
+    }
+
+    /** Live non-focused salvo shells for the PiP ghost pass. */
+    public static Map<Integer, SalvoGhost> salvoGhosts() {
+        return salvoGhosts;
+    }
+
+    /** Drops salvo ghosts gone quiet past the relay timeout. */
+    private static void pruneSalvoGhosts(Minecraft mc) {
+        long now = mc.level.getGameTime();
+        salvoGhosts.values().removeIf(g -> now - g.updateGameTime > SALVO_GHOST_TIMEOUT_TICKS);
+    }
+
+    /**
+     * Oldest salvo ghost still receiving relays, excluding {@code excludeId}
+     * (the shell that just died). Insertion order of the registry is oldest
+     * first, so the first fresh entry is the longest-flying survivor.
+     */
+    private static int oldestFreshSalvoGhost(int excludeId) {
+        Minecraft mc = Minecraft.getInstance();
+        long now = mc.level != null ? mc.level.getGameTime() : 0L;
+        for (Map.Entry<Integer, SalvoGhost> e : salvoGhosts.entrySet()) {
+            if (e.getKey() == excludeId) continue;
+            if (now - e.getValue().updateGameTime <= ARTILLERY_GHOST_TIMEOUT_TICKS) return e.getKey();
+        }
+        return -1;
+    }
+
+    /**
+     * True while a server relay with live shell data arrived recently. Streamed
+     * terrain stays cached through this window even if the view mode flickers,
+     * so captured chunks are not wiped the instant the view ends.
+     */
+    private static boolean relayFresh() {
+        if (lastArtilleryRelayGameTime == Long.MIN_VALUE) return false;
+        Minecraft mc = Minecraft.getInstance();
+        return mc.level != null && mc.level.getGameTime() - lastArtilleryRelayGameTime <= 40;
+    }
+
+    /**
+     * Keeps the streamed-terrain retention in {@link ArtilleryChunkCache} in
+     * step with the view: active while the artillery cam or terminal view is
+     * live (or the server relay is still flowing), with a periodic sweep
+     * dropping chunks the shell left far behind.
+     */
+    private static void updateTerrainCache(Minecraft mc) {
+        boolean live = mode == Mode.ARTILLERY || mode == Mode.TERMINAL || relayFresh();
+        ArtilleryChunkCache.setActive(live);
+        if (live && mc.level.getGameTime() % 20 == 0) {
+            Vec3 shell = shellPos();
+            ArtilleryChunkCache.sweep(shell.x, shell.z);
+            ArtilleryChunkCache.logSummaryIfDue(mc.level.getGameTime());
+        }
+    }
+
+    private static void resetReplay() {
         samples = List.of();
         outcomeSummary = null;
+        playHead = 0.0D;
+        span = 0.0D;
+        holdTicks = 0;
+        lastPartialTick = -1.0F;
+        currentSpeed = 1.0F;
     }
 
     public static boolean active() {
-        return active;
+        return switch (mode) {
+            case REPLAY -> samples.size() >= 2;
+            case ARTILLERY -> hasLiveArtilleryTarget();
+            case TERMINAL -> ClientTerminalView.active();
+            default -> false;
+        };
+    }
+
+    public static boolean isReplay() {
+        return mode == Mode.REPLAY;
+    }
+
+    public static boolean isArtillery() {
+        return mode == Mode.ARTILLERY && hasLiveArtilleryTarget();
+    }
+
+    public static boolean isTerminal() {
+        return mode == Mode.TERMINAL && ClientTerminalView.active();
+    }
+
+    /** The live projectile entity the artillery cam is following, or null. */
+    @javax.annotation.Nullable
+    public static Entity artilleryTarget() {
+        if (artilleryEntityId < 0) return null;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.level == null) return null;
+        return mc.level.getEntity(artilleryEntityId);
+    }
+
+    /** True while the cam has something to follow: a tracked entity or fresh relay data. */
+    private static boolean hasLiveArtilleryTarget() {
+        if (artilleryGraceTicks > 0) return true;
+        if (artilleryTarget() != null) return true;
+        if (!artilleryGhostAlive) return false;
+        Minecraft mc = Minecraft.getInstance();
+        return mc.level != null
+            && mc.level.getGameTime() - artilleryGhostUpdateGameTime <= ARTILLERY_GHOST_TIMEOUT_TICKS;
+    }
+
+    /** Shell type key for the relay ghost model (empty while the real entity is tracked). */
+    public static String artilleryGhostTypeKey() {
+        return artilleryGhostTypeKey;
     }
 
     public static String entityTypeKey() {
@@ -63,29 +376,87 @@ public final class ClientHitcam {
     }
 
     public static String statusLine() {
-        String base = outcomeSummary != null && !outcomeSummary.isEmpty() ? outcomeSummary : entityTypeKey;
-        return base + "  ·  " + String.format("%.2fx", currentSpeed);
+        return switch (mode) {
+            case REPLAY -> {
+                String base = outcomeSummary != null && !outcomeSummary.isEmpty() ? outcomeSummary : entityTypeKey;
+                yield base + "  ·  " + String.format("%.2fx", currentSpeed);
+            }
+            case ARTILLERY -> "Artillery cam  ·  LIVE";
+            case TERMINAL -> {
+                // Merged burst shells show as a small (+N); the summary line is
+                // the first shell's outcome, the critical list covers the rest.
+                String s = "X-RAY  \u00b7  " + ClientTerminalView.summary();
+                int extra = ClientTerminalView.actorCount() - 1;
+                if (extra > 0) s += "  (+" + extra + ")";
+                yield s;
+            }
+            default -> "";
+        };
     }
 
     @SubscribeEvent
     public static void clientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END || !active) return;
+        if (event.phase != TickEvent.Phase.END) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
-            stop();
+            if (mode != Mode.NONE) stop();
+            ArtilleryChunkCache.setActive(false);
             return;
         }
-        if (playHead >= span && ++holdTicks >= HOLD_TICKS) {
-            stop();
+        updateTerrainCache(mc);
+        pruneSalvoGhosts(mc);
+        // Live toggle-off: the client master switch closes any running
+        // automatic view immediately (the replay view is user-initiated and
+        // unaffected).
+        if (mode == Mode.ARTILLERY || mode == Mode.TERMINAL) {
+            if (!TBConfig.XRAY_VIEW_ENABLED.get()) {
+                stop();
+                return;
+            }
+        }
+        if (artilleryGraceTicks > 0) artilleryGraceTicks--;
+        switch (mode) {
+            case REPLAY -> {
+                if (playHead >= span && ++holdTicks >= HOLD_TICKS) {
+                    stop();
+                }
+            }
+            case ARTILLERY -> {
+                if (!hasLiveArtilleryTarget()) {
+                    // One-shot diagnostic: the tracked entity is despawned
+                    // beyond tracking range and the relay went quiet, so say
+                    // which half failed if the view ends mid-flight.
+                    Minecraft mc2 = Minecraft.getInstance();
+                    Entity target = artilleryTarget();
+                    long silence = mc2.level != null && lastArtilleryRelayGameTime != Long.MIN_VALUE
+                        ? mc2.level.getGameTime() - lastArtilleryRelayGameTime : -1L;
+                    CBCTerminalBallistics.LOGGER.info(
+                        "[CTB-HITCAM] artillery view ended: entity={}, ghostAlive={}, relaySilenceTicks={}",
+                        target != null, artilleryGhostAlive, silence);
+                    stop();
+                }
+            }
+            case TERMINAL -> {
+                // Parked packets play the moment the animation completes; run
+                // this before the expiry check so a queued engagement is never
+                // lost to the view timing out.
+                ClientTerminalView.clientTick();
+                if (ClientTerminalView.expired()) {
+                    stop();
+                }
+            }
+            default -> {
+                ClientTerminalView.clientTick();
+            }
         }
     }
 
     /**
-     * Advances the playhead once per rendered frame using the real frame
-     * delta, so slow motion stays smooth instead of stepping per tick.
+     * Advances the replay playhead once per rendered frame using the real
+     * frame delta, so slow motion stays smooth instead of stepping per tick.
      */
     public static void advance(float partialTick) {
-        if (!active) return;
+        if (mode != Mode.REPLAY) return;
         if (lastPartialTick < 0.0F) lastPartialTick = partialTick;
         float delta = partialTick - lastPartialTick;
         if (delta < 0.0F) delta += 1.0F;
@@ -110,24 +481,98 @@ public final class ClientHitcam {
     }
 
     public static Vec3 shellPos() {
+        return shellPos(0.0F);
+    }
+
+    /**
+     * Shell position interpolated to this rendered frame. Entities advance once
+     * per server tick, so the chase camera and manual PiP shell render would
+     * otherwise sit up to a block behind the shell the world pass drew at the
+     * partial-tick position, pushing it toward the window edge. When the entity
+     * is beyond tracking range, extrapolates the last server relay instead.
+     */
+    public static Vec3 shellPos(float partialTick) {
+        if (isTerminal()) {
+            Vec3 pos = ClientTerminalView.shellPos(partialTick);
+            return pos != null ? pos : samplePos(playHead);
+        }
+        if (isArtillery()) {
+            Entity target = artilleryTarget();
+            if (target != null) {
+                return lerpedPosition(target, partialTick);
+            }
+            return ghostExtrapolated(partialTick);
+        }
         return samplePos(playHead);
     }
 
+    /** Relay-based shell position, extrapolated forward by velocity since the last update. */
+    private static Vec3 ghostExtrapolated(float partialTick) {
+        Minecraft mc = Minecraft.getInstance();
+        double elapsed = mc.level != null ? mc.level.getGameTime() - artilleryGhostUpdateGameTime : 0L;
+        return artilleryGhostPos.add(artilleryGhostVel.scale(Math.max(0.0D, elapsed + partialTick)));
+    }
+
+    /** Partial-tick interpolated entity position, matching the vanilla render. */
+    public static Vec3 lerpedPosition(Entity entity, float partialTick) {
+        return new Vec3(
+            Mth.lerp(partialTick, entity.xOld, entity.getX()),
+            Mth.lerp(partialTick, entity.yOld, entity.getY()),
+            Mth.lerp(partialTick, entity.zOld, entity.getZ()));
+    }
+
     public static Vec3 shellDir() {
+        return shellDir(0.0F);
+    }
+
+    public static Vec3 shellDir(float partialTick) {
+        if (isTerminal()) {
+            Vec3 dir = ClientTerminalView.shellDir(partialTick);
+            return dir != null ? dir : sampleDir(playHead);
+        }
+        if (isArtillery()) {
+            Entity target = artilleryTarget();
+            Vec3 vel = target != null ? target.getDeltaMovement() : artilleryGhostVel;
+            if (vel.lengthSqr() > 1.0e-6D) return vel.normalize();
+            Vec3 look = target != null ? target.getLookAngle() : Vec3.ZERO;
+            return look.lengthSqr() < 1.0e-6D ? new Vec3(0, 1, 0) : look.normalize();
+        }
         return sampleDir(playHead);
     }
 
-    public static Vec3 cameraPos() {
+    public static Vec3 cameraPos(float partialTick) {
+        if (isTerminal()) {
+            return ClientTerminalView.cameraPos(partialTick);
+        }
         Vec3 dir = shellDir();
+        if (isArtillery()) {
+            // Further 3/4 chase view: behind and to the side of the shell, so the
+            // projectile model is clearly visible against the flight path.
+            Vec3 pos = shellPos(partialTick);
+            Vec3 side = dir.cross(new Vec3(0, 1, 0));
+            if (side.lengthSqr() < 1.0e-6D) side = new Vec3(1, 0, 0);
+            side = side.normalize();
+            return pos.subtract(dir.scale(10.5D)).add(0.0D, 3.5D, 0.0D).add(side.scale(2.5D));
+        }
         return shellPos().subtract(dir.scale(4.5D)).add(0.0D, 1.2D, 0.0D);
     }
 
-    public static Vec3 lookTarget() {
+    public static Vec3 lookTarget(float partialTick) {
+        if (isTerminal()) {
+            // Track the action: the shell in flight, then the impact/spall site.
+            return ClientTerminalView.lookPoint(partialTick);
+        }
+        if (isArtillery()) {
+            // Lead the shell slightly so it sits below-center with the impact
+            // area ahead, instead of filling the window dead-center.
+            return shellPos(partialTick).add(shellDir().scale(3.0D));
+        }
         // Look straight at the shell so it stays centered in the PiP window.
         return shellPos();
     }
 
     private static Vec3 samplePos(double t) {
+        if (samples.isEmpty()) return Vec3.ZERO;
         int i0 = (int) Math.floor(t);
         i0 = Math.max(0, Math.min(i0, samples.size() - 1));
         int i1 = Math.min(i0 + 1, samples.size() - 1);
@@ -141,6 +586,7 @@ public final class ClientHitcam {
     }
 
     private static Vec3 sampleDir(double t) {
+        if (samples.isEmpty()) return new Vec3(0, 1, 0);
         int i0 = (int) Math.floor(t);
         i0 = Math.max(0, Math.min(i0, samples.size() - 1));
         int i1 = Math.min(i0 + 1, samples.size() - 1);
