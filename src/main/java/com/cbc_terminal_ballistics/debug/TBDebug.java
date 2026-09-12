@@ -28,7 +28,11 @@ public final class TBDebug {
 
     private static final AtomicInteger VERBOSE_LINES = new AtomicInteger();
 
+    /** Diagnostics are silent unless launched with -Dcbctb.debug=true. */
+    public static final boolean VERBOSE = Boolean.getBoolean("cbctb.debug");
+
     public static void startupDiagnostics() {
+        if (!VERBOSE) return;
         CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] CBC Terminal Ballistics DEBUG build is loaded");
         logMod("create");
         logMod("createbigcannons");
@@ -73,7 +77,7 @@ public final class TBDebug {
         LAST_PROJECTILE = projectile.getType().toString();
         LAST_BLOCK = state.getBlock().toString() + " @ " + pos.toShortString();
         LAST_HIT_TIME.set(System.currentTimeMillis());
-        if (VERBOSE_LINES.getAndIncrement() < 200) {
+        if (VERBOSE && VERBOSE_LINES.getAndIncrement() < 200) {
             CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] {} mixin hit projectile={} block={} pos={}", type, LAST_PROJECTILE, state, pos.toShortString());
         }
     }
@@ -86,7 +90,7 @@ public final class TBDebug {
             case "BOUNCE" -> BOUNCES.incrementAndGet();
             default -> STOPS.incrementAndGet();
         }
-        if (VERBOSE_LINES.getAndIncrement() < 200) {
+        if (VERBOSE && VERBOSE_LINES.getAndIncrement() < 200) {
             CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] service outcome={} damage={} threshold={}", outcome, damage, threshold);
         }
     }

@@ -251,8 +251,8 @@ public final class TBImpactService {
             }
 
             boolean perforates = !unbreakable && penetrationRatio >= 1.0;
-            if (isContraption) {
-                CTB_LOG.info("[ctb] contraption impact: state={} pos={} velMag={} mass={} attack={} toughness={} ratio={} outcome={} perforates={}",
+            if (isContraption && CTB_LOG.isDebugEnabled()) {
+                CTB_LOG.debug("[ctb] contraption impact: state={} pos={} velMag={} mass={} attack={} toughness={} ratio={} outcome={} perforates={}",
                     state, pos, String.format("%.2f", velMag), String.format("%.2f", mass),
                     String.format("%.2f", attack), String.format("%.2f", baseArmorToughness),
                     String.format("%.2f", penetrationRatio), perforates ? "PENETRATE" : "STOP", perforates);

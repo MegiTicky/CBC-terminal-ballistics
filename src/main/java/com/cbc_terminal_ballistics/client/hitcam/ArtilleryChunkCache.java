@@ -128,7 +128,7 @@ public final class ArtilleryChunkCache {
     public static void logSummaryIfDue(long gameTime) {
         if (gameTime - lastCacheLogGameTime < 40) return;
         lastCacheLogGameTime = gameTime;
-        CBCTerminalBallistics.LOGGER.info("[CTB-CHUNKSTREAM] client cache: size={} capturedDelta={} servedDelta={}",
+        CBCTerminalBallistics.LOGGER.debug("[CTB-CHUNKSTREAM] client cache: size={} capturedDelta={} servedDelta={}",
             CHUNKS.size(), capturesSinceLog, servesSinceLog);
         capturesSinceLog = 0;
         servesSinceLog = 0;

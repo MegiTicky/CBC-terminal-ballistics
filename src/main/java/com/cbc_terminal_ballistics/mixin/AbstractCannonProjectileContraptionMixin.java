@@ -110,7 +110,7 @@ public abstract class AbstractCannonProjectileContraptionMixin {
                 if (source != null) {
                     ctb$sourceContraption = source.getUUID();
                     ctb$sourceExpiry = now + 100L;
-                    CTB_LOG.info("[ctb] source contraption recorded {} (expires tick {})", ctb$sourceContraption, ctb$sourceExpiry);
+                    CTB_LOG.debug("[ctb] source contraption recorded {} (expires tick {})", ctb$sourceContraption, ctb$sourceExpiry);
                 }
             }
 

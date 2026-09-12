@@ -189,7 +189,7 @@ public final class VSClientCompat {
             worldRef.x + 64.0D, worldRef.y + 64.0D, worldRef.z + 64.0D);
         Iterable<?> ships = getShipsIntersectingBox(level, box);
         if (ships == null) {
-            LOG.info("[CTB-HITCAM] ship reanchor: box scan unavailable (direct={} worldRef={})",
+            LOG.debug("[CTB-HITCAM] ship reanchor: box scan unavailable (direct={} worldRef={})",
                 direct != null, worldRef);
             return null;
         }
@@ -210,7 +210,7 @@ public final class VSClientCompat {
         // snapshot world position (allows for the ship moving between the
         // impact and this frame, but rejects a wrong/unrelated ship).
         if (best != null && bestError < 48.0D * 48.0D) return best;
-        LOG.info("[CTB-HITCAM] ship reanchor: no match (direct={} bestError={} worldRef={})",
+        LOG.debug("[CTB-HITCAM] ship reanchor: no match (direct={} bestError={} worldRef={})",
             direct != null, best == null ? "none" : String.format("%.1f", Math.sqrt(bestError)), worldRef);
         return null;
     }

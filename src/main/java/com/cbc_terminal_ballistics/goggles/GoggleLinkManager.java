@@ -185,7 +185,7 @@ public final class GoggleLinkManager {
             }
             if (matched) {
                 linked.add(player);
-                LOG.info("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched a link of {}",
+                LOG.debug("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched a link of {}",
                     spawnBlock.getX(), spawnBlock.getY(), spawnBlock.getZ(), player.getGameProfile().getName());
             } else if (carriesBallisticWithLinks) {
                 // One diagnostic line per shell spawn: shows why the match
@@ -201,7 +201,7 @@ public final class GoggleLinkManager {
                             String.format("%.0f", Math.sqrt(resolved.distSqr(spawnBlock))))
                         .append(']');
                 }
-                LOG.info("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched NO link of {} (radius {}):{}",
+                LOG.debug("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched NO link of {} (radius {}):{}",
                     spawnBlock.getX(), spawnBlock.getY(), spawnBlock.getZ(),
                     player.getGameProfile().getName(), TBConfig.HITCAM_GOGGLE_MATCH_RADIUS.get(), detail);
             } else if (carriesSpotter && player.distanceToSqr(spawn) <= spotterRadiusSq) {

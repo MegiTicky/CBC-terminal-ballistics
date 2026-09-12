@@ -74,7 +74,7 @@ public class MaterialManager extends SimpleJsonResourceReloadListener {
         this.byTag = Map.copyOf(tags);
         this.namespaceRules = List.copyOf(namespaces);
         this.pathRules = List.copyOf(paths);
-        CBCTerminalBallistics.LOGGER.warn("[CTB-DEBUG] Loaded {} block, {} tag, {} namespace and {} path terminal-ballistics material mappings",
+        CBCTerminalBallistics.LOGGER.info("Loaded {} block, {} tag, {} namespace and {} path terminal-ballistics material mappings",
             blocks.size(), tags.size(), namespaces.size(), paths.size());
     }
 

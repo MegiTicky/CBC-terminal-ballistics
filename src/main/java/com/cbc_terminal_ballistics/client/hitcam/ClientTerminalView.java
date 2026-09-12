@@ -314,7 +314,7 @@ public final class ClientTerminalView {
             if (i == actors.size() - 1) continue; // newest stays for the close
             Actor actor = actors.get(i);
             if (age >= actorFadeStartTick(actor) + FADE_TICKS) {
-                CBCTerminalBallistics.LOGGER.info(
+                CBCTerminalBallistics.LOGGER.debug(
                     "[CTB-HITCAM] burst actor {} pruned (diagram faded, shell={})",
                     i, actor.packet.projectileId());
                 actors.remove(i);
@@ -332,7 +332,7 @@ public final class ClientTerminalView {
 
     private static void park(ClientboundTerminalBallisticsPacket packet, String why) {
         pending = packet;
-        CBCTerminalBallistics.LOGGER.info(
+        CBCTerminalBallistics.LOGGER.debug(
             "[CTB-HITCAM] parked terminal packet shell={} summary=\"{}\" plates={} (why: {} age={} endTick={} animEnd={})",
             packet.projectileId(), packet.summary(), packet.plates().size(),
             why, ageTicks(), endTick - startTick, primaryAnimEndTick());
@@ -341,7 +341,7 @@ public final class ClientTerminalView {
     /** Same-shell cumulative snapshot: swap in the fuller packet, rebuild its timeline. */
     private static void refreshActor(int index, ClientboundTerminalBallisticsPacket packet) {
         Actor actor = actors.get(index);
-        CBCTerminalBallistics.LOGGER.info(
+        CBCTerminalBallistics.LOGGER.debug(
             "[CTB-HITCAM] same-shell refinement shell={} plates={}->{} spalls={}->{} entities={}->{} criticals={}->{}",
             packet.projectileId(),
             actor.packet.plates().size(), packet.plates().size(),
@@ -384,12 +384,12 @@ public final class ClientTerminalView {
         while (actors.size() > burstActors()) {
             int drop = indexOfExpendableSecondary();
             if (drop < 1) break; // no secondary worth dropping; keep the newest
-            CBCTerminalBallistics.LOGGER.info(
+            CBCTerminalBallistics.LOGGER.debug(
                 "[CTB-HITCAM] burst actor {} dropped for shell={} (cap {})",
                 drop, actors.get(drop).packet.projectileId(), burstActors());
             actors.remove(drop);
         }
-        CBCTerminalBallistics.LOGGER.info(
+        CBCTerminalBallistics.LOGGER.debug(
             "[CTB-HITCAM] burst merged shell={} onto view shell={} (actor {} of {})",
             packet.projectileId(), actors.get(0).packet.projectileId(),
             actors.size(), burstActors());
@@ -538,7 +538,7 @@ public final class ClientTerminalView {
         if (actors.isEmpty() || ageTicks() >= stageBusyEndTick() || ageTicks() >= endTick) {
             ClientboundTerminalBallisticsPacket packet = pending;
             pending = null;
-            CBCTerminalBallistics.LOGGER.info("[CTB-HITCAM] playing parked terminal packet shell={} plates={}",
+            CBCTerminalBallistics.LOGGER.debug("[CTB-HITCAM] playing parked terminal packet shell={} plates={}",
                 packet.projectileId(), packet.plates().size());
             accept(packet);
         }

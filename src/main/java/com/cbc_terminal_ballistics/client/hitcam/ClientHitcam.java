@@ -117,7 +117,7 @@ public final class ClientHitcam {
         // when the next gun's track packet arrived). Its own terminal packet
         // parks and plays when the animation finishes.
         if (mode == Mode.TERMINAL && ClientTerminalView.animationInProgress()) {
-            CBCTerminalBallistics.LOGGER.info(
+            CBCTerminalBallistics.LOGGER.debug(
                 "[CTB-HITCAM] ignoring track packet for shell {} — terminal animation in progress", entityId);
             return;
         }

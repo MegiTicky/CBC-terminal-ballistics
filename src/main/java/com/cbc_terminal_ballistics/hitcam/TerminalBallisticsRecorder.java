@@ -1026,7 +1026,7 @@ public final class TerminalBallisticsRecorder {
         session.streamNullLast = nullLast;
         if (level.getGameTime() - session.lastStreamLogGameTime >= 40) {
             session.lastStreamLogGameTime = level.getGameTime();
-            CBCTerminalBallistics.LOGGER.info(
+            CBCTerminalBallistics.LOGGER.debug(
                 "[CTB-CHUNKSTREAM] server stream: shell=[{},{}] total={} sentLast={} nullLast={} pending={}",
                 center.x, center.z, session.streamTotal, sentLast, nullLast, session.pendingUuid != null);
         }
@@ -1186,7 +1186,7 @@ public final class TerminalBallisticsRecorder {
         for (ClientboundTerminalBallisticsPacket.Spall cone : spalls) totalSpallFragments += cone.fragments();
         String summary = buildSummary(session);
         Vec3 plate0 = plates.isEmpty() ? blast.pos() : plates.get(0).pos();
-        CBCTerminalBallistics.LOGGER.info(
+        CBCTerminalBallistics.LOGGER.debug(
             "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} criticals={} plate0=({},{},{}) blast={} summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
             frame.anchor == null ? "world" : frame.anchor.kind(),
