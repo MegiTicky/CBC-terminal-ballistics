@@ -10,6 +10,8 @@ import com.cbc_terminal_ballistics.data.MaterialManager;
 import com.cbc_terminal_ballistics.data.MaterialStats;
 import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
+import com.cbc_terminal_ballistics.goggles.BallisticGogglesItem;
+import com.cbc_terminal_ballistics.goggles.GoggleLinkManager;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -24,6 +26,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -73,7 +76,64 @@ public final class TBCommands {
             .then(Commands.literal("hitcam")
                 .executes(ctx -> hitcamReplay(ctx.getSource()))
                 .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource()))))
+            .then(Commands.literal("goggles")
+                .then(Commands.literal("list").executes(ctx -> gogglesList(ctx.getSource())))
+                .then(Commands.literal("clear").executes(ctx -> gogglesClear(ctx.getSource()))))
     );
+    }
+
+    /** Held ballistic goggles, main hand then off hand, or null. */
+    private static ItemStack heldGoggles(ServerPlayer player) {
+        if (player.getMainHandItem().getItem() instanceof BallisticGogglesItem) return player.getMainHandItem();
+        if (player.getOffhandItem().getItem() instanceof BallisticGogglesItem) return player.getOffhandItem();
+        return null;
+    }
+
+    private static int gogglesList(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        ItemStack goggles = heldGoggles(player);
+        if (goggles == null) {
+            source.sendFailure(Component.literal("Hold ballistic goggles in your main or off hand."));
+            return 0;
+        }
+        List<GoggleLinkManager.GoggleLink> links = GoggleLinkManager.links(goggles);
+        if (links.isEmpty()) {
+            source.sendSuccess(() -> Component.literal("No cannon mounts linked. Right-click one with the goggles to link it."), false);
+            return 1;
+        }
+        ServerLevel level = player.serverLevel();
+        source.sendSuccess(() -> Component.literal(links.size() + " linked cannon mount(s):"), false);
+        for (GoggleLinkManager.GoggleLink link : links) {
+            BlockPos resolved = GoggleLinkManager.resolveLink(level, link, null);
+            String where = link.shipId() >= 0 ? "ship " + link.shipId() : "world";
+            String pos = resolved != null
+                ? resolved.getX() + ", " + resolved.getY() + ", " + resolved.getZ()
+                : "unresolved (" + link.fallbackPos() + ")";
+            String dim = link.dimension();
+            source.sendSuccess(() -> Component.literal("  " + where + " @ " + pos + " [" + dim + "]"), false);
+        }
+        return links.size();
+    }
+
+    private static int gogglesClear(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        ItemStack goggles = heldGoggles(player);
+        if (goggles == null) {
+            source.sendFailure(Component.literal("Hold ballistic goggles in your main or off hand."));
+            return 0;
+        }
+        int count = GoggleLinkManager.linkCount(goggles);
+        GoggleLinkManager.clearLinks(goggles);
+        source.sendSuccess(() -> Component.literal("Removed " + count + " goggle link(s)."), false);
+        return count;
     }
 
     private static int hitcamReplay(CommandSourceStack source) {

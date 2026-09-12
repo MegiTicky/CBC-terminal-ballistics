@@ -98,9 +98,20 @@ public final class ClientHitcam {
     }
 
     /** Artillery view: follow this live projectile entity until it is gone. */
-    public static void startArtillery(int entityId) {
+    public static void startArtillery(int entityId, boolean rebind) {
         if (!TBConfig.HITCAM_ENABLED.get()) return;
         sendStreamPreference();
+        // Sticky chase cam: while a shell is being followed live, a fresh track
+        // packet for a DIFFERENT shell of a burst/broadside no longer switches
+        // the camera — the followed shell plays start-to-finish and the
+        // newcomer only shows as a salvo ghost (its relay still lands here) and
+        // later in the terminal x-ray. A rebind of the FOLLOWED shell (chunk
+        // unload re-created it with a new entity id) must always retarget.
+        if (!rebind && TBConfig.ARTILLERY_STICKY_CHASE.get()
+            && mode == Mode.ARTILLERY && hasLiveArtilleryTarget()
+            && entityId != artilleryEntityId) {
+            return;
+        }
         // A newly fired shell must not cut a terminal animation that is still
         // on screen (salvo fire made the x-ray flash for a moment, then vanish
         // when the next gun's track packet arrived). Its own terminal packet
@@ -204,6 +215,31 @@ public final class ClientHitcam {
             // not kill the current chase cam.
             if (mode == Mode.ARTILLERY && artilleryEntityId >= 0 && entityId != artilleryEntityId) return;
             artilleryGhostAlive = false;
+            // Sticky transfer: when the followed shell is gone and no terminal
+            // engagement took over the view (an x-ray dispatch flips the mode
+            // before this relay arrives — a fizzle into terrain leaves us
+            // here), keep chasing the next shell that is still flying instead
+            // of ending the view, so bursts keep showing complete flights.
+            if (mode == Mode.ARTILLERY && TBConfig.ARTILLERY_STICKY_CHASE.get()) {
+                int next = oldestFreshSalvoGhost(entityId);
+                if (next >= 0) {
+                    artilleryEntityId = next;
+                    artilleryGraceTicks = ARTILLERY_START_GRACE_TICKS;
+                    // Seed the focused ghost from the registry so the camera
+                    // has a real position for the ~2 ticks until the next
+                    // relay (a cleared ghost extrapolates from world origin).
+                    SalvoGhost seed = salvoGhosts.get(next);
+                    if (seed != null) {
+                        artilleryGhostTypeKey = seed.typeKey;
+                        artilleryGhostPos = seed.pos;
+                        artilleryGhostVel = seed.vel;
+                        artilleryGhostUpdateGameTime = seed.updateGameTime;
+                        artilleryGhostAlive = true;
+                    } else {
+                        clearArtilleryGhost();
+                    }
+                }
+            }
             return;
         }
         if (mode == Mode.ARTILLERY && artilleryEntityId >= 0 && artilleryEntityId != entityId) return;
@@ -231,6 +267,21 @@ public final class ClientHitcam {
     private static void pruneSalvoGhosts(Minecraft mc) {
         long now = mc.level.getGameTime();
         salvoGhosts.values().removeIf(g -> now - g.updateGameTime > SALVO_GHOST_TIMEOUT_TICKS);
+    }
+
+    /**
+     * Oldest salvo ghost still receiving relays, excluding {@code excludeId}
+     * (the shell that just died). Insertion order of the registry is oldest
+     * first, so the first fresh entry is the longest-flying survivor.
+     */
+    private static int oldestFreshSalvoGhost(int excludeId) {
+        Minecraft mc = Minecraft.getInstance();
+        long now = mc.level != null ? mc.level.getGameTime() : 0L;
+        for (Map.Entry<Integer, SalvoGhost> e : salvoGhosts.entrySet()) {
+            if (e.getKey() == excludeId) continue;
+            if (now - e.getValue().updateGameTime <= ARTILLERY_GHOST_TIMEOUT_TICKS) return e.getKey();
+        }
+        return -1;
     }
 
     /**

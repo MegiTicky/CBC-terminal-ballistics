@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics.hitcam;
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.ballistics.ProjectileClassifier;
 import com.cbc_terminal_ballistics.config.TBConfig;
+import com.cbc_terminal_ballistics.goggles.GoggleLinkManager;
 import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundTrackProjectilePacket;
@@ -43,7 +44,6 @@ public final class TerminalBallisticsRecorder {
     private static final int MAX_SPALL_BLOCKS_PER_CONE = 16;
     private static final int MAX_CRITICALS = 16;
     private static final int STALE_FLUSH_TICKS = 30;
-    private static final double AUDIENCE_SEARCH_RADIUS = 32.0D;
     /**
      * Max sane distance of a converted point from the shipyard anchor. A failed
      * VS conversion leaves world coordinates ~100000 blocks away; a real
@@ -105,7 +105,8 @@ public final class TerminalBallisticsRecorder {
         /** True once any critical event (destroyed component or crew kill) was recorded. */
         boolean hasCritical;
         UUID anchorUuid;
-        ServerPlayer audience;
+        /** Every player receiving this shell's track/relay/terminal views (shooter, seated gunner, goggle links). */
+        final List<ServerPlayer> audiences = new ArrayList<>();
         long firstEventGameTime = -1L;
         boolean hasTerminalOutcome;
         /** Spall or the shell body reached non-armour structure behind the armour. */
@@ -131,8 +132,14 @@ public final class TerminalBallisticsRecorder {
         int dataVersion;
         /** {@link #dataVersion} at the last snapshot dispatch. */
         int dataVersionAtSnapshot;
-        /** Chunks already streamed to the audience for the artillery cam's client-side terrain. */
-        final it.unimi.dsi.fastutil.longs.LongOpenHashSet streamedChunks = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+        /** Chunks already streamed to each audience member for the artillery cam's client-side terrain. */
+        final java.util.Map<java.util.UUID, it.unimi.dsi.fastutil.longs.LongOpenHashSet> streamedChunks =
+            new java.util.HashMap<>();
+
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet streamedChunksFor(ServerPlayer player) {
+            return streamedChunks.computeIfAbsent(player.getUUID(),
+                k -> new it.unimi.dsi.fastutil.longs.LongOpenHashSet());
+        }
         /** Terrain-stream diagnostics: lifetime total, plus last-relay sent/unloaded counts. */
         int streamTotal;
         int streamSentLast;
@@ -247,24 +254,24 @@ public final class TerminalBallisticsRecorder {
             existing.pendingSinceTick = -1L;
             existing.lastRelayPos = null;
             existing.stuckRelays = 0;
-            if (existing.audience == null) {
-                existing.audience = resolveAudience(level, projectile);
+            if (existing.audiences.isEmpty()) {
+                existing.audiences.addAll(resolveAudiences(level, projectile));
             }
-            if (existing.audience != null && TBConfig.HITCAM_ARTILLERY_CAM.get()) {
-                send(existing.audience, new ClientboundTrackProjectilePacket(projectile.getId()));
+            if (!existing.audiences.isEmpty() && TBConfig.HITCAM_ARTILLERY_CAM.get()) {
+                sendTo(existing.audiences, new ClientboundTrackProjectilePacket(projectile.getId(), true));
             }
             return;
         }
-        ServerPlayer audience = resolveAudience(level, projectile);
-        if (audience == null) return;
+        List<ServerPlayer> audiences = resolveAudiences(level, projectile);
+        if (audiences.isEmpty()) return;
         Session session = new Session();
         session.bound = projectile;
-        session.audience = audience;
+        session.audiences.addAll(audiences);
         session.heShell = ProjectileClassifier.isExplosiveShell(projectile);
         session.explosiveShell = session.heShell && !ProjectileClassifier.isApheType(projectile);
         SESSIONS.put(projectile.getUUID(), session);
         if (TBConfig.HITCAM_ARTILLERY_CAM.get()) {
-            send(audience, new ClientboundTrackProjectilePacket(projectile.getId()));
+            sendTo(session.audiences, new ClientboundTrackProjectilePacket(projectile.getId(), false));
         }
     }
 
@@ -672,7 +679,7 @@ public final class TerminalBallisticsRecorder {
             // Post-mortem grace session: no relay/streaming, expiry handled above.
             if (session.shellGone) continue;
             Entity projectile = session.bound;
-            if (projectile == null || session.audience == null) continue;
+            if (projectile == null || session.audiences.isEmpty()) continue;
             if (projectile.isRemoved()) {
                 if (projectile.getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) {
                     // The shell's chunk was expired and unloaded with the entity
@@ -702,7 +709,7 @@ public final class TerminalBallisticsRecorder {
                     session.dataVersionAtSnapshot = session.dataVersion;
                     session.dirty = false;
                 }
-                send(session.audience, new ClientboundArtilleryUpdatePacket(
+                sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", projectile.position(), Vec3.ZERO, true));
                 // Keep the session registered in its post-mortem grace window:
                 // an ammo-rack cook-off or chained crew death may still follow.
@@ -732,18 +739,18 @@ public final class TerminalBallisticsRecorder {
                     session.dataVersionAtSnapshot = session.dataVersion;
                     session.dirty = false;
                 }
-                send(session.audience, new ClientboundArtilleryUpdatePacket(
+                sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
                     projectile.getId(), "", posNow, Vec3.ZERO, true));
                 markShellGone(session, projectile.level().getGameTime());
                 continue;
             }
-            send(session.audience, new ClientboundArtilleryUpdatePacket(
+            sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
                 projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
                 posNow, projectile.getDeltaMovement(), false));
             if (projectile.level() instanceof ServerLevel slevel) {
                 Vec3 velNow = projectile.getDeltaMovement();
                 preflightChunkload(slevel, posNow, velNow);
-                streamTerrain(session, slevel, posNow, velNow, session.audience);
+                streamTerrain(session, slevel, posNow, velNow);
             }
         }
     }
@@ -788,26 +795,26 @@ public final class TerminalBallisticsRecorder {
             session.lastRelayPos = null;
             session.stuckRelays = 0;
             if (TBConfig.HITCAM_ARTILLERY_CAM.get()) {
-                send(session.audience, new ClientboundTrackProjectilePacket(reborn.getId()));
+                sendTo(session.audiences, new ClientboundTrackProjectilePacket(reborn.getId(), true));
             }
             return;
         }
         if (server.getTickCount() - session.pendingSinceTick >= REBIND_TIMEOUT_TICKS) {
             CBCTerminalBallistics.LOGGER.info(
                 "[CTB-CHUNKSTREAM] shell {} never re-created after chunk unload; ending session", removed.getId());
-            send(session.audience, new ClientboundArtilleryUpdatePacket(
+            sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
                 removed.getId(), "", session.lastRelayPos, Vec3.ZERO, true));
-            session.audience = null;
+            session.audiences.clear();
             SESSIONS.remove(session.pendingUuid);
             return;
         }
         // Frozen synthetic relay: keeps the client's ghost from timing out
         // while the chunk regenerates. The client extrapolates with the relayed
         // velocity, so zero velocity parks the ghost at the last real position.
-        send(session.audience, new ClientboundArtilleryUpdatePacket(
+        sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
             removed.getId(), EntityType.getKey(removed.getType()).toString(),
             session.lastRelayPos, Vec3.ZERO, false));
-        streamTerrain(session, level, session.lastRelayPos, Vec3.ZERO, session.audience);
+        streamTerrain(session, level, session.lastRelayPos, Vec3.ZERO);
     }
 
     /** Per relay tick cap, so a fast shell cannot flood the client with chunk packets. */
@@ -885,11 +892,21 @@ public final class TerminalBallisticsRecorder {
      * enters it, at which point this relay picks it up.
      */
     private static void streamTerrain(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
-                                      net.minecraft.world.phys.Vec3 vel, ServerPlayer player) {
-        // The viewer's client config decides whether streaming happens at all
-        // (relayed per player); this side's radius/lead decide how much.
+                                      net.minecraft.world.phys.Vec3 vel) {
+        // Per audience member: their client config decides whether streaming
+        // happens at all (relayed per player); this side's radius/lead decide
+        // how much, and each player tracks their own streamed-chunk set so a
+        // joining viewer still receives the chunks the others already have.
+        for (ServerPlayer player : session.audiences) {
+            streamTerrainFor(session, level, pos, vel, player);
+        }
+    }
+
+    private static void streamTerrainFor(Session session, ServerLevel level, net.minecraft.world.phys.Vec3 pos,
+                                         net.minecraft.world.phys.Vec3 vel, ServerPlayer player) {
         if (!StreamPreferences.isEnabled(player)) return;
         if (player.level() != level) return;
+        it.unimi.dsi.fastutil.longs.LongOpenHashSet streamed = session.streamedChunksFor(player);
         net.minecraft.server.level.ServerChunkCache chunks = level.getChunkSource();
         int radius = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_RADIUS.get(), 1, 4);
         int lead = net.minecraft.util.Mth.clamp(TBConfig.HITCAM_TERRAIN_STREAM_LEAD_TICKS.get(), 0, 40);
@@ -920,7 +937,7 @@ public final class TerminalBallisticsRecorder {
         int sentLast = 0;
         int nullLast = 0;
         for (long packed : order) {
-            if (session.streamedChunks.contains(packed)) continue;
+            if (streamed.contains(packed)) continue;
             int cx = ChunkPos.getX(packed);
             int cz = ChunkPos.getZ(packed);
             net.minecraft.world.level.chunk.LevelChunk chunk = chunks.getChunkNow(cx, cz);
@@ -931,7 +948,7 @@ public final class TerminalBallisticsRecorder {
             player.trackChunk(new ChunkPos(cx, cz),
                 new net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket(
                     chunk, chunks.getLightEngine(), null, null));
-            session.streamedChunks.add(packed);
+            streamed.add(packed);
             sentLast++;
             if (--budget <= 0) break;
         }
@@ -992,7 +1009,7 @@ public final class TerminalBallisticsRecorder {
             long now = bound != null ? bound.level().getGameTime() : server.overworld() != null ? server.overworld().getGameTime() : Long.MAX_VALUE;
             if (now < session.graceEndTick) continue;
             if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot
-                && session.audience != null && bound != null) {
+                && !session.audiences.isEmpty() && bound != null) {
                 CBCTerminalBallistics.LOGGER.info(
                     "[CTB-HITCAM] posthumous criticals flush: shell={} criticals={}",
                     bound.getId(), session.criticals.size());
@@ -1019,7 +1036,7 @@ public final class TerminalBallisticsRecorder {
     private static void dispatch(Entity projectile, Session session) {
         // An explosive shell that detonated ALWAYS yields a terminal view,
         // plate or no plate — the blast alone is worth framing.
-        if ((session.plates.isEmpty() && session.blastPos == null) || session.audience == null) return;
+        if ((session.plates.isEmpty() && session.blastPos == null) || session.audiences.isEmpty()) return;
         if (!(projectile.level() instanceof ServerLevel level)) return;
 
         ShipFrame frame = resolveFrame(level, session);
@@ -1107,7 +1124,7 @@ public final class TerminalBallisticsRecorder {
             (long) Math.floor(plate0.x), (long) Math.floor(plate0.y), (long) Math.floor(plate0.z),
             blast == null ? "none" : String.format("r=%.1f,explosive=%s", blast.radius(), blast.explosive()),
             summary);
-        send(session.audience, new ClientboundTerminalBallisticsPacket(
+        sendTo(session.audiences, new ClientboundTerminalBallisticsPacket(
             projectile.getId(), EntityType.getKey(projectile.getType()).toString(),
             summary, frame.anchor, path, plates, spalls, entities, criticals, blast));
     }
@@ -1191,19 +1208,57 @@ public final class TerminalBallisticsRecorder {
         return to.subtract(from);
     }
 
-    private static ServerPlayer resolveAudience(ServerLevel level, Entity projectile) {
+    /** Max sane distance of a seated gunner's cannon from a shell spawn to count as the firer. */
+    private static final double GUNNER_MATCH_RADIUS = 16.0D;
+
+    /**
+     * Everyone who should watch this shell. CBC projectiles carry no shooter
+     * identity, so in order: a vanilla projectile owner (vanilla bows etc.),
+     * the gunner seated on a cannon contraption near the muzzle, and every
+     * player carrying ballistic goggles linked to the firing mount (or
+     * spotter goggles, the opt-in nearby-shells pass). The old
+     * nearest-player-within-32-blocks fallback is gone — it leaked other
+     * players' shells into bystanders' views.
+     */
+    private static List<ServerPlayer> resolveAudiences(ServerLevel level, Entity projectile) {
+        java.util.LinkedHashSet<ServerPlayer> out = new java.util.LinkedHashSet<>();
         if (projectile instanceof net.minecraft.world.entity.projectile.Projectile p
             && p.getOwner() instanceof ServerPlayer owner) {
-            return owner;
+            out.add(owner);
         }
-        // Cannon-fired shells carry no vanilla owner; fall back to the operator
-        // standing closest to the muzzle (the gunner of the firing contraption).
+        if (out.isEmpty()) {
+            ServerPlayer gunner = nearestSeatedGunner(level, projectile.position());
+            if (gunner != null) out.add(gunner);
+        }
+        for (ServerPlayer viewer : GoggleLinkManager.goggleAudiences(level, projectile.position())) {
+            out.add(viewer);
+        }
+        int cap = Math.max(1, TBConfig.HITCAM_MAX_AUDIENCES.get());
+        List<ServerPlayer> audiences = new ArrayList<>(Math.min(out.size(), cap));
+        for (ServerPlayer player : out) {
+            if (audiences.size() >= cap) break;
+            audiences.add(player);
+        }
+        return audiences;
+    }
+
+    /**
+     * The player operating a cannon (sitting on a CBC pitch-oriented
+     * contraption or a cannon carriage) whose vehicle is nearest the shell
+     * spawn. Class names are matched by string per the codebase convention of
+     * never importing CBC classes.
+     */
+    private static ServerPlayer nearestSeatedGunner(ServerLevel level, Vec3 spawn) {
         ServerPlayer nearest = null;
-        double best = AUDIENCE_SEARCH_RADIUS * AUDIENCE_SEARCH_RADIUS;
-        Vec3 pos = projectile.position();
+        double best = GUNNER_MATCH_RADIUS * GUNNER_MATCH_RADIUS;
         for (Player player : level.players()) {
             if (!(player instanceof ServerPlayer serverPlayer)) continue;
-            double distSq = player.distanceToSqr(pos);
+            Entity vehicle = player.getRootVehicle();
+            if (vehicle == null || vehicle == player) continue;
+            String vehicleClass = vehicle.getClass().getName();
+            if (!vehicleClass.contains("PitchOrientedContraptionEntity")
+                && !vehicleClass.contains("CannonCarriageEntity")) continue;
+            double distSq = vehicle.distanceToSqr(spawn);
             if (distSq <= best) {
                 best = distSq;
                 nearest = serverPlayer;
@@ -1222,6 +1277,15 @@ public final class TerminalBallisticsRecorder {
     private static void send(ServerPlayer player, Object packet) {
         if (TBNetwork.CHANNEL != null && player.connection != null) {
             TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+        }
+    }
+
+    private static void sendTo(List<ServerPlayer> players, Object packet) {
+        if (TBNetwork.CHANNEL == null) return;
+        for (ServerPlayer player : players) {
+            if (player.connection != null) {
+                TBNetwork.CHANNEL.sendTo(packet, player.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+            }
         }
     }
 

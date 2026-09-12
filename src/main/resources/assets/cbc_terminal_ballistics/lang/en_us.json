@@ -20,5 +20,7 @@
   "message.cbc_terminal_ballistics.ballistic_test_launcher.velocity": "Muzzle velocity: %s m/s",
   "message.cbc_terminal_ballistics.ballistic_test_launcher.no_ammo": "Hold a CBC shell or round in your offhand.",
   "message.cbc_terminal_ballistics.ballistic_test_launcher.unsupported": "Unsupported test-launcher ammo.",
-  "message.cbc_terminal_ballistics.ballistic_test_launcher.fired": "Fired test round at %s m/s"
+  "message.cbc_terminal_ballistics.ballistic_test_launcher.fired": "Fired test round at %s m/s",
+  "item.cbc_terminal_ballistics.ballistic_goggles": "Ballistic Goggles",
+  "item.cbc_terminal_ballistics.spotter_goggles": "Spotter Goggles"
 }

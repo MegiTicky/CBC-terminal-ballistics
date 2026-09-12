@@ -71,6 +71,9 @@ public final class TBConfig {
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_TERRAIN_XRAY;
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_SALVO_SHELLS;
     public static final ForgeConfigSpec.DoubleValue HITCAM_BLAST_RADIUS_SCALE;
+    public static final ForgeConfigSpec.IntValue HITCAM_GOGGLE_MATCH_RADIUS;
+    public static final ForgeConfigSpec.IntValue HITCAM_SPOTTER_RADIUS;
+    public static final ForgeConfigSpec.IntValue HITCAM_MAX_AUDIENCES;
 
     public static final ForgeConfigSpec.DoubleValue XRAY_PATH_THICKNESS;
     public static final ForgeConfigSpec.DoubleValue XRAY_PLATE_THICKNESS;
@@ -79,6 +82,8 @@ public final class TBConfig {
     public static final ForgeConfigSpec.DoubleValue XRAY_IMPACT_CROSS_THICKNESS;
     public static final ForgeConfigSpec.DoubleValue XRAY_IMPACT_CROSS_SIZE;
     public static final ForgeConfigSpec.BooleanValue XRAY_VIEW_ENABLED;
+
+    public static final ForgeConfigSpec.BooleanValue ARTILLERY_STICKY_CHASE;
 
     static {
         ForgeConfigSpec.Builder server = new ForgeConfigSpec.Builder();
@@ -159,6 +164,9 @@ public final class TBConfig {
         HITCAM_PIP_TERRAIN_XRAY = server.comment("X-ray view: while ship terrain is ghosted, skip its depth writes so hull interiors and the turrets/barrels behind them show through the hull, War-Thunder style. False keeps proper depth occlusion (a ghosted hull hides what is directly behind it).").define("hitcamPipTerrainXray", true);
         HITCAM_PIP_SALVO_SHELLS = server.comment("Show the OTHER shells of a salvo/broadside inside the hitcam picture-in-picture as relay-fed ghosts, so a dozen-shell salvo does not collapse to just the focused shell once the others leave client tracking range.").define("hitcamPipSalvoShells", true);
         HITCAM_BLAST_RADIUS_SCALE = server.comment("Terminal view: scale for the synthesized HE blast (an explosive shell that ends its flight without a real detonation still gets a blast in the x-ray, sized by caliber x this multiplier). Real detonations use their actual explosion radius.").defineInRange("hitcamBlastRadiusScale", 1.0, 0.25, 4.0);
+        HITCAM_GOGGLE_MATCH_RADIUS = server.comment("Ballistic goggles: a shell opens the goggle views when it spawns within this many blocks of one of the goggles' linked cannon mounts.").defineInRange("hitcamGoggleMatchRadius", 24, 4, 64);
+        HITCAM_SPOTTER_RADIUS = server.comment("Spotter goggles: while carried in the inventory, shells spawning within this many blocks of the holder open a view for them (the old nearby-shell behaviour, opt-in per player).").defineInRange("hitcamSpotterRadius", 32, 4, 128);
+        HITCAM_MAX_AUDIENCES = server.comment("Maximum players that may watch one shell's artillery/terminal views at once (goggle links, spotter goggles and the shooter share this budget).").defineInRange("hitcamMaxAudiences", 4, 1, 16);
         server.pop();
 
         SERVER_SPEC = server.build();
@@ -174,6 +182,7 @@ public final class TBConfig {
         // chunks; radius/lead stay server-side as bandwidth governance.
         HITCAM_TERRAIN_STREAM = client.comment("Artillery/terminal view terrain streaming preference: stream the chunks around the flying shell to this client so the picture-in-picture world pass keeps showing terrain past the chunk render distance boundary. false = rely on Distant Horizons LODs inside the view instead — no chunk packets, no client-side parse/mesh cost (if DH is absent the view shows sky and effects only). The preference is sent to the server when a view starts, so mid-game edits apply at the next shot; the server's hitcamTerrainStreamRadius/LeadTicks still govern how much it sends.").define("terrainStream", true);
         HITCAM_DH_MODE = client.comment("Distant Horizons behaviour inside the hitcam picture-in-picture. DH renders its LOD terrain during the nested world pass but points it at the player's camera, which displaces the LODs in the window. ATTEMPT = patch DH's render camera to the hitcam camera so LOD terrain, fog and fades line up in the view (falls back to SUPPRESS for the session if it throws). SUPPRESS = never render DH LODs inside the picture-in-picture; the window shows only streamed vanilla chunks (or, with terrainStream off, sky and effects) while the main view keeps DH untouched.").defineInList("dhMode", "ATTEMPT", List.of("ATTEMPT", "SUPPRESS"));
+        ARTILLERY_STICKY_CHASE = client.comment("Sticky artillery chase cam: while a shell is being followed live, track packets for OTHER shells of a burst/broadside no longer switch the camera — the followed shell plays start-to-finish and the newcomer only shows as a salvo ghost and in the terminal x-ray. When the followed shell dies, the camera moves to the next still-flying shell. false = the camera always switches to the newest shell (old behaviour).").define("stickyChase", true);
         client.pop();
         client.push("hitcam_xray");
         // Stroke widths are in GUI-scaled pixels on the displayed PiP window,

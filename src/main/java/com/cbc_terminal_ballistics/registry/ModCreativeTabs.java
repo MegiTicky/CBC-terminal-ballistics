@@ -22,6 +22,8 @@ public final class ModCreativeTabs {
                         output.accept(ModItems.ARMOR_UPGRADER.get());
                         output.accept(ModItems.ADVANCED_BLOCK_ARMOR_INSPECTION_TOOL.get());
                         output.accept(ModItems.BALLISTIC_TEST_LAUNCHER.get());
+                        output.accept(ModItems.BALLISTIC_GOGGLES.get());
+                        output.accept(ModItems.SPOTTER_GOGGLES.get());
                     })
                     .build());
 

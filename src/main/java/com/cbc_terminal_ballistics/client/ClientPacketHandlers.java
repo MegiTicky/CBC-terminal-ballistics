@@ -86,7 +86,7 @@ public final class ClientPacketHandlers {
 
     public static void handleTrackProjectile(ClientboundTrackProjectilePacket packet) {
         if (!com.cbc_terminal_ballistics.config.TBConfig.XRAY_VIEW_ENABLED.get()) return;
-        com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.startArtillery(packet.entityId());
+        com.cbc_terminal_ballistics.client.hitcam.ClientHitcam.startArtillery(packet.entityId(), packet.rebind());
     }
 
     public static void handleArtilleryUpdate(ClientboundArtilleryUpdatePacket packet) {
