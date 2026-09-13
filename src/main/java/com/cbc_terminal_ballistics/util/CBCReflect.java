@@ -237,7 +237,9 @@ public final class CBCReflect {
             addPlayedEffect.setAccessible(true);
 
             for (BlockState contained : containedBlockStates(level, state, pos)) {
-                Object packet = ctor.newInstance(contained, projectile.getType(), bounced, false,
+                // forceDisplay=true mirrors native CBC queueing; without it vanilla culls the
+                // particle ~32m from the camera and far impact smoke/splash never shows.
+                Object packet = ctor.newInstance(contained, projectile.getType(), bounced, true,
                     hitLoc.x, hitLoc.y, hitLoc.z, (float) effectNormal.x, (float) effectNormal.y, (float) effectNormal.z);
                 addPlayedEffect.invoke(projectileContext, packet);
             }
