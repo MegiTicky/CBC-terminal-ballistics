@@ -49,9 +49,6 @@ import java.util.Optional;
  */
 @Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientHitcamPiP {
-    /** Guards RenderLevelStageEvent subscribers (ours and, via {@link #isRenderingPip()}, the mod's other visuals) against re-entering during the nested pass. */
-    private static final ThreadLocal<Boolean> RENDERING_PIP = ThreadLocal.withInitial(() -> Boolean.FALSE);
-
     /** Max rows of the terminal-view critical list before folding into "+N more". */
     private static final int MAX_CRITICAL_ROWS = 5;
     /** Component rows orange, crew rows red, overflow rows gray. */
@@ -72,7 +69,7 @@ public final class ClientHitcamPiP {
     private static int farFrameCounter;
 
     public static boolean isRenderingPip() {
-        return RENDERING_PIP.get();
+        return PipRenderScope.depth() > 0;
     }
 
     // ------------------------------------------------------------------
@@ -146,7 +143,7 @@ public final class ClientHitcamPiP {
     @SubscribeEvent
     public static void renderLevel(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_LEVEL) return;
-        if (RENDERING_PIP.get()) return;
+        if (isRenderingPip()) return;
         if (!ClientHitcam.active()) return;
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) return;
@@ -174,19 +171,10 @@ public final class ClientHitcamPiP {
             return;
         }
 
-        Matrix4f mainProjection = RenderSystem.getProjectionMatrix();
-        com.mojang.blaze3d.vertex.VertexSorting mainSorting = RenderSystem.getVertexSorting();
-        // Shader globals the nested pass overwrites. The main frame's later
-        // draws (other mods' AFTER_LEVEL hooks, the hand) run before the next
-        // frame's fog setup, so left un-restored they render with the PiP
-        // scene's fog.
-        Float mainFogStart = RenderSystem.getShaderFogStart();
-        Float mainFogEnd = RenderSystem.getShaderFogEnd();
-        float[] mainFogColor = RenderSystem.getShaderFogColor().clone();
-        com.mojang.blaze3d.shaders.FogShape mainFogShape = RenderSystem.getShaderFogShape();
         try {
-            RENDERING_PIP.set(Boolean.TRUE);
-            renderPipScene(mc, event.getPartialTick(), fullScene, packInUse && !fullScene);
+            try (PipRenderScope ignored = PipRenderScope.enter(mc, event, fullScene)) {
+                renderPipScene(mc, event.getPartialTick(), fullScene, packInUse && !fullScene);
+            }
         } catch (Throwable t) {
             if (DistantHorizonsCompat.shouldPatchCamera() && DistantHorizonsCompat.markAttemptFailure()) {
                 // The throw happened while the Distant Horizons camera patch
@@ -213,30 +201,6 @@ public final class ClientHitcamPiP {
                 }
                 ClientHitcam.stop();
             }
-        } finally {
-            RENDERING_PIP.set(Boolean.FALSE);
-            DistantHorizonsCompat.endPipFrame();
-            // Self-heal ship-ghost GL state stranded by an exception inside a
-            // ship pass; a no-op when the end-inject already cleared it.
-            clearShipGhostGl();
-            RenderSystem.setShaderFogStart(mainFogStart);
-            RenderSystem.setShaderFogEnd(mainFogEnd);
-            RenderSystem.setShaderFogColor(mainFogColor[0], mainFogColor[1], mainFogColor[2], mainFogColor[3]);
-            RenderSystem.setShaderFogShape(mainFogShape);
-            // renderEntity points the shared entity dispatcher at the PiP
-            // camera (billboard orientation); the main view's own renderLevel
-            // has already run this frame, so nothing else points it back.
-            mc.getEntityRenderDispatcher().prepare(mc.level, mc.gameRenderer.getMainCamera(), null);
-            if (mainProjection != null) {
-                RenderSystem.setProjectionMatrix(mainProjection, mainSorting);
-            }
-            if (fullScene) {
-                // Leave the level renderer with the main view's cull frustum,
-                // since the PiP pass replaced it.
-                mc.levelRenderer.prepareCullFrustum(event.getPoseStack(),
-                    mc.gameRenderer.getMainCamera().getPosition(), event.getProjectionMatrix());
-            }
-            mc.getMainRenderTarget().bindWrite(true);
         }
     }
 
@@ -378,7 +342,6 @@ public final class ClientHitcamPiP {
             }
         }
 
-        Matrix4f oldProjection = RenderSystem.getProjectionMatrix();
         try {
             mainTarget.bindWrite(true);
             RenderSystem.clearColor(0.0F, 0.0F, 0.0F, 1.0F);
@@ -449,7 +412,6 @@ public final class ClientHitcamPiP {
                             Integer.toHexString(GL30.glCheckFramebufferStatus(GL30.GL_DRAW_FRAMEBUFFER)));
                 }
             }
-            RenderSystem.setProjectionMatrix(oldProjection, com.mojang.blaze3d.vertex.VertexSorting.DISTANCE_TO_ORIGIN);
             mainTarget.bindWrite(true);
         }
     }
