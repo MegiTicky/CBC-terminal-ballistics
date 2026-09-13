@@ -37,6 +37,7 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -44,6 +45,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.registries.ForgeRegistries;
 
@@ -318,7 +320,8 @@ public final class TBImpactService {
                         projectile.setDeltaMovement(projectile.getDeltaMovement().scale(factor));
                     }
                     if (ProjectileClassifier.canSpall(projectile)) {
-                        Vec3 spallOrigin = hit.getLocation().add(velDir.scale(1.05));
+                        Vec3 spallOrigin = computeSpallOrigin(server, state, pos, hit.getLocation(), velDir,
+                            isContraption, contraptionEntity, contraptionLocalPos);
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
                         double massAfter = Math.max(0.0, mass - massLoss);
                         spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness, contraptionEntity);
@@ -932,6 +935,89 @@ public final class TBImpactService {
             stops[i] = (float) Math.min(range, Math.max(0.0D, dist));
         }
         return stops;
+    }
+
+    /**
+     * Spall ejects from the surface the shell actually exits, not a fixed offset:
+     * thin plates (copycat armor layers are 2-16 px thick) otherwise spawn fragments
+     * a full block behind the real plate, skipping the block directly behind it.
+     * The exit point is the far side of the impacted block's voxel shape along the
+     * travel direction. For contraption blocks the ray and shape are handled in the
+     * contraption's local frame (rigid transform, exact axis-aligned local cells).
+     * Falls back to the legacy fixed 1.05-block offset whenever geometry cannot be
+     * resolved (BE-dependent shapes without a block entity, grazing float edges).
+     */
+    private static Vec3 computeSpallOrigin(Level level, BlockState state, BlockPos pos, Vec3 hitLoc, Vec3 velDir,
+                                           boolean isContraption, @Nullable Entity contraptionEntity,
+                                           @Nullable BlockPos contraptionLocalPos) {
+        Vec3 fallback = hitLoc.add(velDir.scale(1.05));
+        try {
+            VoxelShape shape;
+            Vec3 localOrigin;
+            Vec3 localDir;
+            if (isContraption) {
+                if (contraptionEntity == null || contraptionLocalPos == null) return fallback;
+                localOrigin = ContraptionCompat.toLocalVector(contraptionEntity, hitLoc, 0f);
+                Vec3 ahead = ContraptionCompat.toLocalVector(contraptionEntity, hitLoc.add(velDir), 0f);
+                if (localOrigin == null || ahead == null) return fallback;
+                localDir = ahead.subtract(localOrigin);
+                if (localDir.lengthSqr() < 1e-8) return fallback;
+                localDir = localDir.normalize();
+                shape = state.getShape(EmptyBlockGetter.INSTANCE, contraptionLocalPos);
+            } else {
+                localOrigin = hitLoc.subtract(pos.getX(), pos.getY(), pos.getZ());
+                localDir = velDir;
+                shape = state.getShape(level, pos);
+            }
+            if (shape.isEmpty()) return fallback;
+            final Vec3 rayO = localOrigin;
+            final Vec3 rayD = localDir;
+            double[] exitT = {-1.0D};
+            shape.forAllBoxes((x0, y0, z0, x1, y1, z1) -> {
+                double t = rayBoxExit(rayO, rayD, x0, y0, z0, x1, y1, z1);
+                if (t > exitT[0]) exitT[0] = t;
+            });
+            if (exitT[0] <= 0.0D) return fallback;
+            double t = Math.min(exitT[0] + 0.05D, 2.0D);
+            Vec3 localExit = localOrigin.add(localDir.scale(t));
+            if (isContraption) {
+                Vec3 worldExit = ContraptionCompat.toGlobalVector(contraptionEntity, localExit, 0f);
+                return worldExit != null ? worldExit : fallback;
+            }
+            return localExit.add(pos.getX(), pos.getY(), pos.getZ());
+        } catch (Throwable t) {
+            return fallback;
+        }
+    }
+
+    /**
+     * Far-side exit distance of a ray through an axis-aligned box in block-local
+     * coordinates, or -1 when the ray never passes through the box interior.
+     */
+    private static double rayBoxExit(Vec3 origin, Vec3 dir, double x0, double y0, double z0, double x1, double y1, double z1) {
+        double tMin = -1.0D;
+        double tMax = Double.POSITIVE_INFINITY;
+        double[][] axes = {
+            {origin.x, dir.x, x0, x1},
+            {origin.y, dir.y, y0, y1},
+            {origin.z, dir.z, z0, z1},
+        };
+        for (double[] axis : axes) {
+            double o = axis[0], d = axis[1], lo = axis[2], hi = axis[3];
+            if (Math.abs(d) < 1e-9) {
+                if (o < lo || o > hi) return -1.0D;
+                continue;
+            }
+            double t0 = (lo - o) / d;
+            double t1 = (hi - o) / d;
+            if (t0 > t1) { double tmp = t0; t0 = t1; t1 = tmp; }
+            tMin = Math.max(tMin, t0);
+            tMax = Math.min(tMax, t1);
+            if (tMin > tMax) return -1.0D;
+        }
+        // The ray must actually cross the box: exit ahead of the start, entry not far behind it.
+        if (tMax < 1e-6 || tMin > 0.5D) return -1.0D;
+        return tMax;
     }
 
     private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness, Entity contraptionEntity) {        double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
