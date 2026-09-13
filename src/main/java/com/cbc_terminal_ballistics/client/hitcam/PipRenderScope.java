@@ -9,6 +9,7 @@ import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Quaternionf;
 import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL14;
 import org.lwjgl.opengl.GL30;
@@ -54,7 +55,7 @@ public final class PipRenderScope implements AutoCloseable {
     private final int textureBinding;
     private final int currentProgram;
     private final int[] shaderTextures = new int[4];
-    private final com.mojang.blaze3d.shaders.ShaderInstance shader;
+    private final net.minecraft.client.renderer.ShaderInstance shader;
     private final Matrix4f projection;
     private final com.mojang.blaze3d.vertex.VertexSorting vertexSorting;
     private final Matrix4f modelView;
@@ -142,7 +143,9 @@ public final class PipRenderScope implements AutoCloseable {
             RenderSystem.setShaderFogShape(fogShape);
             RenderSystem.setShaderColor(shaderColor[0], shaderColor[1], shaderColor[2], shaderColor[3]);
             RenderSystem.setProjectionMatrix(projection, vertexSorting);
-            RenderSystem.getModelViewStack().set(modelView);
+            PoseStack modelViewStack = RenderSystem.getModelViewStack();
+            modelViewStack.last().pose().set(modelView);
+            modelViewStack.last().normal().identity();
             RenderSystem.applyModelViewMatrix();
             if (eventPose != null && event.getPoseStack() != null) {
                 event.getPoseStack().last().pose().set(eventPose);
@@ -186,7 +189,7 @@ public final class PipRenderScope implements AutoCloseable {
         GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         GL13.glActiveTexture(activeTexture);
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureBinding);
-        GL11.glUseProgram(currentProgram);
+        GL20.glUseProgram(currentProgram);
         GL30.glBindFramebuffer(GL30.GL_READ_FRAMEBUFFER, readFramebuffer);
         GL30.glBindFramebuffer(GL30.GL_DRAW_FRAMEBUFFER, drawFramebuffer);
     }
