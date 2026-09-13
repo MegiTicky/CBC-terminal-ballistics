@@ -32,6 +32,7 @@
     "DhClipRingMixin",
     "EmbeddiumTerrainGhostMixin",
     "LevelRendererOutlineMixin",
+    "LevelRendererStageEventMixin",
     "ParticleEngineMixin",
     "SodiumShipPassMixin"
   ],
