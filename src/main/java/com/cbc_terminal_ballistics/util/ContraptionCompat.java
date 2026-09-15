@@ -9,6 +9,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -79,6 +80,8 @@ public final class ContraptionCompat {
     private static Method getAnchorVecMethod;
     private static java.lang.reflect.Field stateField;
     private static Method stateAccessor;
+    private static java.lang.reflect.Field nbtField;
+    private static Method nbtAccessor;
 
     public static boolean isLoaded() {
         if (loaded == null) {
@@ -168,6 +171,28 @@ public final class ContraptionCompat {
             return state == null || state.isAir() ? null : state;
         } catch (Throwable t) {
             LOG.debug("[ctb] blockStateForLocal failed: {}", t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Serialized BlockEntity NBT of a contraption block, read from its block map
+     * entry (StructureBlockInfo carries the BE's saved tag alongside the state).
+     * Contraptions do not host live BlockEntities (Create 6 removed the live map
+     * entirely), so BE-dependent shape data has to come from here.
+     */
+    @Nullable
+    public static CompoundTag blockInfoNbtAt(Entity entity, BlockPos localPos) {
+        try {
+            Object contraption = getContraption(entity);
+            if (contraption == null) return null;
+            Map<BlockPos, ?> blocks = getBlocks(contraption);
+            if (blocks == null) return null;
+            Object blockInfo = blocks.get(localPos);
+            if (blockInfo == null) return null;
+            return getBlockInfoNbt(blockInfo);
+        } catch (Throwable t) {
+            LOG.debug("[ctb] blockInfoNbtAt failed: {}", t.getMessage());
             return null;
         }
     }
@@ -992,6 +1017,56 @@ public final class ContraptionCompat {
             stateField = null;
             stateAccessor = null;
             LOG.error("[ctb] getBlockState threw on {}: {}", blockInfo.getClass().getName(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Extract the serialized BlockEntity NBT from a contraption block-map entry.
+     * Mirrors {@link #getBlockState}'s strategies: StructureBlockInfo is a record
+     * whose third component is the tag (deobf {@code nbt()}, SRG {@code f_74677_()}).
+     */
+    @Nullable
+    private static CompoundTag getBlockInfoNbt(Object blockInfo) {
+        try {
+            if (nbtField == null && nbtAccessor == null) {
+                try {
+                    Method m = blockInfo.getClass().getMethod("nbt");
+                    if (m.getReturnType() != void.class) {
+                        nbtAccessor = m;
+                    }
+                } catch (Throwable ignored) {}
+                if (nbtAccessor == null) {
+                    try {
+                        Method m = blockInfo.getClass().getMethod("f_74677_");
+                        if (m.getReturnType() != void.class) {
+                            nbtAccessor = m;
+                        }
+                    } catch (Throwable ignored) {}
+                }
+                if (nbtAccessor == null) {
+                    try {
+                        nbtField = blockInfo.getClass().getDeclaredField("nbt");
+                        nbtField.setAccessible(true);
+                    } catch (Throwable ignored) {}
+                }
+                if (nbtField == null && nbtAccessor == null) {
+                    for (Method m : blockInfo.getClass().getDeclaredMethods()) {
+                        if (m.getReturnType() == CompoundTag.class && m.getParameterCount() == 0) {
+                            m.setAccessible(true);
+                            nbtAccessor = m;
+                            break;
+                        }
+                    }
+                }
+                if (nbtField == null && nbtAccessor == null) return null;
+            }
+            Object val = nbtAccessor != null ? nbtAccessor.invoke(blockInfo) : nbtField.get(blockInfo);
+            return val instanceof CompoundTag tag ? tag : null;
+        } catch (Throwable e) {
+            nbtField = null;
+            nbtAccessor = null;
+            LOG.debug("[ctb] getBlockInfoNbt threw on {}: {}", blockInfo.getClass().getName(), e.getMessage());
             return null;
         }
     }

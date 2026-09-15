@@ -1,6 +1,8 @@
 package com.cbc_terminal_ballistics.ballistics;
 
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
+import com.cbc_terminal_ballistics.armor.ArmorCopycatItemData;
+import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlock;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.compat.TestLauncherProjectileCompat;
 import com.cbc_terminal_ballistics.data.CopycatMaterialResolver;
@@ -25,6 +27,7 @@ import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import com.cbc_terminal_ballistics.util.VSCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.resources.ResourceLocation;
@@ -953,25 +956,29 @@ public final class TBImpactService {
         Vec3 fallback = hitLoc.add(velDir.scale(1.05));
         try {
             VoxelShape shape;
-            Vec3 localOrigin;
-            Vec3 localDir;
+            Vec3 cellOrigin;
+            Vec3 cellDir;
             if (isContraption) {
                 if (contraptionEntity == null || contraptionLocalPos == null) return fallback;
-                localOrigin = ContraptionCompat.toLocalVector(contraptionEntity, hitLoc, 0f);
-                Vec3 ahead = ContraptionCompat.toLocalVector(contraptionEntity, hitLoc.add(velDir), 0f);
-                if (localOrigin == null || ahead == null) return fallback;
-                localDir = ahead.subtract(localOrigin);
+                Vec3 localHit = ContraptionCompat.worldToLocal(contraptionEntity, hitLoc, 0f);
+                Vec3 localAhead = ContraptionCompat.worldToLocal(contraptionEntity, hitLoc.add(velDir), 0f);
+                if (localHit == null || localAhead == null) return fallback;
+                Vec3 localDir = localAhead.subtract(localHit);
                 if (localDir.lengthSqr() < 1e-8) return fallback;
-                localDir = localDir.normalize();
-                shape = state.getShape(EmptyBlockGetter.INSTANCE, contraptionLocalPos);
+                cellDir = localDir.normalize();
+                // The contraption local frame is absolute; shape boxes are 0..1 block
+                // space. Rebase the ray into the struck block's cell so the slab test
+                // sees comparable magnitudes.
+                cellOrigin = localHit.subtract(contraptionLocalPos.getX(), contraptionLocalPos.getY(), contraptionLocalPos.getZ());
+                shape = contraptionShape(state, contraptionEntity, contraptionLocalPos);
             } else {
-                localOrigin = hitLoc.subtract(pos.getX(), pos.getY(), pos.getZ());
-                localDir = velDir;
+                cellOrigin = hitLoc.subtract(pos.getX(), pos.getY(), pos.getZ());
+                cellDir = velDir;
                 shape = state.getShape(level, pos);
             }
             if (shape.isEmpty()) return fallback;
-            final Vec3 rayO = localOrigin;
-            final Vec3 rayD = localDir;
+            final Vec3 rayO = cellOrigin;
+            final Vec3 rayD = cellDir;
             double[] exitT = {-1.0D};
             shape.forAllBoxes((x0, y0, z0, x1, y1, z1) -> {
                 double t = rayBoxExit(rayO, rayD, x0, y0, z0, x1, y1, z1);
@@ -979,15 +986,34 @@ public final class TBImpactService {
             });
             if (exitT[0] <= 0.0D) return fallback;
             double t = Math.min(exitT[0] + 0.05D, 2.0D);
-            Vec3 localExit = localOrigin.add(localDir.scale(t));
+            Vec3 cellExit = cellOrigin.add(cellDir.scale(t));
             if (isContraption) {
-                Vec3 worldExit = ContraptionCompat.toGlobalVector(contraptionEntity, localExit, 0f);
+                Vec3 localExit = cellExit.add(contraptionLocalPos.getX(), contraptionLocalPos.getY(), contraptionLocalPos.getZ());
+                Vec3 worldExit = ContraptionCompat.localToWorld(contraptionEntity, localExit, 0f);
                 return worldExit != null ? worldExit : fallback;
             }
-            return localExit.add(pos.getX(), pos.getY(), pos.getZ());
+            return cellExit.add(pos.getX(), pos.getY(), pos.getZ());
         } catch (Throwable t) {
             return fallback;
         }
+    }
+
+    /**
+     * Shape of a contraption block. Contraptions host no live BlockEntities
+     * (Create 6 dropped the live map entirely), so BE-dependent shapes — framed
+     * collapsible armor — are rebuilt from the packed offsets serialized in the
+     * block's saved NBT. Everything else (copycat layer shapes are pure
+     * block-state functions) resolves against an empty getter.
+     */
+    private static VoxelShape contraptionShape(BlockState state, Entity contraptionEntity, BlockPos localPos) {
+        if (state.getBlock() instanceof FramedCollapsibleCopycatArmorBlock) {
+            CompoundTag nbt = ContraptionCompat.blockInfoNbtAt(contraptionEntity, localPos);
+            if (nbt != null && nbt.contains(ArmorCopycatItemData.OFFSETS_TAG)) {
+                return FramedCollapsibleCopycatArmorBlock.shapeForOffsets(
+                    ArmorCopycatItemData.sanitizeOffsets(nbt.getInt(ArmorCopycatItemData.OFFSETS_TAG)));
+            }
+        }
+        return state.getShape(EmptyBlockGetter.INSTANCE, localPos);
     }
 
     /**
@@ -1205,7 +1231,19 @@ public final class TBImpactService {
     private static boolean isCatchingArmorAt(ServerLevel level, Vec3 pos) {
         BlockPos blockPos = BlockPos.containing(pos);
         BlockState state = level.getBlockState(blockPos);
-        return !state.isAir() && localEffectiveToughness(level, state, blockPos) >= 5.0D;
+        if (state.isAir()) return false;
+        if (localEffectiveToughness(level, state, blockPos) < 5.0D) return false;
+        // The origin must be embedded in the block's actual geometry, not merely in
+        // its cell: thin plates (copycat layers) leave the spall origin inside a
+        // mostly empty cell, and their rear-face spall cone must still render.
+        Vec3 local = pos.subtract(blockPos.getX(), blockPos.getY(), blockPos.getZ());
+        boolean[] inside = {false};
+        state.getShape(level, blockPos).forAllBoxes((x0, y0, z0, x1, y1, z1) -> {
+            if (!inside[0] && local.x >= x0 && local.x <= x1 && local.y >= y0 && local.y <= y1 && local.z >= z0 && local.z <= z1) {
+                inside[0] = true;
+            }
+        });
+        return inside[0];
     }
 
     private static Vec3 fragmentDirection(Vec3 forward, int index, int count, double coneCos, double jitter) {
