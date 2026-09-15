@@ -199,8 +199,8 @@ public final class ClientImpactMarks {
                             Vec3 localPos3 = mark.absolute(localPos)
                                 .add(localNormal.scale(0.05))
                                 .add(jitterX, jitterY, jitterZ);
-                            Vec3 worldPos = ContraptionCompat.toGlobalVector(contraption, localPos3, 1.0F);
-                            Vec3 worldPos2 = ContraptionCompat.toGlobalVector(contraption, localPos3.add(localNormal), 1.0F);
+                            Vec3 worldPos = ContraptionCompat.localToWorld(contraption, localPos3, 1.0F);
+                            Vec3 worldPos2 = ContraptionCompat.localToWorld(contraption, localPos3.add(localNormal), 1.0F);
                             if (worldPos == null) continue;
                             Vec3 worldNormal = worldPos2 != null ? worldPos2.subtract(worldPos).normalize() : localNormal;
                             mc.level.addParticle(net.minecraft.core.particles.ParticleTypes.FLAME,
@@ -337,16 +337,16 @@ public final class ClientImpactMarks {
     }
 
     /**
-     * Build the local->world rotation of the contraption by sampling toGlobalVector
-     * around the block center. Exact for any contraption type/rotation, no yaw/pitch
-     * sign conventions required.
+     * Build the local->world rotation of the contraption by sampling localToWorld
+     * around the block center. Exact for any contraption type/rotation and includes
+     * the mounted ship's rotation for ship-mounted contraptions.
      */
     @Nullable
     static Matrix4f contraptionBasisMatrix(net.minecraft.world.entity.Entity contraption, BlockPos localPos, float partialTick, Vec3 worldCenter) {
         Vec3 localCenter = Vec3.atCenterOf(localPos);
-        Vec3 ex = ContraptionCompat.toGlobalVector(contraption, localCenter.add(1.0D, 0.0D, 0.0D), partialTick);
-        Vec3 ey = ContraptionCompat.toGlobalVector(contraption, localCenter.add(0.0D, 1.0D, 0.0D), partialTick);
-        Vec3 ez = ContraptionCompat.toGlobalVector(contraption, localCenter.add(0.0D, 0.0D, 1.0D), partialTick);
+        Vec3 ex = ContraptionCompat.localToWorld(contraption, localCenter.add(1.0D, 0.0D, 0.0D), partialTick);
+        Vec3 ey = ContraptionCompat.localToWorld(contraption, localCenter.add(0.0D, 1.0D, 0.0D), partialTick);
+        Vec3 ez = ContraptionCompat.localToWorld(contraption, localCenter.add(0.0D, 0.0D, 1.0D), partialTick);
         if (ex == null || ey == null || ez == null) return null;
         ex = ex.subtract(worldCenter);
         ey = ey.subtract(worldCenter);

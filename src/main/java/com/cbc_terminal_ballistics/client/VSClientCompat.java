@@ -231,6 +231,38 @@ public final class VSClientCompat {
         return transformPosition(matrix, shipyardPos);
     }
 
+    /**
+     * The VS ship managing the given (ship-local or shipyard) position, or null.
+     * Create contraption entities mounted on ships report ship-local positions, which
+     * is the frame the shipyard chunk lookup natively resolves.
+     */
+    public static Object shipManaging(ClientLevel level, BlockPos pos) {
+        if (!isLoaded() || level == null || pos == null) return null;
+        return getLoadedShipManagingPos(level, pos);
+    }
+
+    /**
+     * Ship-local point to world via the INTERPOLATED render transform (falls back to
+     * the physics transform), so per-frame decal rendering does not lag a tick while
+     * the ship moves. Null when VS is absent or reflection fails.
+     */
+    @javax.annotation.Nullable
+    public static Vec3 shipRenderLocalToWorld(Object ship, Vec3 local) {
+        if (ship == null || local == null) return null;
+        try {
+            Object renderTransform = ship.getClass().getMethod("getRenderTransform").invoke(ship);
+            if (renderTransform != null) {
+                Method matrixGetter = renderTransform.getClass().getMethod("getShipToWorld");
+                Object matrix = matrixGetter.invoke(renderTransform);
+                if (matrix != null) {
+                    return transformPosition(matrix, local);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return shipyardToWorld(ship, local);
+    }
+
     private static Vec3 transformPosition(Object matrix, Vec3 position) {
         if (matrix == null) return position;
         try {
