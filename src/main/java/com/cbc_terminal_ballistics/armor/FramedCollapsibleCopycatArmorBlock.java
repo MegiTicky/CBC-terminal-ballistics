@@ -224,6 +224,15 @@ public class FramedCollapsibleCopycatArmorBlock extends Block implements IBE<CCC
         return Shapes.block();
     }
 
+    /**
+     * Shape for serialized packed offsets without a live BlockEntity — contraption
+     * blocks keep no BE instances, so ballistics reads the offsets from the block's
+     * saved NBT and resolves the plate geometry through here.
+     */
+    public static VoxelShape shapeForOffsets(int packedOffsets) {
+        return SHAPE_CACHE.computeIfAbsent(packedOffsets, FramedCollapsibleCopycatArmorBlock::buildShape);
+    }
+
     private static VoxelShape buildShape(int packedOffsets) {
         byte[] offsets = unpackOffsets(packedOffsets);
         return Block.box(
