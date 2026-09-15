@@ -577,3 +577,54 @@ root causes plus one behavioral gap.
 
 `cbc_terminal_ballistics-0.4.2-vs2.3.jar` built and deployed (SHA256-verified) to
 `JPCreate2.5\mods\`.
+
+---
+
+## Attempt 10: Create Contraptions on VS2 Ships (Sep 16 2026)
+
+Reported: nothing works when the mechanical bearing contraption is assembled ON a
+Valkyrien Skies ship.
+
+### Root cause (verified in VS2 2.3 sources)
+
+VS2 pairs Create's contraption entity types with the `valkyrienskies:shipyard`
+entity handler (`data/create/vs_entities/*.json`). Ship-mounted contraption
+entities live in **SHIP-LOCAL coordinates** — `AbstractShipyardEntityHandler.
+applyRenderTransform` renders them by mapping `entity.getPosition()` through
+`ship.renderTransform.shipToWorld` and applying `shipToWorldRotation`. Every
+ContraptionCompat conversion treated Create's `toGlobalVector()` output as WORLD
+coordinates, so on any ship displaced/rotated from its assembly point all
+collision, decals, spall, and normals tested the wrong place. Entity search was
+also world-frame (`getEntitiesOfClass` with a world AABB) and could never find
+entities whose stored positions are ship-local.
+
+### Fixes
+
+1. **Ship-frame composition layer (`ContraptionCompat`)**:
+   - `shipOf(Entity)` — resolves + caches (WeakHashMap, 20-tick TTL) the mounted
+     ship: `VSCompat.shipManaging(level, entity.blockPosition())` on server
+     (shipyard chunk lookup accepts ship-local positions — the frame ship-block
+     code already uses), `VSClientCompat.shipManaging(ClientLevel, BlockPos)`
+     (new public wrapper) on client.
+   - `localToWorld(entity, local, pt)` = `toGlobalVector` + ship transform on top
+     (client uses the interpolated render transform via new
+     `VSClientCompat.shipRenderLocalToWorld`, so decals don't lag during motion).
+   - `worldToLocal(entity, world, pt)` = `toShipLocal` + `toLocalVector`.
+   - True surface normals sampled through `localToWorld` (ship rotation included).
+   - Rewired: `raycastSingle`, `pointInContraptionBlockDetailed`,
+     `ContraptionSnapshot.raycast`, `sourceContraptionCandidate`,
+     `worldCenterForLocal`, `localFaceAt`, `raycastDebug` display.
+2. **Frame-independent entity search**: `findContraptionEntities` now iterates
+   `ServerLevel.getAllEntities()` / `ClientLevel.entitiesForRendering()` filtered
+   by the reflected contraption class (world-frame boxes can't find ship-local
+   entities; contraption entities are few, so full iteration is cheap).
+3. **Client render**: `contraptionBasisMatrix` + flame particles sample
+   `localToWorld`, so marks/shells rotate with the combined ship+bearing motion.
+
+Both branches: main received the same fix first (e4c1a1f, where it also uncovered
+that main never got e88e153's PipRenderScope 1.20.1 API fix — cherry-picked
+together); vs2.3 got it via cherry-pick (379fc09). No version bump (release
+naming stays 0.4.0-vs2.3 per the 0.4.0 release process).
+
+Deployed `cbc_terminal_ballistics-0.4.0-vs2.3.jar` (SHA256-verified,
+0a4de3aa...) to `JPCreate2.5\mods\`.
