@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.util;
 
+import com.cbc_terminal_ballistics.client.VSClientCompat;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.network.chat.Component;
 import net.minecraft.ChatFormatting;
@@ -173,12 +174,13 @@ public final class ContraptionCompat {
 
     /**
      * Transform a contraption-local position to its current world center. The
-     * contraption's live position/rotation at the given partial tick is applied,
-     * so callers get the block's present world location.
+     * contraption's live position/rotation at the given partial tick is applied
+     * (plus the mounted ship's transform), so callers get the block's present
+     * world location.
      */
     @Nullable
     public static Vec3 worldCenterForLocal(Entity entity, BlockPos localPos, float partialTick) {
-        return toGlobalVectorImpl(entity, Vec3.atCenterOf(localPos), partialTick);
+        return localToWorld(entity, Vec3.atCenterOf(localPos), partialTick);
     }
 
     /**
@@ -268,7 +270,7 @@ public final class ContraptionCompat {
                 for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
                     BlockPos lp = entry.getKey();
                     BlockState bs = getBlockState(entry.getValue());
-                    Vec3 wc = toGlobalVectorImpl(entity, Vec3.atCenterOf(lp), 0f);
+                    Vec3 wc = localToWorld(entity, Vec3.atCenterOf(lp), 0f);
                     source.sendSuccess(() -> Component.literal(String.format("      local=%s worldCenter=%s state=%s", lp, wc, bs)), false);
                     if (++shown >= 5) {
                         if (blocks.size() > 5) source.sendSuccess(() -> Component.literal("      ... and " + (blocks.size() - 5) + " more"), false);
@@ -359,7 +361,7 @@ public final class ContraptionCompat {
                 if (contraption == null) continue;
                 Map<BlockPos, ?> blocks = getBlocks(contraption);
                 if (blocks == null || blocks.isEmpty()) continue;
-                Vec3 localPoint = toLocalVector(entity, point, 0f);
+                Vec3 localPoint = worldToLocal(entity, point, 0f);
                 if (localPoint == null) continue;
                 AABB localBounds = null;
                 for (BlockPos localPos : blocks.keySet()) {
@@ -442,6 +444,75 @@ public final class ContraptionCompat {
         return toGlobalVectorImpl(entity, localVec, pt);
     }
 
+    // --- Ship-mounted contraption support ---
+    // When a Create contraption is assembled on a VS2 ship, VS2's shipyard entity
+    // handler keeps the entity in SHIP-LOCAL coordinates; Create's toGlobalVector/
+    // toLocalVector only span the contraption's own transform. The ship's transform
+    // must be composed on top for anything to line up in the world.
+
+    private record ShipCacheEntry(@Nullable Object ship, long expireGameTime) {}
+
+    private static final java.util.Map<Entity, ShipCacheEntry> SHIP_BY_CONTRAPTION = new java.util.WeakHashMap<>();
+    private static final long SHIP_CACHE_TICKS = 20;
+
+    /**
+     * The VS2 ship this contraption entity is mounted on, or null when it lives
+     * directly in the world. Cached briefly — ship association only changes on
+     * disassembly, and lookups run per raycast/per rendered mark.
+     */
+    @Nullable
+    private static Object shipOf(Entity entity) {
+        Level level = entity.level();
+        long now = level.getGameTime();
+        ShipCacheEntry cached = SHIP_BY_CONTRAPTION.get(entity);
+        if (cached != null && now <= cached.expireGameTime()) return cached.ship();
+        Object ship = null;
+        try {
+            if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+                ship = VSCompat.shipManaging(serverLevel, entity.blockPosition());
+            } else if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
+                ship = VSClientCompat.shipManaging(clientLevel, entity.blockPosition());
+            }
+        } catch (Throwable t) {
+            LOG.debug("[ctb] shipOf failed: {}", t.getMessage());
+        }
+        SHIP_BY_CONTRAPTION.put(entity, new ShipCacheEntry(ship, now + SHIP_CACHE_TICKS));
+        return ship;
+    }
+
+    /**
+     * Contraption-local point to world space. When the contraption is mounted on a
+     * VS2 ship, the ship's transform is composed on top of Create's contraption
+     * transform (client uses the interpolated render transform).
+     */
+    @Nullable
+    public static Vec3 localToWorld(Entity entity, Vec3 contraptionLocal, float partialTick) {
+        Vec3 framePos = toGlobalVectorImpl(entity, contraptionLocal, partialTick);
+        if (framePos == null) return null;
+        Object ship = shipOf(entity);
+        if (ship == null) return framePos;
+        if (entity.level().isClientSide) {
+            // Guarded branch: VSClientCompat is only classloaded client-side.
+            return VSClientCompat.shipRenderLocalToWorld(ship, framePos);
+        }
+        return VSCompat.shipLocalToWorld(ship, framePos);
+    }
+
+    /**
+     * World point to contraption-local space (inverse of {@link #localToWorld}).
+     */
+    @Nullable
+    public static Vec3 worldToLocal(Entity entity, Vec3 worldPos, float partialTick) {
+        Object ship = shipOf(entity);
+        Vec3 framePos = worldPos;
+        if (ship != null) {
+            Vec3 shipLocal = VSCompat.toShipLocal(ship, worldPos);
+            if (shipLocal == null) return null;
+            framePos = shipLocal;
+        }
+        return toLocalVector(entity, framePos, partialTick);
+    }
+
     /**
      * Transform a world-space Vec3 into contraption-local coordinates using Create's
      * own toLocalVector (the inverse of {@link #toGlobalVector}). Null when Create is
@@ -462,13 +533,14 @@ public final class ContraptionCompat {
     /**
      * Convert a world-space face direction into the contraption's local frame, sampled
      * at the given world point. Returns null when the transform is unavailable (caller
-     * should fall back to the world face).
+     * should fall back to the world face). Probes run through worldToLocal so the ship
+     * transform is composed for ship-mounted contraptions.
      */
     @Nullable
     public static Direction localFaceAt(Entity entity, Vec3 worldPoint, Direction worldFace) {
         Vec3 normal = Vec3.atLowerCornerOf(worldFace.getNormal());
-        Vec3 probeA = toLocalVector(entity, worldPoint.add(normal.scale(0.25)), 0f);
-        Vec3 probeB = toLocalVector(entity, worldPoint.subtract(normal.scale(0.25)), 0f);
+        Vec3 probeA = worldToLocal(entity, worldPoint.add(normal.scale(0.25)), 0f);
+        Vec3 probeB = worldToLocal(entity, worldPoint.subtract(normal.scale(0.25)), 0f);
         if (probeA == null || probeB == null) return null;
         Vec3 delta = probeA.subtract(probeB);
         double ax = Math.abs(delta.x), ay = Math.abs(delta.y), az = Math.abs(delta.z);
@@ -489,29 +561,37 @@ public final class ContraptionCompat {
 
     @SuppressWarnings("unchecked")
     private static List<Entity> findContraptionEntities(Level level, Vec3... rayEndpoints) {
-        AABB searchBox;
-        if (rayEndpoints.length == 1) {
-            searchBox = new AABB(rayEndpoints[0], rayEndpoints[0]).inflate(16);
-        } else {
-            searchBox = new AABB(rayEndpoints[0], rayEndpoints[rayEndpoints.length - 1]).inflate(16);
-        }
-
         Class<?> entityClass = getContraptionEntityClass();
         if (entityClass == null) return List.of();
 
-        try {
-            List<Entity> raw = level.getEntitiesOfClass(
-                (Class<Entity>) entityClass, searchBox);
-            List<Entity> filtered = new ArrayList<>();
-            for (Entity e : raw) {
-                Vec3 pos = e.position();
-                if (Math.abs(pos.x) > 10000 || Math.abs(pos.y) > 10000 || Math.abs(pos.z) > 10000) continue;
-                filtered.add(e);
+        // Frame-independent scan. A world-frame search box cannot find ship-mounted
+        // contraption entities, whose stored positions are SHIP-LOCAL (VS2 shipyard
+        // entity handler). Contraption entities are few, so full iteration is cheap.
+        Iterable<Entity> all;
+        if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
+            all = serverLevel.getAllEntities();
+        } else if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
+            all = clientLevel.entitiesForRendering();
+        } else {
+            // Custom Level implementation: fall back to a box search.
+            AABB searchBox = rayEndpoints.length == 1
+                ? new AABB(rayEndpoints[0], rayEndpoints[0]).inflate(16)
+                : new AABB(rayEndpoints[0], rayEndpoints[rayEndpoints.length - 1]).inflate(16);
+            try {
+                return new ArrayList<>(level.getEntitiesOfClass((Class<Entity>) entityClass, searchBox));
+            } catch (Throwable t) {
+                return List.of();
             }
-            return filtered;
-        } catch (Throwable t) {
-            return List.of();
         }
+
+        List<Entity> filtered = new ArrayList<>();
+        for (Entity e : all) {
+            if (!entityClass.isInstance(e) || !e.isAlive()) continue;
+            Vec3 pos = e.position();
+            if (Math.abs(pos.x) > 10000 || Math.abs(pos.y) > 10000 || Math.abs(pos.z) > 10000) continue;
+            filtered.add(e);
+        }
+        return filtered;
     }
 
     /**
@@ -533,7 +613,7 @@ public final class ContraptionCompat {
             Map<BlockPos, ?> blocks = getBlocks(contraption);
             if (blocks == null || blocks.isEmpty()) return null;
 
-            Vec3 localPoint = toLocalVector(entity, point, 0f);
+            Vec3 localPoint = worldToLocal(entity, point, 0f);
             if (localPoint == null) return null;
 
             for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
@@ -568,8 +648,9 @@ public final class ContraptionCompat {
             // every block to world space: local block cells are exact axis-aligned
             // boxes for ANY contraption rotation (rigid transform, no scale). The old
             // world-space center+/-0.5 boxes made rotated hulls collide as if unrotated.
-            Vec3 localFrom = toLocalVector(entity, from, 0f);
-            Vec3 localTo = toLocalVector(entity, to, 0f);
+            // worldToLocal composes the ship transform for ship-mounted contraptions.
+            Vec3 localFrom = worldToLocal(entity, from, 0f);
+            Vec3 localTo = worldToLocal(entity, to, 0f);
             if (localFrom == null || localTo == null) return null;
 
             Vec3 rayDir = localTo.subtract(localFrom);
@@ -592,8 +673,8 @@ public final class ContraptionCompat {
                     Vec3 localCenter = Vec3.atCenterOf(localPos);
                     Direction localFace = determineFace(localCenter, localHit);
 
-                    Vec3 worldHitLoc = toGlobalVectorImpl(entity, localHit, 0f);
-                    Vec3 worldCenter = toGlobalVectorImpl(entity, localCenter, 0f);
+                    Vec3 worldHitLoc = localToWorld(entity, localHit, 0f);
+                    Vec3 worldCenter = localToWorld(entity, localCenter, 0f);
                     if (worldHitLoc == null || worldCenter == null) continue;
 
                     Vec3 trueNormal = trueNormalFromLocal(entity, localCenter, localFace, worldCenter);
@@ -612,13 +693,14 @@ public final class ContraptionCompat {
     }
 
     /**
-     * Exact world-space normal of a local face, sampled via toGlobalVector around the
-     * block center. Null when the transform is unavailable.
+     * Exact world-space normal of a local face, sampled via localToWorld around the
+     * block center (composes the ship transform for ship-mounted contraptions).
+     * Null when the transform is unavailable.
      */
     @Nullable
     private static Vec3 trueNormalFromLocal(Entity entity, Vec3 localCenter, Direction localFace, Vec3 worldCenter) {
         Vec3 localNormal = Vec3.atLowerCornerOf(localFace.getNormal());
-        Vec3 probe = toGlobalVectorImpl(entity, localCenter.add(localNormal.scale(0.5)), 0f);
+        Vec3 probe = localToWorld(entity, localCenter.add(localNormal.scale(0.5)), 0f);
         if (probe == null) return null;
         Vec3 delta = probe.subtract(worldCenter);
         if (delta.lengthSqr() < 1.0e-10) return null;
@@ -727,8 +809,8 @@ public final class ContraptionCompat {
         /** Nearest contraption block along the ray, or null. */
         @Nullable
         public Hit raycast(Vec3 from, Vec3 to) {
-            Vec3 localFrom = toLocalVector(entity, from, 0f);
-            Vec3 localTo = toLocalVector(entity, to, 0f);
+            Vec3 localFrom = worldToLocal(entity, from, 0f);
+            Vec3 localTo = worldToLocal(entity, to, 0f);
             if (localFrom == null || localTo == null) return null;
             Vec3 rayDir = localTo.subtract(localFrom);
             double rayLen = rayDir.length();
@@ -748,8 +830,8 @@ public final class ContraptionCompat {
                     Vec3 localHit = localFrom.add(rayNorm.scale(t));
                     Vec3 localCenter = Vec3.atCenterOf(box.localPos());
                     Direction localFace = determineFace(localCenter, localHit);
-                    Vec3 worldHitLoc = toGlobalVectorImpl(entity, localHit, 0f);
-                    Vec3 worldCenter = toGlobalVectorImpl(entity, localCenter, 0f);
+                    Vec3 worldHitLoc = localToWorld(entity, localHit, 0f);
+                    Vec3 worldCenter = localToWorld(entity, localCenter, 0f);
                     if (worldHitLoc == null || worldCenter == null) continue;
                     Vec3 trueNormal = trueNormalFromLocal(entity, localCenter, localFace, worldCenter);
                     Direction worldFace = trueNormal != null ? dominantDirection(trueNormal) : localFace;
