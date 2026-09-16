@@ -295,7 +295,7 @@ public final class ContraptionCompat {
                 for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
                     BlockPos lp = entry.getKey();
                     BlockState bs = getBlockState(entry.getValue());
-                    Vec3 wc = localToWorld(entity, Vec3.atCenterOf(lp), 0f);
+                    Vec3 wc = localToWorld(entity, Vec3.atCenterOf(lp), 1.0f);
                     source.sendSuccess(() -> Component.literal(String.format("      local=%s worldCenter=%s state=%s", lp, wc, bs)), false);
                     if (++shown >= 5) {
                         if (blocks.size() > 5) source.sendSuccess(() -> Component.literal("      ... and " + (blocks.size() - 5) + " more"), false);
@@ -386,7 +386,7 @@ public final class ContraptionCompat {
                 if (contraption == null) continue;
                 Map<BlockPos, ?> blocks = getBlocks(contraption);
                 if (blocks == null || blocks.isEmpty()) continue;
-                Vec3 localPoint = worldToLocal(entity, point, 0f);
+                Vec3 localPoint = worldToLocal(entity, point, 1.0f);
                 if (localPoint == null) continue;
                 AABB localBounds = null;
                 for (BlockPos localPos : blocks.keySet()) {
@@ -484,6 +484,11 @@ public final class ContraptionCompat {
      * The VS2 ship this contraption entity is mounted on, or null when it lives
      * directly in the world. Cached briefly — ship association only changes on
      * disassembly, and lookups run per raycast/per rendered mark.
+     *
+     * <p>Shipyard entities live in SHIP-SPACE coordinates (VS2's shipyard entity
+     * handler), so the world-chunk ship lookup cannot resolve them; the
+     * association is resolved positionally per ship (see
+     * {@code VSCompat.shipMountedAt}).</p>
      */
     @Nullable
     private static Object shipOf(Entity entity) {
@@ -494,9 +499,9 @@ public final class ContraptionCompat {
         Object ship = null;
         try {
             if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-                ship = VSCompat.shipManaging(serverLevel, entity.blockPosition());
+                ship = VSCompat.shipMountedAt(serverLevel, entity.position());
             } else if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
-                ship = VSClientCompat.shipManaging(clientLevel, entity.blockPosition());
+                ship = VSClientCompat.shipMountedAt(clientLevel, entity.position());
             }
         } catch (Throwable t) {
             LOG.debug("[ctb] shipOf failed: {}", t.getMessage());
@@ -531,7 +536,12 @@ public final class ContraptionCompat {
         Object ship = shipOf(entity);
         Vec3 framePos = worldPos;
         if (ship != null) {
-            Vec3 shipLocal = VSCompat.toShipLocal(ship, worldPos);
+            // Client ray tests use the interpolated render transform for the same
+            // reason localToWorld does; the physics transform would introduce a
+            // render-lag offset into the round trip on a moving ship.
+            Vec3 shipLocal = entity.level().isClientSide
+                ? VSClientCompat.shipRenderWorldToLocal(ship, worldPos)
+                : VSCompat.toShipLocal(ship, worldPos);
             if (shipLocal == null) return null;
             framePos = shipLocal;
         }
@@ -564,8 +574,8 @@ public final class ContraptionCompat {
     @Nullable
     public static Direction localFaceAt(Entity entity, Vec3 worldPoint, Direction worldFace) {
         Vec3 normal = Vec3.atLowerCornerOf(worldFace.getNormal());
-        Vec3 probeA = worldToLocal(entity, worldPoint.add(normal.scale(0.25)), 0f);
-        Vec3 probeB = worldToLocal(entity, worldPoint.subtract(normal.scale(0.25)), 0f);
+        Vec3 probeA = worldToLocal(entity, worldPoint.add(normal.scale(0.25)), 1.0f);
+        Vec3 probeB = worldToLocal(entity, worldPoint.subtract(normal.scale(0.25)), 1.0f);
         if (probeA == null || probeB == null) return null;
         Vec3 delta = probeA.subtract(probeB);
         double ax = Math.abs(delta.x), ay = Math.abs(delta.y), az = Math.abs(delta.z);
@@ -613,7 +623,9 @@ public final class ContraptionCompat {
         for (Entity e : all) {
             if (!entityClass.isInstance(e) || !e.isAlive()) continue;
             Vec3 pos = e.position();
-            if (Math.abs(pos.x) > 10000 || Math.abs(pos.y) > 10000 || Math.abs(pos.z) > 10000) continue;
+            // Corruption guard only — shipyard contraption entities legitimately
+            // carry large ship-space coordinates (ships assembled far from origin).
+            if (Math.abs(pos.x) > 1000000 || Math.abs(pos.y) > 1000000 || Math.abs(pos.z) > 1000000) continue;
             filtered.add(e);
         }
         return filtered;
@@ -638,7 +650,7 @@ public final class ContraptionCompat {
             Map<BlockPos, ?> blocks = getBlocks(contraption);
             if (blocks == null || blocks.isEmpty()) return null;
 
-            Vec3 localPoint = worldToLocal(entity, point, 0f);
+            Vec3 localPoint = worldToLocal(entity, point, 1.0f);
             if (localPoint == null) return null;
 
             for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
@@ -674,8 +686,8 @@ public final class ContraptionCompat {
             // boxes for ANY contraption rotation (rigid transform, no scale). The old
             // world-space center+/-0.5 boxes made rotated hulls collide as if unrotated.
             // worldToLocal composes the ship transform for ship-mounted contraptions.
-            Vec3 localFrom = worldToLocal(entity, from, 0f);
-            Vec3 localTo = worldToLocal(entity, to, 0f);
+            Vec3 localFrom = worldToLocal(entity, from, 1.0f);
+            Vec3 localTo = worldToLocal(entity, to, 1.0f);
             if (localFrom == null || localTo == null) return null;
 
             Vec3 rayDir = localTo.subtract(localFrom);
@@ -698,8 +710,8 @@ public final class ContraptionCompat {
                     Vec3 localCenter = Vec3.atCenterOf(localPos);
                     Direction localFace = determineFace(localCenter, localHit);
 
-                    Vec3 worldHitLoc = localToWorld(entity, localHit, 0f);
-                    Vec3 worldCenter = localToWorld(entity, localCenter, 0f);
+                    Vec3 worldHitLoc = localToWorld(entity, localHit, 1.0f);
+                    Vec3 worldCenter = localToWorld(entity, localCenter, 1.0f);
                     if (worldHitLoc == null || worldCenter == null) continue;
 
                     Vec3 trueNormal = trueNormalFromLocal(entity, localCenter, localFace, worldCenter);
@@ -725,7 +737,7 @@ public final class ContraptionCompat {
     @Nullable
     private static Vec3 trueNormalFromLocal(Entity entity, Vec3 localCenter, Direction localFace, Vec3 worldCenter) {
         Vec3 localNormal = Vec3.atLowerCornerOf(localFace.getNormal());
-        Vec3 probe = localToWorld(entity, localCenter.add(localNormal.scale(0.5)), 0f);
+        Vec3 probe = localToWorld(entity, localCenter.add(localNormal.scale(0.5)), 1.0f);
         if (probe == null) return null;
         Vec3 delta = probe.subtract(worldCenter);
         if (delta.lengthSqr() < 1.0e-10) return null;
@@ -834,8 +846,8 @@ public final class ContraptionCompat {
         /** Nearest contraption block along the ray, or null. */
         @Nullable
         public Hit raycast(Vec3 from, Vec3 to) {
-            Vec3 localFrom = worldToLocal(entity, from, 0f);
-            Vec3 localTo = worldToLocal(entity, to, 0f);
+            Vec3 localFrom = worldToLocal(entity, from, 1.0f);
+            Vec3 localTo = worldToLocal(entity, to, 1.0f);
             if (localFrom == null || localTo == null) return null;
             Vec3 rayDir = localTo.subtract(localFrom);
             double rayLen = rayDir.length();
@@ -855,8 +867,8 @@ public final class ContraptionCompat {
                     Vec3 localHit = localFrom.add(rayNorm.scale(t));
                     Vec3 localCenter = Vec3.atCenterOf(box.localPos());
                     Direction localFace = determineFace(localCenter, localHit);
-                    Vec3 worldHitLoc = localToWorld(entity, localHit, 0f);
-                    Vec3 worldCenter = localToWorld(entity, localCenter, 0f);
+                    Vec3 worldHitLoc = localToWorld(entity, localHit, 1.0f);
+                    Vec3 worldCenter = localToWorld(entity, localCenter, 1.0f);
                     if (worldHitLoc == null || worldCenter == null) continue;
                     Vec3 trueNormal = trueNormalFromLocal(entity, localCenter, localFace, worldCenter);
                     Direction worldFace = trueNormal != null ? dominantDirection(trueNormal) : localFace;

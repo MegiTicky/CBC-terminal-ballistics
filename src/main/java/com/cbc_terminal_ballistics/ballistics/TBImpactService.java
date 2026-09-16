@@ -482,7 +482,7 @@ public final class TBImpactService {
     public static void clearMarksForEntry(ServerLevel level, ArmorIntegritySavedData.Entry entry) {
         if (entry.contraptionUuid != null && entry.localPos != null) {
             Entity contraption = level.getEntity(entry.contraptionUuid);
-            Vec3 cull = contraption != null ? ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f) : null;
+            Vec3 cull = contraption != null ? ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 1.0f) : null;
             sendMarksToNearby(level, new ClientboundImpactMarksPacket(entry.localPos, entry.contraptionUuid,
                 entry.localPos, java.util.List.of()), cull != null ? cull : Vec3.atCenterOf(entry.localPos));
         } else {
@@ -493,7 +493,7 @@ public final class TBImpactService {
     public static void clearShellsForEntry(ServerLevel level, EmbeddedShellSavedData.Entry entry) {
         if (entry.contraptionUuid != null && entry.localPos != null) {
             Entity contraption = level.getEntity(entry.contraptionUuid);
-            Vec3 cull = contraption != null ? ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f) : null;
+            Vec3 cull = contraption != null ? ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 1.0f) : null;
             syncEmbeddedShellsPacket(level, new ClientboundEmbeddedShellsPacket(entry.localPos, entry.contraptionUuid,
                 entry.localPos, java.util.List.of()), cull != null ? cull : Vec3.atCenterOf(entry.localPos));
         } else {
@@ -526,7 +526,7 @@ public final class TBImpactService {
             if (entry.contraptionUuid != null && entry.localPos != null) {
                 Entity contraption = level.getEntity(entry.contraptionUuid);
                 if (contraption == null || entry.shells.isEmpty()) continue;
-                Vec3 center = ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f);
+                Vec3 center = ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 1.0f);
                 if (center == null || center.distanceToSqr(player.position()) > 128 * 128) continue;
                 sendEmbeddedShells(player, new ClientboundEmbeddedShellsPacket(entry.localPos,
                     entry.contraptionUuid, entry.localPos, java.util.List.copyOf(entry.shells)));
@@ -548,7 +548,7 @@ public final class TBImpactService {
             if (entry.contraptionUuid != null && entry.localPos != null) {
                 Entity contraption = level.getEntity(entry.contraptionUuid);
                 if (contraption == null) continue;
-                Vec3 center = ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 0f);
+                Vec3 center = ContraptionCompat.worldCenterForLocal(contraption, entry.localPos, 1.0f);
                 if (center == null || center.distanceToSqr(player.position()) > 128 * 128) continue;
                 sendImpactMarks(player, new ClientboundImpactMarksPacket(entry.localPos,
                     entry.contraptionUuid, entry.localPos, java.util.List.copyOf(entry.marks)));
@@ -571,9 +571,9 @@ public final class TBImpactService {
         Vec3 direction;
         Direction face = hit.getDirection();
         if (contraptionAnchored) {
-            local = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f);
-            Vec3 dirA = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation().add(incomingVelocity.scale(0.5)), 0f);
-            Vec3 dirB = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation().subtract(incomingVelocity.scale(0.5)), 0f);
+            local = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 1.0f);
+            Vec3 dirA = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation().add(incomingVelocity.scale(0.5)), 1.0f);
+            Vec3 dirB = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation().subtract(incomingVelocity.scale(0.5)), 1.0f);
             direction = dirA != null && dirB != null ? dirA.subtract(dirB) : Vec3.ZERO;
             Direction localFace = ContraptionCompat.localFaceAt(contraptionEntity, hit.getLocation(), face);
             if (localFace != null) face = localFace;
@@ -598,7 +598,7 @@ public final class TBImpactService {
         EmbeddedShellSavedData data = EmbeddedShellSavedData.get(level);
         if (contraptionAnchored) {
             EmbeddedShellSavedData.Entry entry = data.addContraption(level, contraptionEntity.getUUID(), contraptionLocalPos, state, shell);
-            Vec3 cull = ContraptionCompat.worldCenterForLocal(contraptionEntity, contraptionLocalPos, 0f);
+            Vec3 cull = ContraptionCompat.worldCenterForLocal(contraptionEntity, contraptionLocalPos, 1.0f);
             syncEmbeddedShellsPacket(level, new ClientboundEmbeddedShellsPacket(contraptionLocalPos,
                 contraptionEntity.getUUID(), contraptionLocalPos, java.util.List.copyOf(entry.shells)),
                 cull != null ? cull : Vec3.atCenterOf(contraptionLocalPos));
@@ -669,7 +669,7 @@ public final class TBImpactService {
         Vec3 loc;
         Direction face = hit.getDirection();
         if (contraptionAnchored) {
-            loc = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f);
+            loc = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 1.0f);
             if (loc != null) {
                 Direction localFace = ContraptionCompat.localFaceAt(contraptionEntity, hit.getLocation(), face);
                 if (localFace != null) face = localFace;
@@ -683,7 +683,7 @@ public final class TBImpactService {
             loc = localHitLocation(level, pos, hit.getLocation());
             if (loc == null) return null;
         }
-        BlockPos base = contraptionAnchored && ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f) != null
+        BlockPos base = contraptionAnchored && ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 1.0f) != null
             ? contraptionLocalPos : pos;
         float x = (float) Mth.clamp(loc.x - base.getX(), 0.001, 0.999);
         float y = (float) Mth.clamp(loc.y - base.getY(), 0.001, 0.999);
@@ -726,7 +726,7 @@ public final class TBImpactService {
         Vec3 entryLoc;
         Direction exitFace = hit.getDirection().getOpposite();
         if (contraptionAnchored) {
-            entryLoc = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f);
+            entryLoc = ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 1.0f);
             Direction entryFace = ContraptionCompat.localFaceAt(contraptionEntity, hit.getLocation(), hit.getDirection());
             if (entryFace != null) exitFace = entryFace.getOpposite();
         } else {
@@ -734,7 +734,7 @@ public final class TBImpactService {
         }
         if (entryLoc == null) entryLoc = localHitLocation(level, pos, hit.getLocation());
         if (entryLoc == null) return null;
-        BlockPos base = contraptionAnchored && ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 0f) != null
+        BlockPos base = contraptionAnchored && ContraptionCompat.toLocalVector(contraptionEntity, hit.getLocation(), 1.0f) != null
             ? contraptionLocalPos : pos;
         double x = entryLoc.x - base.getX();
         double y = entryLoc.y - base.getY();
@@ -771,7 +771,7 @@ public final class TBImpactService {
         if (entry.contraptionUuid != null && entry.localPos != null) {
             ClientboundImpactMarksPacket packet = new ClientboundImpactMarksPacket(pos, entry.contraptionUuid, entry.localPos,
                 java.util.List.copyOf(entry.marks));
-            Vec3 cull = contraptionEntity != null ? ContraptionCompat.worldCenterForLocal(contraptionEntity, entry.localPos, 0f) : null;
+            Vec3 cull = contraptionEntity != null ? ContraptionCompat.worldCenterForLocal(contraptionEntity, entry.localPos, 1.0f) : null;
             sendMarksToNearby(level, packet, cull != null ? cull : Vec3.atCenterOf(entry.localPos));
         } else {
             syncMarks(level, pos, entry.marks);
@@ -960,8 +960,8 @@ public final class TBImpactService {
             Vec3 cellDir;
             if (isContraption) {
                 if (contraptionEntity == null || contraptionLocalPos == null) return fallback;
-                Vec3 localHit = ContraptionCompat.worldToLocal(contraptionEntity, hitLoc, 0f);
-                Vec3 localAhead = ContraptionCompat.worldToLocal(contraptionEntity, hitLoc.add(velDir), 0f);
+                Vec3 localHit = ContraptionCompat.worldToLocal(contraptionEntity, hitLoc, 1.0f);
+                Vec3 localAhead = ContraptionCompat.worldToLocal(contraptionEntity, hitLoc.add(velDir), 1.0f);
                 if (localHit == null || localAhead == null) return fallback;
                 Vec3 localDir = localAhead.subtract(localHit);
                 if (localDir.lengthSqr() < 1e-8) return fallback;
@@ -989,7 +989,7 @@ public final class TBImpactService {
             Vec3 cellExit = cellOrigin.add(cellDir.scale(t));
             if (isContraption) {
                 Vec3 localExit = cellExit.add(contraptionLocalPos.getX(), contraptionLocalPos.getY(), contraptionLocalPos.getZ());
-                Vec3 worldExit = ContraptionCompat.localToWorld(contraptionEntity, localExit, 0f);
+                Vec3 worldExit = ContraptionCompat.localToWorld(contraptionEntity, localExit, 1.0f);
                 return worldExit != null ? worldExit : fallback;
             }
             return cellExit.add(pos.getX(), pos.getY(), pos.getZ());

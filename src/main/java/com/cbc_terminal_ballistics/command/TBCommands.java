@@ -473,7 +473,7 @@ public final class TBCommands {
                     java.util.Map<BlockPos, ?> blocks = com.cbc_terminal_ballistics.util.ContraptionCompat.getBlocksObject(contraption);
                     if (blocks == null) continue;
                     for (BlockPos localPos : blocks.keySet()) {
-                        Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.toGlobalVector(entity, Vec3.atCenterOf(localPos), 0f);
+                        Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.toGlobalVector(entity, Vec3.atCenterOf(localPos), 1.0f);
                         if (worldCenter == null) continue;
                         blockDataList.add(new double[]{
                             worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
