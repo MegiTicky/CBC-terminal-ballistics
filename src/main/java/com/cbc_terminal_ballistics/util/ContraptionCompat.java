@@ -14,6 +14,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.fml.ModList;
+import org.joml.Quaterniond;
+import org.joml.Vector3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -265,6 +267,7 @@ public final class ContraptionCompat {
         try {
             List<Entity> entities = findContraptionEntities(level, from, to);
             source.sendSuccess(() -> Component.literal("Entities found: " + entities.size()), false);
+            source.sendSuccess(() -> Component.literal("CreateInteractive available: " + CreateInteractiveBridge.available()), false);
 
             if (entities.isEmpty()) {
                 source.sendSuccess(() -> Component.literal("No contraption entities in search box.").withStyle(ChatFormatting.YELLOW), false);
@@ -276,6 +279,14 @@ public final class ContraptionCompat {
             for (Entity entity : entities) {
                 Vec3 epos = entity.position();
                 source.sendSuccess(() -> Component.literal(String.format("  Entity: %s at (%.1f, %.1f, %.1f)", entity.getType().toShortString(), epos.x, epos.y, epos.z)), false);
+
+                double[] pr = CreateInteractiveBridge.posRotTick(entity);
+                if (pr != null) {
+                    source.sendSuccess(() -> Component.literal(String.format("    CI posRot: pos=(%.1f, %.1f, %.1f) quat=(%.2f, %.2f, %.2f, %.2f) scale=%.2f",
+                        pr[0], pr[1], pr[2], pr[3], pr[4], pr[5], pr[6], pr[7])), false);
+                } else {
+                    source.sendSuccess(() -> Component.literal("    CI posRot: unavailable").withStyle(ChatFormatting.YELLOW), false);
+                }
 
                 Object contraption = getContraption(entity);
                 if (contraption == null) {
@@ -362,11 +373,33 @@ public final class ContraptionCompat {
             if (best != null) {
                 lastHitLocation = best.hitLocation();
                 lastHitNormal = best.trueNormal();
+                diagnoseOnce(best);
             }
             return best;
         } catch (Throwable t) {
             LOG.error("[ctb] raycast threw", t);
             return null;
+        }
+    }
+
+    // One-shot per-entity resolution report (INFO): makes the first shell contact
+    // with any contraption diagnosable in the default log level — which path
+    // resolved the transform, whether a ship was found, and where the hit landed.
+    private static final java.util.Map<Entity, Boolean> DIAG_LOGGED = new java.util.WeakHashMap<>();
+
+    private static void diagnoseOnce(ContraptionHit hit) {
+        try {
+            if (DIAG_LOGGED.put(hit.entity(), Boolean.TRUE) != null) return;
+            Object ship = shipOf(hit.entity());
+            double[] pr = CreateInteractiveBridge.posRotTick(hit.entity());
+            LOG.info("[ctb] contraption contact: entity={} at {} ci={} ship={} localPos={} worldPos={} hitLoc={} posRot={}",
+                hit.entity().getType().toShortString(), hit.entity().position(),
+                CreateInteractiveBridge.available(),
+                ship == null ? "none" : VSCompat.shipId(ship),
+                hit.localPos(), hit.worldPos(), hit.hitLocation(),
+                pr == null ? "unavailable" : String.format("(%.1f, %.1f, %.1f) scale %.2f", pr[0], pr[1], pr[2], pr[7]));
+        } catch (Throwable t) {
+            LOG.debug("[ctb] diagnoseOnce failed: {}", t.getMessage());
         }
     }
 
@@ -485,10 +518,10 @@ public final class ContraptionCompat {
      * directly in the world. Cached briefly — ship association only changes on
      * disassembly, and lookups run per raycast/per rendered mark.
      *
-     * <p>Shipyard entities live in SHIP-SPACE coordinates (VS2's shipyard entity
-     * handler), so the world-chunk ship lookup cannot resolve them; the
-     * association is resolved positionally per ship (see
-     * {@code VSCompat.shipMountedAt}).</p>
+     * <p>Ship-mounted contraption entities carry ship-space ("shipyard")
+     * coordinates, which the VS2 chunk lookup resolves natively (Create
+     * Interactive itself uses exactly this lookup for the parent ship); the
+     * positional hull test is only a fallback for frames where that fails.</p>
      */
     @Nullable
     private static Object shipOf(Entity entity) {
@@ -499,9 +532,11 @@ public final class ContraptionCompat {
         Object ship = null;
         try {
             if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
-                ship = VSCompat.shipMountedAt(serverLevel, entity.position());
+                ship = VSCompat.shipManaging(serverLevel, entity.blockPosition());
+                if (ship == null) ship = VSCompat.shipMountedAt(serverLevel, entity.position());
             } else if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
-                ship = VSClientCompat.shipMountedAt(clientLevel, entity.position());
+                ship = VSClientCompat.shipManaging(clientLevel, entity.blockPosition());
+                if (ship == null) ship = VSClientCompat.shipMountedAt(clientLevel, entity.position());
             }
         } catch (Throwable t) {
             LOG.debug("[ctb] shipOf failed: {}", t.getMessage());
@@ -511,12 +546,18 @@ public final class ContraptionCompat {
     }
 
     /**
-     * Contraption-local point to world space. When the contraption is mounted on a
-     * VS2 ship, the ship's transform is composed on top of Create's contraption
-     * transform (client uses the interpolated render transform).
+     * Contraption-local point to world space. When Create Interactive is present,
+     * its {@code getContraptionPosRot} IS the runtime's own resolution of the
+     * contraption's world transform (mounted ship + shadow ships composed) and is
+     * used directly; otherwise the mounted ship's transform is composed on top of
+     * Create's contraption transform (client uses the interpolated render transform).
      */
     @Nullable
     public static Vec3 localToWorld(Entity entity, Vec3 contraptionLocal, float partialTick) {
+        double[] pr = entity.level().isClientSide
+            ? CreateInteractiveBridge.posRotRender(entity, partialTick)
+            : CreateInteractiveBridge.posRotTick(entity);
+        if (pr != null) return posRotToWorld(pr, contraptionLocal);
         Vec3 framePos = toGlobalVectorImpl(entity, contraptionLocal, partialTick);
         if (framePos == null) return null;
         Object ship = shipOf(entity);
@@ -533,6 +574,10 @@ public final class ContraptionCompat {
      */
     @Nullable
     public static Vec3 worldToLocal(Entity entity, Vec3 worldPos, float partialTick) {
+        double[] pr = entity.level().isClientSide
+            ? CreateInteractiveBridge.posRotRender(entity, partialTick)
+            : CreateInteractiveBridge.posRotTick(entity);
+        if (pr != null) return worldToPosRot(pr, worldPos);
         Object ship = shipOf(entity);
         Vec3 framePos = worldPos;
         if (ship != null) {
@@ -546,6 +591,27 @@ public final class ContraptionCompat {
             framePos = shipLocal;
         }
         return toLocalVector(entity, framePos, partialTick);
+    }
+
+    // CI pos/rot math: world(p) = pos + q·(scale·(p − block-center 0.5)),
+    // the exact convention of CI's ContraptionPosRot (anchorVec + 0.5 anchor point).
+
+    @Nullable
+    private static Vec3 posRotToWorld(double[] pr, Vec3 local) {
+        Quaterniond q = new Quaterniond(pr[3], pr[4], pr[5], pr[6]);
+        double s = pr[7];
+        Vector3d v = new Vector3d((local.x - 0.5) * s, (local.y - 0.5) * s, (local.z - 0.5) * s);
+        q.transform(v);
+        return new Vec3(pr[0] + v.x, pr[1] + v.y, pr[2] + v.z);
+    }
+
+    @Nullable
+    private static Vec3 worldToPosRot(double[] pr, Vec3 world) {
+        Quaterniond q = new Quaterniond(pr[3], pr[4], pr[5], pr[6]).conjugate();
+        Vector3d v = new Vector3d(world.x - pr[0], world.y - pr[1], world.z - pr[2]);
+        q.transform(v);
+        double invScale = pr[7] != 0.0 ? 1.0 / pr[7] : 1.0;
+        return new Vec3(v.x * invScale + 0.5, v.y * invScale + 0.5, v.z * invScale + 0.5);
     }
 
     /**

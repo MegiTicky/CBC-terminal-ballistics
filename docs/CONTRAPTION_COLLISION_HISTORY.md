@@ -690,3 +690,62 @@ contraptions were still missed intermittently. Three distinct bugs:
 Both branches (this commit vs2.3, cherry-picked to main). No version bump.
 Deployed `cbc_terminal_ballistics-0.4.0-vs2.3.jar` (SHA256-verified, 5a2ed7a9…)
 to `JPCreate2.5\mods\`.
+
+## Attempt 11: Create Interactive is the live compat layer — delegate transforms to it (Sep 16 2026)
+
+10b still failed in-game ("still not hitting contraption on ships"). User asked
+to check how VS and Create actually handle contraptions on ships vs worldspace.
+Findings overturned the 10b premise:
+
+### Investigation findings
+
+1. **The pack runs Create Interactive 1.1.1-beta.2** and the tt16 VS2 fork logs
+   "[VS2] Create Interactive ship-to-contraption lookup enabled" at world load.
+   CI ships its own mixins into `AbstractContraptionEntity`, `ContraptionCollider`,
+   `OrientedContraptionEntity`, etc. — the VS2-base Create compat in the reference
+   tree (MixinContraptionCollider's world-side entity handling, the shipyard render
+   handler) is largely superseded at runtime.
+2. **VS2 chunk claims are a reserved virtual region** (core `ChunkAllocator`:
+   claims allocated into a fixed X/Z band; `isChunkInShipyard` is just a
+   reserved-region bounds check). `getShipManagingPos`/`getByChunkPos` therefore
+   natively resolve SHIP-SPACE ("shipyard") coordinates — Attempt 10b's "the ship
+   lookup is world-only, so it can never resolve shipyard entities" premise was
+   WRONG. Attempt 10's real failure was almost certainly
+   `findContraptionEntities`' ±10000 position guard rejecting shipyard-coordinate
+   entities (±112000 blocks); 10b fixed that guard but simultaneously replaced the
+   (working) native lookup with a positional hull test, which CI's shadow ships
+   can steer at the wrong ship (double transform).
+3. **CI's authoritative API** (`CreateInteractiveUtil`, Kotlin object,
+   `ContraptionPosRot{pos, rot, scale}`):
+   `getContraptionPosRot(entity)` = the contraption's full world transform
+   (parent ship resolved via `getShipManagingPos(entity.position())` and composed
+   with `shipToWorld`; shadow-ship cases handled internally);
+   `getContraptionPosRotForRender(entity, partialTick: Double)` = interpolated
+   client variant. CI's `MixinContraptionCollider` cancels Create's
+   `collideEntities` whenever a contraption's shadow ship is loaded — collision
+   goes through the ship pipeline. Hand-rolled frame assumptions cannot track
+   this layer; delegation can.
+
+### Fixes
+
+1. **New `util/CreateInteractiveBridge.java`** — reflection, optional-safe:
+   `posRotTick(entity)` / `posRotRender(entity, partialTick)` →
+   `{px,py,pz,qx,qy,qz,qw,scale}` or null (signature drift tolerated).
+2. **`ContraptionCompat.localToWorld`/`worldToLocal` are CI-first**: when the
+   bridge resolves, `world(p) = pos + q·(scale·(p − 0.5))` (inverse via
+   conjugate), server tick variant / client interpolated render variant with the
+   frame's real partialTick. Fallback: the 10b ship-composition path, unchanged.
+   Every consumer (raycast, snapshot/spall, marks basis, flame particles,
+   embedded shells, source-candidate) inherits this.
+3. **`shipOf` ordering**: native `shipManaging(level, blockPosition())` FIRST
+   (CI's own pattern), positional hull test only as fallback.
+4. Kept from 10b: `partialTick = 1.0f` server transforms, mixin nearest-hit
+   gate, 1e6 entity guard (load-bearing for shipyard coords).
+5. **Diagnostics**: one-shot INFO per entity on first shell contact
+   (`[ctb] contraption contact: ...` — which path resolved, ship id, hit
+   local/world pos, CI posRot) and `/cbctb` raycastDebug now prints CI
+   availability + per-entity posRot.
+
+Both branches (this commit vs2.3, cherry-picked to main). No version bump.
+Deployed `cbc_terminal_ballistics-0.4.0-vs2.3.jar` (SHA256-verified, 27a6e6c1…)
+to `JPCreate2.5\mods\`.
