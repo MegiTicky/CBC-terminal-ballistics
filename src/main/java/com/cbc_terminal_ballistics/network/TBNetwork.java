@@ -6,7 +6,7 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public final class TBNetwork {
-    private static final String VERSION = "24";
+    private static final String VERSION = "25";
     public static SimpleChannel CHANNEL;
 
     public static void register() {
@@ -91,6 +91,11 @@ public final class TBNetwork {
             .encoder(ClientboundContraptionVizPacket::encode)
             .decoder(ClientboundContraptionVizPacket::decode)
             .consumerMainThread(ClientboundContraptionVizPacket::handle)
+            .add();
+        CHANNEL.messageBuilder(ClientboundGogglesDebugPacket.class, id++)
+            .encoder(ClientboundGogglesDebugPacket::encode)
+            .decoder(ClientboundGogglesDebugPacket::decode)
+            .consumerMainThread(ClientboundGogglesDebugPacket::handle)
             .add();
     }
 

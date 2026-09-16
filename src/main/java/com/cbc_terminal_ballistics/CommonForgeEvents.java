@@ -2,6 +2,7 @@ package com.cbc_terminal_ballistics;
 
 import com.cbc_terminal_ballistics.armor.FramedCollapsibleCopycatArmorBlock;
 import com.cbc_terminal_ballistics.ballistics.TBImpactService;
+import com.cbc_terminal_ballistics.goggles.GogglesDebug;
 import com.cbc_terminal_ballistics.hitcam.TerminalBallisticsRecorder;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import net.minecraft.core.BlockPos;
@@ -13,6 +14,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.level.ExplosionEvent;
@@ -25,6 +27,14 @@ import net.minecraftforge.fml.common.Mod;
 @Mod.EventBusSubscriber(modid = CBCTerminalBallistics.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CommonForgeEvents {
     private CommonForgeEvents() {
+    }
+
+    @SubscribeEvent
+    public static void onEntityJoinLevel(EntityJoinLevelEvent event) {
+        // GogglesDebug itself filters on viewers being present and cannon-projectile
+        // class names; this hook only forwards so the overlay sees shells the moment
+        // they enter the level, including ones removed before their first tick.
+        GogglesDebug.onEntityJoin(event);
     }
 
     @SubscribeEvent

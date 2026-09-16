@@ -100,5 +100,9 @@ public final class ClientPacketHandlers {
         com.cbc_terminal_ballistics.client.hitcam.ClientTerminalView.accept(packet);
     }
 
+    public static void handleGogglesDebug(com.cbc_terminal_ballistics.network.ClientboundGogglesDebugPacket packet) {
+        ClientGogglesDebug.accept(packet);
+    }
+
     private ClientPacketHandlers() {}
 }
