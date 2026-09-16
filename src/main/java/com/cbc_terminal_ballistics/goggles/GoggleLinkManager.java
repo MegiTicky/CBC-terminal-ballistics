@@ -1,6 +1,7 @@
 package com.cbc_terminal_ballistics.goggles;
 
 import com.cbc_terminal_ballistics.config.TBConfig;
+import com.cbc_terminal_ballistics.network.ClientboundGogglesDebugPacket;
 import com.cbc_terminal_ballistics.util.VSCompat;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
@@ -37,6 +38,8 @@ public final class GoggleLinkManager {
     public static final int MAX_LINKS = 16;
     /** Marker ship offset for links that are not on a VS ship. */
     private static final long NO_SHIP_OFFSET = Long.MIN_VALUE;
+    /** Cap on per-shell link diagnostics sent to the debug overlay. */
+    private static final int MAX_LINK_DIAGS = 16;
 
     /** One cannon-mount link that survives the mount's ship moving. */
     public record GoggleLink(String dimension, long shipId, long shipOffset, long fallbackPos) {
@@ -161,6 +164,8 @@ public final class GoggleLinkManager {
         double spotterRadiusSq = square(TBConfig.HITCAM_SPOTTER_RADIUS.get());
         Map<Long, Object> shipCache = new HashMap<>();
         BlockPos spawnBlock = BlockPos.containing(spawn);
+        List<ClientboundGogglesDebugPacket.LinkDiag> diags =
+            GogglesDebug.hasViewers() ? new ArrayList<>() : null;
 
         for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
             if (player.level() != level) continue;
@@ -175,11 +180,13 @@ public final class GoggleLinkManager {
                 if (stack.getItem() instanceof BallisticGogglesItem) {
                     if (anyLinkMatches(level, stack, spawn, spawnBlock, shipCache)) {
                         matched = true;
+                        collectLinkDiags(level, stack, spawnBlock, shipCache, diags, true);
                     } else {
                         List<GoggleLink> playerLinks = links(stack);
                         if (!playerLinks.isEmpty()) {
                             carriesBallisticWithLinks = true;
                             unmatchedLinks = playerLinks;
+                            collectLinkDiags(level, stack, spawnBlock, shipCache, diags, false);
                         }
                     }
                 } else if (stack.getItem() instanceof SpotterGogglesItem) {
@@ -219,7 +226,22 @@ public final class GoggleLinkManager {
         spotters.sort((a, b) -> Double.compare(a.distanceToSqr(spawn), b.distanceToSqr(spawn)));
         List<ServerPlayer> out = new ArrayList<>(linked);
         out.addAll(spotters);
+        GogglesDebug.stashLinks(diags);
         return out;
+    }
+
+    /** One diagnostic entry per link on {@code stack}, for the debug overlay. */
+    private static void collectLinkDiags(ServerLevel level, ItemStack stack, BlockPos spawnBlock,
+                                         Map<Long, Object> shipCache,
+                                         List<ClientboundGogglesDebugPacket.LinkDiag> out, boolean matched) {
+        if (out == null) return;
+        for (GoggleLink link : links(stack)) {
+            if (out.size() >= MAX_LINK_DIAGS) return;
+            BlockPos resolved = resolveLink(level, link, shipCache);
+            String label = link.shipId() >= 0 ? "ship " + link.shipId() : "ground";
+            out.add(new ClientboundGogglesDebugPacket.LinkDiag(resolved,
+                resolved == null ? -1.0D : Math.sqrt(resolved.distSqr(spawnBlock)), matched, label));
+        }
     }
 
     /** True when any link on {@code stack} resolves within the match radius of the shell spawn. */

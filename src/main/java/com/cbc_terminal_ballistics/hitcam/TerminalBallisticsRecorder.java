@@ -4,6 +4,7 @@ import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.ballistics.ProjectileClassifier;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.goggles.GoggleLinkManager;
+import com.cbc_terminal_ballistics.goggles.GogglesDebug;
 import com.cbc_terminal_ballistics.network.ClientboundArtilleryUpdatePacket;
 import com.cbc_terminal_ballistics.network.ClientboundTerminalBallisticsPacket;
 import com.cbc_terminal_ballistics.network.ClientboundTrackProjectilePacket;
@@ -259,6 +260,11 @@ public final class TerminalBallisticsRecorder {
             existing.stuckRelays = 0;
             if (existing.audiences.isEmpty()) {
                 existing.audiences.addAll(resolveAudiences(level, projectile));
+            } else {
+                // Keep the debug overlay from mislabeling a rebound shell as
+                // never-ticked: the join candidate resolves here, not via
+                // resolveAudiences.
+                GogglesDebug.report(projectile, "CAPTURED (session rebind)");
             }
             if (!existing.audiences.isEmpty() && TBConfig.HITCAM_ARTILLERY_CAM.get()) {
                 sendTo(existing.audiences, new ClientboundTrackProjectilePacket(projectile.getId(), true));
@@ -1302,17 +1308,26 @@ public final class TerminalBallisticsRecorder {
      */
     private static List<ServerPlayer> resolveAudiences(ServerLevel level, Entity projectile) {
         java.util.LinkedHashSet<ServerPlayer> out = new java.util.LinkedHashSet<>();
+        String source = null;
         if (projectile instanceof net.minecraft.world.entity.projectile.Projectile p
             && p.getOwner() instanceof ServerPlayer owner) {
             out.add(owner);
+            source = "owner";
         }
         if (out.isEmpty()) {
             ServerPlayer gunner = nearestSeatedGunner(level, projectile.position());
-            if (gunner != null) out.add(gunner);
+            if (gunner != null) {
+                out.add(gunner);
+                source = "gunner";
+            }
         }
+        boolean goggles = false;
         for (ServerPlayer viewer : GoggleLinkManager.goggleAudiences(level, projectile.position())) {
             out.add(viewer);
+            goggles = true;
         }
+        if (source == null && goggles) source = "goggles";
+        GogglesDebug.report(projectile, source == null ? "NO AUDIENCE" : "CAPTURED (" + source + ")");
         int cap = Math.max(1, TBConfig.HITCAM_MAX_AUDIENCES.get());
         List<ServerPlayer> audiences = new ArrayList<>(Math.min(out.size(), cap));
         for (ServerPlayer player : out) {

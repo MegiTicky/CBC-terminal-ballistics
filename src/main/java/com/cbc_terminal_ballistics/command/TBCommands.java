@@ -12,6 +12,7 @@ import com.cbc_terminal_ballistics.debug.TBDebug;
 import com.cbc_terminal_ballistics.debug.TBProjectileSlowdown;
 import com.cbc_terminal_ballistics.goggles.BallisticGogglesItem;
 import com.cbc_terminal_ballistics.goggles.GoggleLinkManager;
+import com.cbc_terminal_ballistics.goggles.GogglesDebug;
 import com.cbc_terminal_ballistics.state.ArmorIntegritySavedData;
 import com.cbc_terminal_ballistics.state.EmbeddedShellSavedData;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -86,7 +87,8 @@ public final class TBCommands {
                 .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource()))))
             .then(Commands.literal("goggles")
                 .then(Commands.literal("list").executes(ctx -> gogglesList(ctx.getSource())))
-                .then(Commands.literal("clear").executes(ctx -> gogglesClear(ctx.getSource()))))
+                .then(Commands.literal("clear").executes(ctx -> gogglesClear(ctx.getSource())))
+                .then(Commands.literal("debug").executes(ctx -> gogglesDebug(ctx.getSource()))))
     );
     }
 
@@ -142,6 +144,19 @@ public final class TBCommands {
         GoggleLinkManager.clearLinks(goggles);
         source.sendSuccess(() -> Component.literal("Removed " + count + " goggle link(s)."), false);
         return count;
+    }
+
+    private static int gogglesDebug(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        boolean on = GogglesDebug.toggle(player);
+        source.sendSuccess(() -> Component.literal(on
+            ? "Goggles debug overlay ON: every shell now shows its audience verdict, the linked mounts' resolved positions and distances (world markers + top-left HUD list)."
+            : "Goggles debug overlay OFF."), false);
+        return on ? 1 : 0;
     }
 
     private static int hitcamReplay(CommandSourceStack source) {
