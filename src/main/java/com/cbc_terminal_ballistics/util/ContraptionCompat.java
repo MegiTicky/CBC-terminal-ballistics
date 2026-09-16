@@ -324,6 +324,7 @@ public final class ContraptionCompat {
                     }
                 } else {
                     source.sendSuccess(() -> Component.literal("    -> MISS").withStyle(ChatFormatting.RED), false);
+                    source.sendSuccess(() -> Component.literal("      " + debugRayInfo(entity, from, to)), false);
                 }
             }
             return best;
@@ -351,7 +352,16 @@ public final class ContraptionCompat {
         }
         try {
             List<Entity> entities = findContraptionEntities(level, from, to);
-            LOG.debug("[ctb] raycast: found {} contraption entities near {}-{}", entities.size(), from, to);
+            boolean trace = traceActive();
+            if (trace) {
+                StringBuilder sb = new StringBuilder();
+                for (Entity e : entities) {
+                    sb.append(' ').append(e.getType().toShortString())
+                        .append('@').append(String.format("%.0f,%.0f,%.0f", e.position().x, e.position().y, e.position().z));
+                }
+                LOG.info("[ctb][trace] ray ({}, {}, {}) -> ({}, {}, {}): {} entities{}", trTuple(from), trTuple(to),
+                    entities.size(), sb);
+            }
             if (entities.isEmpty()) return null;
 
             ContraptionHit best = null;
@@ -360,12 +370,15 @@ public final class ContraptionCompat {
                 if (excludeContraption != null && excludeContraption.equals(entity.getUUID())) continue;
                 Object hit = raycastSingle(level, from, to, entity);
                 if (hit instanceof ContraptionHit ch) {
-                    LOG.debug("[ctb] raycast: HIT on entity at {}! worldPos={} hitLoc={}", entity.position(), ch.worldPos(), ch.hitLocation());
+                    if (trace) LOG.info("[ctb][trace]   {} HIT worldPos={} hitLoc={}",
+                        entity.getType().toShortString(), ch.worldPos(), ch.hitLocation());
                     double distSq = from.distanceToSqr(ch.hitLocation());
                     if (distSq < bestDistSq) {
                         bestDistSq = distSq;
                         best = ch;
                     }
+                } else if (trace) {
+                    LOG.info("[ctb][trace]   {} MISS: {}", entity.getType().toShortString(), debugRayInfo(entity, from, to));
                 }
             }
             // Publish the exact normal of the hit actually returned (not a nearer
@@ -401,6 +414,111 @@ public final class ContraptionCompat {
         } catch (Throwable t) {
             LOG.debug("[ctb] diagnoseOnce failed: {}", t.getMessage());
         }
+    }
+
+    // --- Debug support (visualizer, trace, enriched testray) ---
+
+    /**
+     * Wall-clock trace window: while active, every shell raycast logs its
+     * endpoints and per-entity results at INFO. Wall clock so a paused game
+     * cannot freeze it open or stretch it (hitcam lesson).
+     */
+    private static volatile long traceUntilMillis = 0L;
+
+    public static void setTraceSeconds(int seconds) {
+        traceUntilMillis = System.currentTimeMillis() + seconds * 1000L;
+    }
+
+    private static boolean traceActive() {
+        return System.currentTimeMillis() < traceUntilMillis;
+    }
+
+    /** Solid (non-air) local block positions of the contraption, for the visualizer. */
+    public static List<BlockPos> solidLocalPositions(Entity entity) {
+        List<BlockPos> result = new ArrayList<>();
+        try {
+            Object contraption = getContraption(entity);
+            if (contraption == null) return result;
+            Map<BlockPos, ?> blocks = getBlocks(contraption);
+            if (blocks == null) return result;
+            for (Map.Entry<BlockPos, ?> entry : blocks.entrySet()) {
+                BlockState state = getBlockState(entry.getValue());
+                if (state == null || state.isAir()) continue;
+                result.add(entry.getKey().immutable());
+            }
+        } catch (Throwable ignored) {
+        }
+        return result;
+    }
+
+    /**
+     * Local→world transform sampled from {@link #localToWorld} at the local axes,
+     * for batch transforms (visualizer). Null when the transform is unavailable.
+     */
+    @Nullable
+    public static org.joml.Matrix4f localToWorldMatrix(Entity entity, float partialTick) {
+        Vec3 p0 = localToWorld(entity, Vec3.ZERO, partialTick);
+        Vec3 px = localToWorld(entity, new Vec3(1, 0, 0), partialTick);
+        Vec3 py = localToWorld(entity, new Vec3(0, 1, 0), partialTick);
+        Vec3 pz = localToWorld(entity, new Vec3(0, 0, 1), partialTick);
+        if (p0 == null || px == null || py == null || pz == null) return null;
+        // JOML constructor is (m00..m03, m10..m13, ...) with mXY = column X, row Y;
+        // transformPosition needs columns = images of the local axes.
+        return new org.joml.Matrix4f(
+            (float) (px.x - p0.x), (float) (px.y - p0.y), (float) (px.z - p0.z), 0f,
+            (float) (py.x - p0.x), (float) (py.y - p0.y), (float) (py.z - p0.z), 0f,
+            (float) (pz.x - p0.x), (float) (pz.y - p0.y), (float) (pz.z - p0.z), 0f,
+            (float) p0.x, (float) p0.y, (float) p0.z, 1f);
+    }
+
+    /**
+     * One-line MISS diagnosis for an entity: resolved ship, the ray mapped into
+     * the contraption's local frame, the local block union, and how far the ray
+     * passed from the nearest block center.
+     */
+    public static String debugRayInfo(Entity entity, Vec3 from, Vec3 to) {
+        try {
+            Object ship = shipOf(entity);
+            Vec3 localFrom = worldToLocal(entity, from, 1.0f);
+            Vec3 localTo = worldToLocal(entity, to, 1.0f);
+            if (localFrom == null || localTo == null) return "local mapping unavailable";
+            double minDist = Double.MAX_VALUE;
+            BlockPos minPos = null;
+            double minX = Double.MAX_VALUE, minY = Double.MAX_VALUE, minZ = Double.MAX_VALUE;
+            double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE, maxZ = -Double.MAX_VALUE;
+            for (BlockPos pos : solidLocalPositions(entity)) {
+                minX = Math.min(minX, pos.getX()); minY = Math.min(minY, pos.getY()); minZ = Math.min(minZ, pos.getZ());
+                maxX = Math.max(maxX, pos.getX() + 1); maxY = Math.max(maxY, pos.getY() + 1); maxZ = Math.max(maxZ, pos.getZ() + 1);
+                Vec3 center = Vec3.atCenterOf(pos);
+                double d = segmentPointDistance(localFrom, localTo, center);
+                if (d < minDist) {
+                    minDist = d;
+                    minPos = pos;
+                }
+            }
+            if (minPos == null) return "no solid local blocks";
+            return String.format(
+                "ship=%s localFrom=(%.2f, %.2f, %.2f) localTo=(%.2f, %.2f, %.2f) union=[(%d..%d, %d..%d, %d..%d)] nearest=%s dist=%.2f",
+                ship == null ? "none" : VSCompat.shipId(ship),
+                localFrom.x, localFrom.y, localFrom.z, localTo.x, localTo.y, localTo.z,
+                (int) minX, (int) maxX, (int) minY, (int) maxY, (int) minZ, (int) maxZ,
+                minPos.toShortString(), minDist);
+        } catch (Throwable t) {
+            return "debugRayInfo failed: " + t;
+        }
+    }
+
+    /** Distance from segment {@code a}→{@code b} to point {@code p}. */
+    private static double segmentPointDistance(Vec3 a, Vec3 b, Vec3 p) {
+        Vec3 ab = b.subtract(a);
+        double lenSq = ab.lengthSqr();
+        double t = lenSq < 1.0e-9 ? 0.0 : p.subtract(a).dot(ab) / lenSq;
+        t = Math.max(0.0, Math.min(1.0, t));
+        return a.add(ab.scale(t)).distanceTo(p);
+    }
+
+    private static String trTuple(Vec3 v) {
+        return String.format("%.1f, %.1f, %.1f", v.x, v.y, v.z);
     }
 
     /**
