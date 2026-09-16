@@ -168,7 +168,10 @@ public final class GoggleLinkManager {
             boolean carriesSpotter = false;
             boolean carriesBallisticWithLinks = false;
             List<GoggleLink> unmatchedLinks = null;
-            for (ItemStack stack : player.getInventory().items) {
+            for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+                // getContainerSize/getItem span main inventory, armor and offhand
+                // alike, so goggles worn on the head or held in the offhand count.
+                ItemStack stack = player.getInventory().getItem(i);
                 if (stack.getItem() instanceof BallisticGogglesItem) {
                     if (anyLinkMatches(level, stack, spawn, spawnBlock, shipCache)) {
                         matched = true;
@@ -201,7 +204,10 @@ public final class GoggleLinkManager {
                             String.format("%.0f", Math.sqrt(resolved.distSqr(spawnBlock))))
                         .append(']');
                 }
-                LOG.debug("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched NO link of {} (radius {}):{}",
+                // INFO, not DEBUG: this is the only trace a failed goggle match
+                // leaves, and when no audience matches at all the shell never
+                // even gets a hitcam session (no views, silently).
+                LOG.info("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched NO link of {} (radius {}):{}",
                     spawnBlock.getX(), spawnBlock.getY(), spawnBlock.getZ(),
                     player.getGameProfile().getName(), TBConfig.HITCAM_GOGGLE_MATCH_RADIUS.get(), detail);
             } else if (carriesSpotter && player.distanceToSqr(spawn) <= spotterRadiusSq) {
