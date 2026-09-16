@@ -73,6 +73,14 @@ public final class TBCommands {
                 .executes(ctx -> testRay(ctx.getSource()))
                 .then(Commands.argument("distance", IntegerArgumentType.integer(1, 200))
                     .executes(ctx -> testRay(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "distance")))))
+            .then(Commands.literal("viz")
+                .executes(ctx -> contraptionViz(ctx.getSource(), 15))
+                .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
+                    .executes(ctx -> contraptionViz(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "seconds")))))
+            .then(Commands.literal("trace")
+                .executes(ctx -> setTrace(ctx.getSource(), 10))
+                .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
+                    .executes(ctx -> setTrace(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "seconds")))))
             .then(Commands.literal("hitcam")
                 .executes(ctx -> hitcamReplay(ctx.getSource()))
                 .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource()))))
@@ -426,6 +434,28 @@ public final class TBCommands {
 
     private static int testRay(CommandSourceStack source) {
         return testRay(source, 50);
+    }
+
+    private static int contraptionViz(CommandSourceStack source, int seconds) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        TBNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+            new com.cbc_terminal_ballistics.network.ClientboundContraptionVizPacket(seconds));
+        source.sendSuccess(() -> Component.literal(String.format(
+            "Contraption collision viz on for %ds: green wireframe = the geometry the raycast tests; "
+                + "magenta cross = entity position; cyan cross = Create Interactive transform position; "
+                + "RGB tripod = local axes. Compare against the rendered contraption.", seconds)), false);
+        return 1;
+    }
+
+    private static int setTrace(CommandSourceStack source, int seconds) {
+        com.cbc_terminal_ballistics.util.ContraptionCompat.setTraceSeconds(seconds);
+        source.sendSuccess(() -> Component.literal(String.format(
+            "Contraption raycast trace on for %ds — fire at the contraption, then check the log for [ctb][trace] lines.", seconds)), false);
+        return 1;
     }
 
     private static int testRay(CommandSourceStack source, int distance) {
