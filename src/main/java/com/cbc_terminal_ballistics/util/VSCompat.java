@@ -5,6 +5,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
 import net.minecraftforge.fml.ModList;
@@ -298,6 +299,85 @@ public final class VSCompat {
     /** Ship-local position transformed into world space, or null. */
     public static Vec3 shipLocalToWorld(Object ship, Vec3 local) {
         return transformPositionStrict(shipToWorld(ship), local);
+    }
+
+    // Shipyard-entity ship association:
+    // VS2 keeps shipyard entities (Create contraptions assembled on ships) in
+    // SHIP-SPACE coordinates (WorldEntityHandler.moveEntityFromShipyardToWorld),
+    // so the world-chunk lookup in shipManaging() can never resolve them. The
+    // association is resolved positionally instead: ship spaces are anchored at
+    // the assembly location, so only the true owner maps the entity position onto
+    // its own hull. Known edge: ships co-assembled within a few blocks and now
+    // sailing within hull distance of each other may mis-pair (tie-break by
+    // nearest hull keeps the window small).
+
+    /** How far outside the hull a mounted contraption's anchor may sit (deck-mounted bearings sit ON the hull). */
+    private static final double HULL_MARGIN = 3.0;
+
+    /**
+     * The ship a shipyard entity at the given SHIP-SPACE position is mounted on,
+     * or null when it lives directly in the world.
+     */
+    @Nullable
+    public static Object shipMountedAt(ServerLevel level, Vec3 shipLocalPos) {
+        if (!isLoaded() || level == null || shipLocalPos == null) return null;
+        Object best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Object ship : loadedShips(level)) {
+            Vec3 world = shipLocalToWorld(ship, shipLocalPos);
+            if (world == null) continue;
+            AABB hull = worldHullOf(ship);
+            if (hull == null) continue;
+            if (!hull.inflate(HULL_MARGIN).contains(world)) continue;
+            double dist = distanceToHull(hull, world);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = ship;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * The ship's voxel hull in WORLD space (conservative AABB: every ship-space
+     * AABB corner through shipToWorld), or null when unavailable.
+     */
+    @Nullable
+    public static AABB worldHullOf(Object ship) {
+        try {
+            Object box = ship.getClass().getMethod("getShipAABB").invoke(ship);
+            if (box == null) return null;
+            Class<?> boxClass = box.getClass();
+            double minX = ((Number) boxClass.getMethod("minX").invoke(box)).doubleValue();
+            double minY = ((Number) boxClass.getMethod("minY").invoke(box)).doubleValue();
+            double minZ = ((Number) boxClass.getMethod("minZ").invoke(box)).doubleValue();
+            double maxX = ((Number) boxClass.getMethod("maxX").invoke(box)).doubleValue();
+            double maxY = ((Number) boxClass.getMethod("maxY").invoke(box)).doubleValue();
+            double maxZ = ((Number) boxClass.getMethod("maxZ").invoke(box)).doubleValue();
+            double wx0 = Double.POSITIVE_INFINITY, wy0 = Double.POSITIVE_INFINITY, wz0 = Double.POSITIVE_INFINITY;
+            double wx1 = Double.NEGATIVE_INFINITY, wy1 = Double.NEGATIVE_INFINITY, wz1 = Double.NEGATIVE_INFINITY;
+            for (double x : new double[]{minX, maxX}) {
+                for (double y : new double[]{minY, maxY}) {
+                    for (double z : new double[]{minZ, maxZ}) {
+                        Vec3 corner = shipLocalToWorld(ship, new Vec3(x, y, z));
+                        if (corner == null) return null;
+                        wx0 = Math.min(wx0, corner.x); wy0 = Math.min(wy0, corner.y); wz0 = Math.min(wz0, corner.z);
+                        wx1 = Math.max(wx1, corner.x); wy1 = Math.max(wy1, corner.y); wz1 = Math.max(wz1, corner.z);
+                    }
+                }
+            }
+            return new AABB(wx0, wy0, wz0, wx1, wy1, wz1);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Distance from a point to an AABB (0 when inside). */
+    private static double distanceToHull(AABB box, Vec3 point) {
+        double dx = Math.max(box.minX - point.x, Math.max(0.0, point.x - box.maxX));
+        double dy = Math.max(box.minY - point.y, Math.max(0.0, point.y - box.maxY));
+        double dz = Math.max(box.minZ - point.z, Math.max(0.0, point.z - box.maxZ));
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
 
     /** The level's VS ship world (server side), or null. */

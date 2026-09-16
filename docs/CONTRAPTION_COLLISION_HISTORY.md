@@ -577,3 +577,116 @@ root causes plus one behavioral gap.
 
 `cbc_terminal_ballistics-0.4.2-vs2.3.jar` built and deployed (SHA256-verified) to
 `JPCreate2.5\mods\`.
+
+---
+
+## Attempt 10: Create Contraptions on VS2 Ships (Sep 16 2026)
+
+Reported: nothing works when the mechanical bearing contraption is assembled ON a
+Valkyrien Skies ship.
+
+### Root cause (verified in VS2 2.3 sources)
+
+VS2 pairs Create's contraption entity types with the `valkyrienskies:shipyard`
+entity handler (`data/create/vs_entities/*.json`). Ship-mounted contraption
+entities live in **SHIP-LOCAL coordinates** — `AbstractShipyardEntityHandler.
+applyRenderTransform` renders them by mapping `entity.getPosition()` through
+`ship.renderTransform.shipToWorld` and applying `shipToWorldRotation`. Every
+ContraptionCompat conversion treated Create's `toGlobalVector()` output as WORLD
+coordinates, so on any ship displaced/rotated from its assembly point all
+collision, decals, spall, and normals tested the wrong place. Entity search was
+also world-frame (`getEntitiesOfClass` with a world AABB) and could never find
+entities whose stored positions are ship-local.
+
+### Fixes
+
+1. **Ship-frame composition layer (`ContraptionCompat`)**:
+   - `shipOf(Entity)` — resolves + caches (WeakHashMap, 20-tick TTL) the mounted
+     ship: `VSCompat.shipManaging(level, entity.blockPosition())` on server
+     (shipyard chunk lookup accepts ship-local positions — the frame ship-block
+     code already uses), `VSClientCompat.shipManaging(ClientLevel, BlockPos)`
+     (new public wrapper) on client.
+   - `localToWorld(entity, local, pt)` = `toGlobalVector` + ship transform on top
+     (client uses the interpolated render transform via new
+     `VSClientCompat.shipRenderLocalToWorld`, so decals don't lag during motion).
+   - `worldToLocal(entity, world, pt)` = `toShipLocal` + `toLocalVector`.
+   - True surface normals sampled through `localToWorld` (ship rotation included).
+   - Rewired: `raycastSingle`, `pointInContraptionBlockDetailed`,
+     `ContraptionSnapshot.raycast`, `sourceContraptionCandidate`,
+     `worldCenterForLocal`, `localFaceAt`, `raycastDebug` display.
+2. **Frame-independent entity search**: `findContraptionEntities` now iterates
+   `ServerLevel.getAllEntities()` / `ClientLevel.entitiesForRendering()` filtered
+   by the reflected contraption class (world-frame boxes can't find ship-local
+   entities; contraption entities are few, so full iteration is cheap).
+3. **Client render**: `contraptionBasisMatrix` + flame particles sample
+   `localToWorld`, so marks/shells rotate with the combined ship+bearing motion.
+
+Both branches: main received the same fix first (e4c1a1f, where it also uncovered
+that main never got e88e153's PipRenderScope 1.20.1 API fix — cherry-picked
+together); vs2.3 got it via cherry-pick (379fc09). No version bump (release
+naming stays 0.4.0-vs2.3 per the 0.4.0 release process).
+
+Deployed `cbc_terminal_ballistics-0.4.0-vs2.3.jar` (SHA256-verified,
+0a4de3aa...) to `JPCreate2.5\mods\`.
+
+## Attempt 10b: shipOf could never resolve the ship + stale partial ticks (Sep 16 2026)
+
+Attempt 10 failed in-game ("still not working on ship") and rotating WORLD
+contraptions were still missed intermittently. Three distinct bugs:
+
+### Root causes
+
+1. **`shipOf` fed SHIP-LOCAL coordinates into a WORLD-chunk ship lookup.**
+   `VSCompat.shipManaging` → `tryDirectShipWorldAccess` → `isChunkInShipyard(
+   pos.x>>4, pos.z>>4, dim)` resolves ships by WORLD chunk; a shipyard entity's
+   `blockPosition()` is in ship space (`WorldEntityHandler.
+   moveEntityFromShipyardToWorld` confirms shipyard entities live there), so the
+   lookup hit the wrong chunk (or none) and the ship was NEVER found — the whole
+   Attempt 10 composition layer never engaged. VS2 2.3 exposes no authoritative
+   entity→ship map (its own `getEntities` patch resolves shipyard entities
+   positionally per ship too).
+
+2. **All server-side transforms sampled the PREVIOUS tick pose.** Every
+   `worldToLocal`/`localToWorld`/`worldCenterForLocal` call passed
+   `partialTick = 0f`, which lerps to `getPrevAnchorVec()`/prev yaw (VS2's
+   `redirectToGlobalVector` and Create's `reverseRotation` both lerp by pt). A
+   rotating bearing is stale by one tick of rotation → ray tests land off the
+   block → intermittent misses and slightly misplaced marks/spall. (Client render
+   paths already passed the real render partialTick — correct.)
+
+3. **Contraption substitution ignored hit distance.** `ctb$modifyBlockResult`
+   replaced the vanilla clip result whenever ANY contraption hit existed on the
+   tick segment, even when the vanilla world block was NEARER — swallowing ship
+   hull plates (hulls are real world blocks) and any world block in front of a
+   contraption. Ghost geometry (pre-fix ship-local poses tested against the world
+   ray) made this random in practice.
+
+### Fixes
+
+1. **Positional ship association** (`VSCompat.shipMountedAt(ServerLevel, Vec3)`
+   + client mirror `VSClientCompat.shipMountedAt(ClientLevel, Vec3)`): for each
+   loaded ship, map the entity's ship-space position through that ship's
+   `shipToWorld` and test containment in the ship's WORLD hull AABB (all 8
+   ship-space `getShipAABB()` corners transformed, inflated 3 blocks); tie-break
+   by distance to hull. Ship spaces are anchored at the assembly location, so
+   only the true owner maps the position onto its own hull. Known residual edge:
+   ships co-assembled within a few blocks AND sailing within hull distance of
+   each other may mis-pair. World contraptions resolve null (a false positive
+   would require shipToWorld ≈ identity, where composing it is harmless).
+   `shipOf` now calls these with `entity.position()`; the 20-tick WeakHashMap
+   cache stays.
+2. **`partialTick 0f → 1.0f`** at every server transform site
+   (`ContraptionCompat` internals, `TBImpactService`, `/cbctb` debug output).
+   pt=1 = current-tick pose, matching the projectile's current segment.
+3. **`worldToLocal` client branch** now uses new
+   `VSClientCompat.shipRenderWorldToLocal` (render transform's `getWorldToShip`,
+   physics fallback) so the round trip is render-consistent on moving ships.
+4. **Nearest-hit gate in `ctb$modifyBlockResult`**: the contraption hit replaces
+   the clip result only when vanilla MISSed or the contraption hit is strictly
+   nearer than the vanilla block hit.
+5. `findContraptionEntities` corruption guard 10000 → 1000000 (ship-space coords
+   legitimately exceed 10k for far-built ships).
+
+Both branches (this commit vs2.3, cherry-picked to main). No version bump.
+Deployed `cbc_terminal_ballistics-0.4.0-vs2.3.jar` (SHA256-verified, 5a2ed7a9…)
+to `JPCreate2.5\mods\`.

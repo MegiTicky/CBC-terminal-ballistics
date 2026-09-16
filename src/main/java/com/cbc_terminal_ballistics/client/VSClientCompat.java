@@ -232,13 +232,109 @@ public final class VSClientCompat {
     }
 
     /**
-     * The VS ship managing the given (ship-local or shipyard) position, or null.
-     * Create contraption entities mounted on ships report ship-local positions, which
-     * is the frame the shipyard chunk lookup natively resolves.
+     * The VS ship managing the given WORLD block position, or null. For world
+     * blocks only — shipyard entities (Create contraptions assembled on ships)
+     * live in ship-space coordinates and must be resolved via
+     * {@link #shipMountedAt} instead.
      */
     public static Object shipManaging(ClientLevel level, BlockPos pos) {
         if (!isLoaded() || level == null || pos == null) return null;
         return getLoadedShipManagingPos(level, pos);
+    }
+
+    // Shipyard-entity ship association (mirrors VSCompat.shipMountedAt): shipyard
+    // entities live in ship-space coordinates anchored at the assembly location,
+    // so only the true owner ship maps the entity position onto its own hull.
+
+    private static final double HULL_MARGIN = 3.0;
+
+    /**
+     * The ship a shipyard entity at the given SHIP-SPACE position is mounted on,
+     * or null when it lives directly in the world.
+     */
+    @javax.annotation.Nullable
+    public static Object shipMountedAt(ClientLevel level, Vec3 shipLocalPos) {
+        if (!isLoaded() || level == null || shipLocalPos == null) return null;
+        Iterable<?> ships = getShipsIntersectingBox(level,
+            new AABB(-1.0E7, -1.0E7, -1.0E7, 1.0E7, 1.0E7, 1.0E7));
+        if (ships == null) return null;
+        Object best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Object ship : ships) {
+            Vec3 world = transformPositionOrNull(shipToWorld(ship), shipLocalPos);
+            if (world == null) continue;
+            AABB hull = worldHullOf(ship);
+            if (hull == null) continue;
+            if (!hull.inflate(HULL_MARGIN).contains(world)) continue;
+            double dist = distanceToHull(hull, world);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = ship;
+            }
+        }
+        return best;
+    }
+
+    /** The ship's voxel hull in WORLD space (ship-space AABB corners through shipToWorld), or null. */
+    @javax.annotation.Nullable
+    private static AABB worldHullOf(Object ship) {
+        try {
+            Object box = ship.getClass().getMethod("getShipAABB").invoke(ship);
+            if (box == null) return null;
+            Class<?> boxClass = box.getClass();
+            double minX = ((Number) boxClass.getMethod("minX").invoke(box)).doubleValue();
+            double minY = ((Number) boxClass.getMethod("minY").invoke(box)).doubleValue();
+            double minZ = ((Number) boxClass.getMethod("minZ").invoke(box)).doubleValue();
+            double maxX = ((Number) boxClass.getMethod("maxX").invoke(box)).doubleValue();
+            double maxY = ((Number) boxClass.getMethod("maxY").invoke(box)).doubleValue();
+            double maxZ = ((Number) boxClass.getMethod("maxZ").invoke(box)).doubleValue();
+            double wx0 = Double.POSITIVE_INFINITY, wy0 = Double.POSITIVE_INFINITY, wz0 = Double.POSITIVE_INFINITY;
+            double wx1 = Double.NEGATIVE_INFINITY, wy1 = Double.NEGATIVE_INFINITY, wz1 = Double.NEGATIVE_INFINITY;
+            for (double x : new double[]{minX, maxX}) {
+                for (double y : new double[]{minY, maxY}) {
+                    for (double z : new double[]{minZ, maxZ}) {
+                        Vec3 corner = transformPositionOrNull(shipToWorld(ship), new Vec3(x, y, z));
+                        if (corner == null) return null;
+                        wx0 = Math.min(wx0, corner.x); wy0 = Math.min(wy0, corner.y); wz0 = Math.min(wz0, corner.z);
+                        wx1 = Math.max(wx1, corner.x); wy1 = Math.max(wy1, corner.y); wz1 = Math.max(wz1, corner.z);
+                    }
+                }
+            }
+            return new AABB(wx0, wy0, wz0, wx1, wy1, wz1);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Distance from a point to an AABB (0 when inside). */
+    private static double distanceToHull(AABB box, Vec3 point) {
+        double dx = Math.max(box.minX - point.x, Math.max(0.0, point.x - box.maxX));
+        double dy = Math.max(box.minY - point.y, Math.max(0.0, point.y - box.maxY));
+        double dz = Math.max(box.minZ - point.z, Math.max(0.0, point.z - box.maxZ));
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
+     * World point to ship-local via the INTERPOLATED render transform (falls back
+     * to the physics transform), the inverse of {@link #shipRenderLocalToWorld}.
+     * Null when VS is absent or reflection fails.
+     */
+    @javax.annotation.Nullable
+    public static Vec3 shipRenderWorldToLocal(Object ship, Vec3 world) {
+        if (ship == null || world == null) return null;
+        try {
+            Object renderTransform = ship.getClass().getMethod("getRenderTransform").invoke(ship);
+            if (renderTransform != null) {
+                Method matrixGetter = renderTransform.getClass().getMethod("getWorldToShip");
+                Object matrix = matrixGetter.invoke(renderTransform);
+                if (matrix != null) {
+                    return transformPositionOrNull(matrix, world);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        Object matrix = worldToShip(ship);
+        return matrix == null ? null : transformPositionOrNull(matrix, world);
     }
 
     /**
@@ -273,6 +369,22 @@ public final class VSClientCompat {
             return new Vec3(transformed.x, transformed.y, transformed.z);
         } catch (Throwable ignored) {
             return position;
+        }
+    }
+
+    /** Like {@link #transformPosition} but returns null when the matrix is unavailable or the call fails. */
+    @javax.annotation.Nullable
+    private static Vec3 transformPositionOrNull(Object matrix, Vec3 position) {
+        if (matrix == null || position == null) return null;
+        try {
+            Vector3d dest = new Vector3d();
+            Method method = matrix.getClass().getMethod("transformPosition", double.class, double.class, double.class, Vector3d.class);
+            Object result = method.invoke(matrix, position.x, position.y, position.z, dest);
+            Vector3d transformed = result instanceof Vector3d vec ? vec : dest;
+            if (!Double.isFinite(transformed.x) || !Double.isFinite(transformed.y) || !Double.isFinite(transformed.z)) return null;
+            return new Vec3(transformed.x, transformed.y, transformed.z);
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 

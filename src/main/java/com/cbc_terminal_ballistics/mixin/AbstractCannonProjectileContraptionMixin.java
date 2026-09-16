@@ -122,6 +122,18 @@ public abstract class AbstractCannonProjectileContraptionMixin {
                 return original;
             }
 
+            // Never substitute a contraption hit that is FARTHER than the vanilla
+            // world hit on the same segment — that would swallow the nearer world
+            // block entirely (e.g. a ship's hull plate in front of a deck-mounted
+            // contraption). Only a nearer contraption hit (or a vanilla MISS)
+            // replaces the clip result.
+            if (original != null && original.getType() != net.minecraft.world.phys.HitResult.Type.MISS) {
+                if (from.distanceToSqr(hit.hitLocation()) > from.distanceToSqr(original.getLocation())) {
+                    ctb$pendingContraptionState = null;
+                    return original;
+                }
+            }
+
             CTB_LOG.debug("[ctb] contraption hit! worldPos={} hitLoc={} dir={} normal={} state={}",
                 hit.worldPos(), hit.hitLocation(), hit.direction(), hit.trueNormal(), hit.state());
             ctb$pendingContraptionState = hit.state();
