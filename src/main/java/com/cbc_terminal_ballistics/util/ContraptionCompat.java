@@ -783,36 +783,46 @@ public final class ContraptionCompat {
         Class<?> entityClass = getContraptionEntityClass();
         if (entityClass == null) return List.of();
 
-        // Frame-independent scan. A world-frame search box cannot find ship-mounted
-        // contraption entities, whose stored positions are SHIP-LOCAL (VS2 shipyard
-        // entity handler). Contraption entities are few, so full iteration is cheap.
+        // Query box around the ray/point. Generous margin: contraption entity
+        // bounding boxes do not enclose their structure, and the ship-transformed
+        // query needs to reach the contraption's ship-space position.
+        AABB searchBox = rayEndpoints.length == 0
+            ? new AABB(BlockPos.ZERO).inflate(256)
+            : new AABB(rayEndpoints[0], rayEndpoints[rayEndpoints.length - 1]).inflate(256);
+
+        // Primary: the vanilla section-storage query. VS2 patches
+        // EntitySectionStorage.forEachAccessibleNonEmptySection ("shipSections") so
+        // world-box queries ALSO search each loaded ship's ship-space box — that is
+        // the only place shipyard entities (Create contraptions assembled on ships)
+        // are reachable on the server; ServerLevel.getAllEntities() misses them.
+        java.util.LinkedHashMap<java.util.UUID, Entity> found = new java.util.LinkedHashMap<>();
+        try {
+            for (Entity e : level.getEntitiesOfClass((Class<Entity>) entityClass, searchBox)) {
+                if (e.isAlive()) found.putIfAbsent(e.getUUID(), e);
+            }
+        } catch (Throwable t) {
+            LOG.debug("[ctb] getEntitiesOfClass search failed: {}", t.getMessage());
+        }
+
+        // Secondary: full iteration. Catches entities outside the query box (huge
+        // structures, far entities) and works on custom Level implementations.
         Iterable<Entity> all;
         if (level instanceof net.minecraft.server.level.ServerLevel serverLevel) {
             all = serverLevel.getAllEntities();
         } else if (level instanceof net.minecraft.client.multiplayer.ClientLevel clientLevel) {
             all = clientLevel.entitiesForRendering();
         } else {
-            // Custom Level implementation: fall back to a box search.
-            AABB searchBox = rayEndpoints.length == 1
-                ? new AABB(rayEndpoints[0], rayEndpoints[0]).inflate(16)
-                : new AABB(rayEndpoints[0], rayEndpoints[rayEndpoints.length - 1]).inflate(16);
-            try {
-                return new ArrayList<>(level.getEntitiesOfClass((Class<Entity>) entityClass, searchBox));
-            } catch (Throwable t) {
-                return List.of();
-            }
+            all = List.of();
         }
-
-        List<Entity> filtered = new ArrayList<>();
         for (Entity e : all) {
             if (!entityClass.isInstance(e) || !e.isAlive()) continue;
             Vec3 pos = e.position();
             // Corruption guard only — shipyard contraption entities legitimately
             // carry large ship-space coordinates (ships assembled far from origin).
             if (Math.abs(pos.x) > 1000000 || Math.abs(pos.y) > 1000000 || Math.abs(pos.z) > 1000000) continue;
-            filtered.add(e);
+            found.putIfAbsent(e.getUUID(), e);
         }
-        return filtered;
+        return new ArrayList<>(found.values());
     }
 
     /**
