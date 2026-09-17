@@ -3,6 +3,7 @@ package com.cbc_terminal_ballistics.mixin;
 import com.cbc_terminal_ballistics.config.TBConfig;
 import com.cbc_terminal_ballistics.util.ContraptionCompat;
 import com.cbc_terminal_ballistics.util.IgnoredBlockSkip;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
@@ -64,6 +65,17 @@ public abstract class AbstractCannonProjectileContraptionMixin {
     private long ctb$sourceExpiry = -1L;
     @Unique
     private int ctb$sourceChecksLeft = 3;
+
+    // Same-cell dedupe: CBC's clip loop re-clips after each processed block; the world
+    // has air at contraption spots, so vanilla returns MISS and re-substituting the
+    // same cell re-processes it until the jam breaker kills the shell. One substitution
+    // per (entity, cell) per tick is enough — across ticks repeat hits still count.
+    @Unique
+    private java.util.UUID ctb$lastCellEntity;
+    @Unique
+    private BlockPos ctb$lastCellPos;
+    @Unique
+    private long ctb$lastCellTick = -1L;
 
     /**
      * Intercept the first BlockHitResult store (ordinal 0 = block clip result).
@@ -133,6 +145,21 @@ public abstract class AbstractCannonProjectileContraptionMixin {
                     return original;
                 }
             }
+
+            // Same-cell dedupe: one substitution per (entity, local cell) per tick.
+            // A repeat within the tick is the loop's re-clip after the cell was
+            // already consumed — let the vanilla MISS end it instead.
+            long nowTick = self.level().getGameTime();
+            if (nowTick == ctb$lastCellTick
+                && hit.entity() != null
+                && hit.entity().getUUID().equals(ctb$lastCellEntity)
+                && hit.localPos().equals(ctb$lastCellPos)) {
+                ctb$pendingContraptionState = null;
+                return original;
+            }
+            ctb$lastCellEntity = hit.entity() != null ? hit.entity().getUUID() : null;
+            ctb$lastCellPos = hit.localPos();
+            ctb$lastCellTick = nowTick;
 
             CTB_LOG.debug("[ctb] contraption hit! worldPos={} hitLoc={} dir={} normal={} state={}",
                 hit.worldPos(), hit.hitLocation(), hit.direction(), hit.trueNormal(), hit.state());

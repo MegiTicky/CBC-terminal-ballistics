@@ -135,12 +135,23 @@ public final class TBImpactService {
             // Resolve the owning contraption entity + local block position once per impact.
             // The entity drives spall blocking (snapshot raycasts); the local position anchors
             // marks and embedded shells so they follow the contraption when it moves.
+            // Primary: the raycast that produced this hit publishes its exact entity + local
+            // cell — re-deriving from the world-snapped BlockPos loses precision on rotated
+            // or moving contraptions (back-mapped center crosses into a neighbor cell).
             Entity contraptionEntity = null;
             BlockPos contraptionLocalPos = null;
-            if (isContraption) {
+            ContraptionCompat.MatchedContraptionHit matchedHit = ContraptionCompat.matchedContraptionHit(hit.getLocation());
+            if (matchedHit != null) {
+                isContraption = true;
+                contraptionEntity = matchedHit.entity();
+                contraptionLocalPos = matchedHit.localPos();
+            } else if (isContraption) {
                 contraptionEntity = ContraptionCompat.contraptionEntityAt(level, pos);
                 if (contraptionEntity != null) {
-                    contraptionLocalPos = ContraptionCompat.localPosAt(contraptionEntity, Vec3.atCenterOf(pos));
+                    contraptionLocalPos = ContraptionCompat.localPosAt(contraptionEntity, hit.getLocation());
+                    if (contraptionLocalPos == null) {
+                        contraptionLocalPos = ContraptionCompat.localPosAt(contraptionEntity, Vec3.atCenterOf(pos));
+                    }
                 }
             }
             Vec3 accel = CBCReflect.forces(projectile, projectile.position(), projectile.getDeltaMovement());
