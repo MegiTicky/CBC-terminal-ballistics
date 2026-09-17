@@ -39,7 +39,7 @@ import java.util.List;
 public final class ClientGogglesDebug {
     private static final long TTL_MILLIS = 30_000L;
     private static final int MAX_ENTRIES = 64;
-    private static final int MAX_HUD_LINES = 10;
+    private static final int MAX_HUD_LINES = 16;
 
     /** Client copy of the server's per-link diagnostic. */
     public record LinkDiag(BlockPos resolved, double dist, boolean matched, String label) {}
@@ -52,6 +52,7 @@ public final class ClientGogglesDebug {
         final long millis;
         final boolean captured;
         final boolean neverTicked;
+        final boolean flyingUnhooked;
 
         Entry(ClientboundGogglesDebugPacket packet) {
             pos = new Vec3(packet.x(), packet.y(), packet.z());
@@ -65,6 +66,7 @@ public final class ClientGogglesDebug {
             millis = System.currentTimeMillis();
             captured = outcome.startsWith("CAPTURED");
             neverTicked = outcome.startsWith("NEVER TICKED");
+            flyingUnhooked = outcome.startsWith("FLYING");
         }
 
         /** Nearest resolved link, or null when every link was unresolved. */
@@ -120,6 +122,7 @@ public final class ClientGogglesDebug {
             if (alpha <= 0f) continue;
 
             float[] verdict = entry.captured ? new float[]{0.2f, 1.0f, 0.4f}
+                : entry.flyingUnhooked ? new float[]{1.0f, 0.55f, 0.1f}
                 : entry.neverTicked ? new float[]{1.0f, 0.9f, 0.2f}
                 : new float[]{1.0f, 0.25f, 0.2f};
             float half = entry.captured ? 0.25f : 0.5f;
@@ -198,6 +201,7 @@ public final class ClientGogglesDebug {
                 .append((int) Math.floor(entry.pos.y)).append(' ')
                 .append((int) Math.floor(entry.pos.z)).append(") ");
             ChatFormatting verdictColor = entry.captured ? ChatFormatting.GREEN
+                : entry.flyingUnhooked ? ChatFormatting.GOLD
                 : entry.neverTicked ? ChatFormatting.YELLOW : ChatFormatting.RED;
             MutableComponent text = Component.literal(line.toString()).withStyle(ChatFormatting.GRAY)
                 .append(Component.literal(entry.outcome).withStyle(verdictColor));

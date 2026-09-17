@@ -3,7 +3,6 @@ package com.cbc_terminal_ballistics.goggles;
 import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import com.cbc_terminal_ballistics.network.ClientboundGogglesDebugPacket;
 import com.cbc_terminal_ballistics.network.TBNetwork;
-import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
@@ -19,6 +18,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -46,13 +46,15 @@ public final class GogglesDebug {
 
     private static final class Candidate {
         final ServerLevel level;
+        final Entity entity;
         final Vec3 pos;
         final String className;
         final long joinedMillis;
         List<ClientboundGogglesDebugPacket.LinkDiag> links = List.of();
 
-        Candidate(ServerLevel level, Vec3 pos, String className, long joinedMillis) {
+        Candidate(ServerLevel level, Entity entity, Vec3 pos, String className, long joinedMillis) {
             this.level = level;
+            this.entity = entity;
             this.pos = pos;
             this.className = className;
             this.joinedMillis = joinedMillis;
@@ -85,15 +87,30 @@ public final class GogglesDebug {
         return !VIEWERS.isEmpty();
     }
 
+    /** Shell-like name tokens for the spawn filter (matched lowercase). */
+    private static final String[] MUNITION_TOKENS = {
+        "projectile", "bullet", "shell", "missile", "rocket", "torpedo", "mortar",
+        "cannon", "artillery", "bomb", "grenade", "shrapnel", "ammo", "flak"
+    };
+
+    /** True when the entity's class name looks like any mod's munition. */
+    public static boolean isMunitionLike(Entity entity) {
+        String cls = entity.getClass().getName().toLowerCase(Locale.ROOT);
+        for (String token : MUNITION_TOKENS) {
+            if (cls.contains(token)) return true;
+        }
+        return false;
+    }
+
     public static void onEntityJoin(EntityJoinLevelEvent event) {
         if (VIEWERS.isEmpty() || event.getLevel().isClientSide()) return;
         if (!(event.getLevel() instanceof ServerLevel level)) return;
         Entity entity = event.getEntity();
-        String cls = entity.getClass().getName();
-        if (!cls.contains("CannonProjectile") && !cls.contains("AutocannonProjectile")) return;
+        if (!isMunitionLike(entity)) return;
         sweep(System.currentTimeMillis());
         if (PENDING.size() >= PENDING_CAP) PENDING.clear();
-        PENDING.put(entity.getId(), new Candidate(level, entity.position(), cls, System.currentTimeMillis()));
+        PENDING.put(entity.getId(), new Candidate(level, entity, entity.position(),
+            entity.getClass().getName(), System.currentTimeMillis()));
     }
 
     /** {@code goggleAudiences} stashes the per-link detail of the pass it just ran. */
@@ -138,9 +155,30 @@ public final class GogglesDebug {
         if (expired == null) return;
         for (Candidate candidate : expired) {
             send(new ClientboundGogglesDebugPacket(candidate.pos.x, candidate.pos.y, candidate.pos.z,
-                shortName(candidate.className), "NEVER TICKED (removed before first tick)", candidate.links),
+                shortName(candidate.className), classify(candidate), candidate.links),
                 candidate.level);
         }
+    }
+
+    /**
+     * Verdict for a candidate that never resolved through
+     * {@code TerminalBallisticsRecorder}: dead before its first tick, alive
+     * and moving with no CBCTB hook on its class (the mixed-case class names
+     * like CBCMW's "MediumcannonProjectile" used to hide here), or alive but
+     * stationary at its spawn.
+     */
+    private static String classify(Candidate candidate) {
+        Entity entity = candidate.entity;
+        if (entity.isRemoved()) {
+            Entity.RemovalReason reason = entity.getRemovalReason();
+            return "NEVER TICKED (removed: " + (reason != null ? reason.name() : "UNKNOWN") + ")";
+        }
+        if (entity.position().distanceToSqr(candidate.pos) > 0.01D) {
+            boolean chunkLoaded = candidate.level.getChunkSource()
+                .hasChunk(entity.blockPosition().getX() >> 4, entity.blockPosition().getZ() >> 4);
+            return "FLYING UNHOOKED (chunk-loaded=" + chunkLoaded + ")";
+        }
+        return "NEVER TICKED (idle at spawn)";
     }
 
     private static void send(ClientboundGogglesDebugPacket packet, ServerLevel level) {
