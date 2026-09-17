@@ -507,18 +507,17 @@ public final class TBCommands {
                 source.sendSuccess(() -> Component.literal(String.format("  State: %s", hit.state())), false);
             }
 
-            // Collect block AABB data for client-side debug rendering
+            // Collect block AABB data for client-side debug rendering.
+            // localToWorld = the exact transform the raycast tests (Create Interactive
+            // composed when present); raw toGlobalVector would draw ship contraption
+            // boxes in the wrong frame.
             List<double[]> blockDataList = new ArrayList<>();
             try {
                 List<net.minecraft.world.entity.Entity> entities =
                     com.cbc_terminal_ballistics.util.ContraptionCompat.findNearbyContraptionEntities(source.getLevel(), from, to);
                 for (net.minecraft.world.entity.Entity entity : entities) {
-                    Object contraption = com.cbc_terminal_ballistics.util.ContraptionCompat.getContraptionObject(entity);
-                    if (contraption == null) continue;
-                    java.util.Map<BlockPos, ?> blocks = com.cbc_terminal_ballistics.util.ContraptionCompat.getBlocksObject(contraption);
-                    if (blocks == null) continue;
-                    for (BlockPos localPos : blocks.keySet()) {
-                        Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.toGlobalVector(entity, Vec3.atCenterOf(localPos), 1.0f);
+                    for (BlockPos localPos : com.cbc_terminal_ballistics.util.ContraptionCompat.solidLocalPositions(entity)) {
+                        Vec3 worldCenter = com.cbc_terminal_ballistics.util.ContraptionCompat.localToWorld(entity, Vec3.atCenterOf(localPos), 1.0f);
                         if (worldCenter == null) continue;
                         blockDataList.add(new double[]{
                             worldCenter.x - 0.5, worldCenter.y - 0.5, worldCenter.z - 0.5,
