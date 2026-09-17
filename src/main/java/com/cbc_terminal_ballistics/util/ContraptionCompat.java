@@ -537,6 +537,22 @@ public final class ContraptionCompat {
         return a.add(ab.scale(t)).distanceTo(p);
     }
 
+    /**
+     * Minimum distance from segment {@code from}→{@code to} to any solid block
+     * center of the contraption (world frame, current transform), or +Infinity.
+     * Debug/overlay proximity metric.
+     */
+    public static double nearestBlockDistance(Entity entity, Vec3 from, Vec3 to) {
+        double best = Double.POSITIVE_INFINITY;
+        for (BlockPos pos : solidLocalPositions(entity)) {
+            Vec3 center = localToWorld(entity, Vec3.atCenterOf(pos), 1.0f);
+            if (center == null) continue;
+            double d = segmentPointDistance(from, to, center);
+            if (d < best) best = d;
+        }
+        return best;
+    }
+
     private static String trTuple(Vec3 v) {
         return String.format("%.1f, %.1f, %.1f", v.x, v.y, v.z);
     }
