@@ -16,6 +16,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.LivingEntity;
@@ -120,6 +121,12 @@ public final class TerminalBallisticsRecorder {
         boolean explosiveShell;
         /** Explosive shell by the predefined name list ({@link ProjectileClassifier#isExplosiveShell}); gates blast synthesis. */
         boolean heShell;
+        /**
+         * The shell ended its flight with no terminal content at all (dud fuze,
+         * water discard, embed removal, expiry): the end-of-flight x-ray is a
+         * synthesized marker, and the summary says LOST instead of DETONATION.
+         */
+        boolean fizzle;
         /** Game time of the last immediate snapshot send, for rate limiting. */
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
@@ -700,13 +707,40 @@ public final class TerminalBallisticsRecorder {
                     handleChunkUnload(session, projectile, server);
                     continue;
                 }
+                // Name what killed the shell: tick age plus the block/fluid
+                // occupying (and below) the removal position — water surface,
+                // own structure, open sky/expiry, etc.
+                BlockPos deathPos = projectile.blockPosition();
+                Level deathLevel = projectile.level();
                 CBCTerminalBallistics.LOGGER.info(
-                    "[CTB-CHUNKSTREAM] shell {} removed server-side: reason={} at {}",
-                    projectile.getId(), projectile.getRemovalReason(), projectile.position());
+                    "[CTB-CHUNKSTREAM] shell {} removed server-side: reason={} tick={} at {} block={} fluid={} below={}",
+                    projectile.getId(), projectile.getRemovalReason(), projectile.tickCount,
+                    projectile.position(),
+                    deathLevel.getBlockState(deathPos).getBlock(),
+                    deathLevel.getFluidState(deathPos).getType(),
+                    deathLevel.getFluidState(deathPos.below()).getType());
                 // Explosive shell whose flight ended without a real detonation
                 // (fuze rolled a dud, or the fuze never saw the impact):
                 // synthesize the blast so the HE pipeline always renders it.
                 syntheticBlast(session, projectile);
+                // Fizzle fallback: a shell that ended with NO terminal content
+                // at all (non-explosive shell, water discard, embed removal,
+                // expiry) still gets an end-of-flight x-ray — otherwise every
+                // such shot renders as a bare chase flash with no view of
+                // where it died. Sized by caliber; flagged so the summary
+                // reads LOST rather than DETONATION.
+                if (session.plates.isEmpty() && session.entities.isEmpty() && session.blastPos == null) {
+                    session.blastPos = normalizePoint(projectile, projectile.position());
+                    session.blastRadius = caliberBlastRadius(projectile);
+                    session.fizzle = true;
+                    session.dataVersion++;
+                    session.dirty = true;
+                    CBCTerminalBallistics.LOGGER.info(
+                        "[CTB-HITCAM] fizzle x-ray shell={} tick={} radius={} at ({},{},{})",
+                        projectile.getId(), projectile.tickCount, session.blastRadius,
+                        (long) Math.floor(projectile.getX()), (long) Math.floor(projectile.getY()),
+                        (long) Math.floor(projectile.getZ()));
+                }
                 // Pass-through terminal flush (formerly on the entity-leave
                 // event, which also fires client-side): a shell that recorded
                 // events but never snapshotted gets its x-ray here. A shell
@@ -1243,7 +1277,8 @@ public final class TerminalBallisticsRecorder {
     private static String buildSummary(Session session) {
         // Plate/crew counts were dropped: the status line overflowed the PiP
         // window, and the top-left critical list already covers the details.
-        StringBuilder sb = new StringBuilder(session.hasCritical ? "CRITICAL HIT" : classify(session));
+        StringBuilder sb = new StringBuilder(session.hasCritical ? "CRITICAL HIT"
+            : session.fizzle ? "LOST" : classify(session));
         if (!session.spalls.isEmpty()) {
             int fragments = 0;
             for (ClientboundTerminalBallisticsPacket.Spall cone : session.spalls) fragments += cone.fragments();

@@ -1,5 +1,6 @@
 package com.cbc_terminal_ballistics.config;
 
+import com.cbc_terminal_ballistics.CBCTerminalBallistics;
 import net.minecraftforge.common.ForgeConfigSpec;
 
 import java.util.Collections;
@@ -202,6 +203,28 @@ public final class TBConfig {
         client.pop();
         CLIENT_SPEC = client.build();
     }
+
+    /**
+     * {@link #HITCAM_GOGGLE_MATCH_RADIUS} with a one-time migration: configs
+     * saved before the default was raised keep the old 24 forever, silently
+     * re-creating the "linked but no view" failure for long guns. A stored 24
+     * now reads as 48; anything the user set deliberately (other than exactly
+     * the old default) is untouched.
+     */
+    public static int goggleMatchRadius() {
+        int radius = HITCAM_GOGGLE_MATCH_RADIUS.get();
+        if (radius == 24) {
+            radius = 48;
+            if (!RADIUS_MIGRATION_LOGGED) {
+                RADIUS_MIGRATION_LOGGED = true;
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-GOGGLES] migrated stale hitcamGoggleMatchRadius 24 -> 48 (old saved default); edit the config to choose your own value");
+            }
+        }
+        return radius;
+    }
+
+    private static boolean RADIUS_MIGRATION_LOGGED;
 
     private TBConfig() {}
 }

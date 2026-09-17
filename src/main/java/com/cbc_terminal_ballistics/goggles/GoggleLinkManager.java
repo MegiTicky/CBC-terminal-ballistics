@@ -216,7 +216,7 @@ public final class GoggleLinkManager {
                 // even gets a hitcam session (no views, silently).
                 LOG.info("[CTB-GOGGLES] shell spawn at ({}, {}, {}) matched NO link of {} (radius {}):{}",
                     spawnBlock.getX(), spawnBlock.getY(), spawnBlock.getZ(),
-                    player.getGameProfile().getName(), TBConfig.HITCAM_GOGGLE_MATCH_RADIUS.get(), detail);
+                    player.getGameProfile().getName(), TBConfig.goggleMatchRadius(), detail);
             } else if (carriesSpotter && player.distanceToSqr(spawn) <= spotterRadiusSq) {
                 spotters.add(player);
             }
@@ -247,7 +247,7 @@ public final class GoggleLinkManager {
     /** True when any link on {@code stack} resolves within the match radius of the shell spawn. */
     public static boolean anyLinkMatches(ServerLevel level, ItemStack stack, Vec3 spawn, BlockPos spawnBlock,
                                          Map<Long, Object> shipCache) {
-        double radiusSq = square(TBConfig.HITCAM_GOGGLE_MATCH_RADIUS.get());
+        double radiusSq = square(TBConfig.goggleMatchRadius());
         for (GoggleLink link : links(stack)) {
             BlockPos resolved = resolveLink(level, link, shipCache);
             if (resolved != null && resolved.distSqr(spawnBlock) <= radiusSq) return true;
