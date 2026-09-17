@@ -74,6 +74,7 @@ public final class TBConfig {
     public static final ForgeConfigSpec.BooleanValue HITCAM_PIP_SALVO_SHELLS;
     public static final ForgeConfigSpec.DoubleValue HITCAM_BLAST_RADIUS_SCALE;
     public static final ForgeConfigSpec.IntValue HITCAM_GOGGLE_MATCH_RADIUS;
+    public static final ForgeConfigSpec.DoubleValue HITCAM_WATER_CUT_SPEED;
     public static final ForgeConfigSpec.IntValue HITCAM_SPOTTER_RADIUS;
     public static final ForgeConfigSpec.IntValue HITCAM_MAX_AUDIENCES;
 
@@ -165,6 +166,7 @@ public final class TBConfig {
         HITCAM_PIP_SALVO_SHELLS = server.comment("Show the OTHER shells of a salvo/broadside inside the hitcam picture-in-picture as relay-fed ghosts, so a dozen-shell salvo does not collapse to just the focused shell once the others leave client tracking range.").define("hitcamPipSalvoShells", true);
         HITCAM_BLAST_RADIUS_SCALE = server.comment("Terminal view: scale for the synthesized HE blast (an explosive shell that ends its flight without a real detonation still gets a blast in the x-ray, sized by caliber x this multiplier). Real detonations use their actual explosion radius.").defineInRange("hitcamBlastRadiusScale", 1.0, 0.25, 4.0);
         HITCAM_GOGGLE_MATCH_RADIUS = server.comment("Ballistic goggles: a shell opens the goggle views when it spawns within this many blocks of one of the goggles' linked cannon mounts. The shell spawns at the barrel muzzle, so long guns need a bigger radius than the mount-to-breech distance suggests.").defineInRange("hitcamGoggleMatchRadius", 48, 4, 64);
+        HITCAM_WATER_CUT_SPEED = server.comment("Artillery chase cam: a submerged shell that has slowed below this many blocks/tick AND lost at least 2/3 of its peak speed is judged to be sinking out (CBC water skipping reflects the shell away with most of its speed; a sinking shell just bleeds drag) and the chase view is cut. Raise to cut earlier in the descent, 0 disables the cut.").defineInRange("hitcamWaterCutSpeed", 1.0, 0.0, 8.0);
         HITCAM_SPOTTER_RADIUS = server.comment("Spotter goggles: while carried in the inventory, shells spawning within this many blocks of the holder open a view for them (the old nearby-shell behaviour, opt-in per player).").defineInRange("hitcamSpotterRadius", 32, 4, 128);
         HITCAM_MAX_AUDIENCES = server.comment("Maximum players that may watch one shell's artillery/terminal views at once (goggle links, spotter goggles and the shooter share this budget).").defineInRange("hitcamMaxAudiences", 4, 1, 16);
         server.pop();

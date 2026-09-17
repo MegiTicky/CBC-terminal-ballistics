@@ -121,12 +121,10 @@ public final class TerminalBallisticsRecorder {
         boolean explosiveShell;
         /** Explosive shell by the predefined name list ({@link ProjectileClassifier#isExplosiveShell}); gates blast synthesis. */
         boolean heShell;
-        /**
-         * The shell ended its flight with no terminal content at all (dud fuze,
-         * water discard, embed removal, expiry): the end-of-flight x-ray is a
-         * synthesized marker, and the summary says LOST instead of DETONATION.
-         */
-        boolean fizzle;
+        /** Highest relayed shell speed, blocks/tick; feeds the water-sink cut (peak −1 until the first relay). */
+        float peakSpeed = -1.0F;
+        /** Set once the shell is judged to be sinking out (submerged, crawled below the cut speed); ends the chase. */
+        boolean waterCut;
         /** Game time of the last immediate snapshot send, for rate limiting. */
         long lastSnapshotGameTime = Long.MIN_VALUE;
         /** New events arrived since the last packet went out; gates the stale flush. */
@@ -723,24 +721,6 @@ public final class TerminalBallisticsRecorder {
                 // (fuze rolled a dud, or the fuze never saw the impact):
                 // synthesize the blast so the HE pipeline always renders it.
                 syntheticBlast(session, projectile);
-                // Fizzle fallback: a shell that ended with NO terminal content
-                // at all (non-explosive shell, water discard, embed removal,
-                // expiry) still gets an end-of-flight x-ray — otherwise every
-                // such shot renders as a bare chase flash with no view of
-                // where it died. Sized by caliber; flagged so the summary
-                // reads LOST rather than DETONATION.
-                if (session.plates.isEmpty() && session.entities.isEmpty() && session.blastPos == null) {
-                    session.blastPos = normalizePoint(projectile, projectile.position());
-                    session.blastRadius = caliberBlastRadius(projectile);
-                    session.fizzle = true;
-                    session.dataVersion++;
-                    session.dirty = true;
-                    CBCTerminalBallistics.LOGGER.info(
-                        "[CTB-HITCAM] fizzle x-ray shell={} tick={} radius={} at ({},{},{})",
-                        projectile.getId(), projectile.tickCount, session.blastRadius,
-                        (long) Math.floor(projectile.getX()), (long) Math.floor(projectile.getY()),
-                        (long) Math.floor(projectile.getZ()));
-                }
                 // Pass-through terminal flush (formerly on the entity-leave
                 // event, which also fires client-side): a shell that recorded
                 // events but never snapshotted gets its x-ray here. A shell
@@ -776,6 +756,34 @@ public final class TerminalBallisticsRecorder {
             } else {
                 session.stuckRelays = 0;
                 session.lastRelayPos = posNow;
+            }
+            // Water-sink cut: a shell that entered the fluid WITHOUT CBC's
+            // bounce bleeds speed to fluid drag every tick; once it crawls it
+            // is sinking out and the chase has nothing left to follow. A skip
+            // leaves the water or keeps most of its speed (CBC reflects the
+            // velocity with elasticity 1.7), and steady slow munitions
+            // (torpedoes) never build a peak/current gap — both keep chasing.
+            float speed = (float) projectile.getDeltaMovement().length();
+            if (speed > session.peakSpeed) session.peakSpeed = speed;
+            if (!session.waterCut && projectile.isInWater()
+                && speed < TBConfig.HITCAM_WATER_CUT_SPEED.get().floatValue()
+                && speed * 3.0F <= session.peakSpeed) {
+                session.waterCut = true;
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-HITCAM] shell {} sunk out: vel={} peak={} tick={} at {}",
+                    projectile.getId(), String.format("%.2f", speed),
+                    String.format("%.2f", session.peakSpeed), projectile.tickCount, posNow);
+                // Flush any content recorded before the sink (e.g. an entity
+                // hit during the descent) so it still reaches the client.
+                if (session.dirty && session.dataVersion > session.dataVersionAtSnapshot) {
+                    dispatch(projectile, session);
+                    session.dataVersionAtSnapshot = session.dataVersion;
+                    session.dirty = false;
+                }
+                sendTo(session.audiences, new ClientboundArtilleryUpdatePacket(
+                    projectile.getId(), "", posNow, Vec3.ZERO, true));
+                markShellGone(session, projectile.level().getGameTime());
+                continue;
             }
             if (session.stuckRelays >= STUCK_SESSION_RELAYS) {
                 CBCTerminalBallistics.LOGGER.info(
@@ -1154,9 +1162,14 @@ public final class TerminalBallisticsRecorder {
 
     /** Build and send the terminal packet for the session's current state. */
     private static void dispatch(Entity projectile, Session session) {
-        // An explosive shell that detonated ALWAYS yields a terminal view,
-        // plate or no plate — the blast alone is worth framing.
-        if ((session.plates.isEmpty() && session.blastPos == null) || session.audiences.isEmpty()) return;
+        // Terminal-view criteria: armour plates, the shell's own blast (real
+        // detonation or synthesized HE dud), or entity/critical hits — a shell
+        // whose only content is a body hit on a crew member still yields a
+        // view. A shell with none of those (water sink, expiry, terrain dud)
+        // dispatches nothing; its artillery chase just ends.
+        if ((session.plates.isEmpty() && session.blastPos == null
+            && session.entities.isEmpty() && session.criticals.isEmpty())
+            || session.audiences.isEmpty()) return;
         if (!(projectile.level() instanceof ServerLevel level)) return;
 
         ShipFrame frame = resolveFrame(level, session);
@@ -1277,8 +1290,7 @@ public final class TerminalBallisticsRecorder {
     private static String buildSummary(Session session) {
         // Plate/crew counts were dropped: the status line overflowed the PiP
         // window, and the top-left critical list already covers the details.
-        StringBuilder sb = new StringBuilder(session.hasCritical ? "CRITICAL HIT"
-            : session.fizzle ? "LOST" : classify(session));
+        StringBuilder sb = new StringBuilder(session.hasCritical ? "CRITICAL HIT" : classify(session));
         if (!session.spalls.isEmpty()) {
             int fragments = 0;
             for (ClientboundTerminalBallisticsPacket.Spall cone : session.spalls) fragments += cone.fragments();
