@@ -99,13 +99,34 @@ public abstract class AbstractCannonProjectileContraptionMixin {
                 return skipped;
             }
         }
-        if (!TBConfig.HIT_CREATE_CONTRAPTIONS.get()) {
+        if (self.level() == null) {
             ctb$pendingContraptionState = null;
             return original;
         }
 
-        if (self.level() == null) {
+        // Debug overlay proximity: which contraption (if any) is this shell's
+        // segment actually engaging? Computed before the config gate so the
+        // "disabled" reason is visible too.
+        boolean dbg = com.cbc_terminal_ballistics.debug.ShellHitDebug.active();
+        Entity nearEntity = null;
+        double nearDist = Double.POSITIVE_INFINITY;
+        if (dbg) {
+            for (Entity e : ContraptionCompat.findNearbyContraptionEntities(self.level(), self.position(), self.position())) {
+                double d = ContraptionCompat.nearestBlockDistance(e, self.position(), self.position().add(self.getDeltaMovement()));
+                if (d < nearDist) {
+                    nearDist = d;
+                    nearEntity = e;
+                }
+            }
+            if (nearDist > 8.0) dbg = false;
+        }
+
+        if (!TBConfig.HIT_CREATE_CONTRAPTIONS.get()) {
             ctb$pendingContraptionState = null;
+            if (dbg) {
+                com.cbc_terminal_ballistics.debug.ShellHitDebug.record(self, "OFF",
+                    "hitCreateContraptions is disabled", self.position());
+            }
             return original;
         }
 
@@ -131,6 +152,13 @@ public abstract class AbstractCannonProjectileContraptionMixin {
             ContraptionCompat.ContraptionHit hit = ContraptionCompat.raycast(self.level(), from, to, ctb$sourceContraption);
             if (hit == null) {
                 ctb$pendingContraptionState = null;
+                if (dbg && nearEntity != null) {
+                    com.cbc_terminal_ballistics.debug.ShellHitDebug.record(self, "MISS",
+                        String.format("ray found no contraption cell (nearest %.2f) %s%s",
+                            nearDist, ContraptionCompat.debugRayInfo(nearEntity, from, to),
+                            ctb$sourceContraption != null ? " [self-hit guard active]" : ""),
+                        self.position());
+                }
                 return original;
             }
 
@@ -142,6 +170,13 @@ public abstract class AbstractCannonProjectileContraptionMixin {
             if (original != null && original.getType() != net.minecraft.world.phys.HitResult.Type.MISS) {
                 if (from.distanceToSqr(hit.hitLocation()) > from.distanceToSqr(original.getLocation())) {
                     ctb$pendingContraptionState = null;
+                    if (dbg) {
+                        com.cbc_terminal_ballistics.debug.ShellHitDebug.record(self, "SKIP",
+                            String.format("vanilla world block was nearer (%.2f vs %.2f): %s",
+                                Math.sqrt(from.distanceToSqr(original.getLocation())),
+                                Math.sqrt(from.distanceToSqr(hit.hitLocation())), original.getType()),
+                            hit.hitLocation());
+                    }
                     return original;
                 }
             }
@@ -155,6 +190,10 @@ public abstract class AbstractCannonProjectileContraptionMixin {
                 && hit.entity().getUUID().equals(ctb$lastCellEntity)
                 && hit.localPos().equals(ctb$lastCellPos)) {
                 ctb$pendingContraptionState = null;
+                if (dbg) {
+                    com.cbc_terminal_ballistics.debug.ShellHitDebug.record(self, "SKIP",
+                        "same cell already consumed this tick: " + hit.localPos(), hit.hitLocation());
+                }
                 return original;
             }
             ctb$lastCellEntity = hit.entity() != null ? hit.entity().getUUID() : null;
@@ -187,6 +226,9 @@ public abstract class AbstractCannonProjectileContraptionMixin {
         if (ctb$pendingContraptionState != null) {
             BlockState state = ctb$pendingContraptionState;
             ctb$pendingContraptionState = null;
+            if (com.cbc_terminal_ballistics.debug.ShellHitDebug.active()) {
+                com.cbc_terminal_ballistics.debug.ShellHitDebug.markSubstituted();
+            }
             return state;
         }
         return original;

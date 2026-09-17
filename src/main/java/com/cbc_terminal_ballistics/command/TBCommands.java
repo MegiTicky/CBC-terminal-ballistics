@@ -82,6 +82,10 @@ public final class TBCommands {
                 .executes(ctx -> setTrace(ctx.getSource(), 10))
                 .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
                     .executes(ctx -> setTrace(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "seconds")))))
+            .then(Commands.literal("shelldebug")
+                .executes(ctx -> shellDebug(ctx.getSource(), 20))
+                .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 120))
+                    .executes(ctx -> shellDebug(ctx.getSource(), IntegerArgumentType.getInteger(ctx, "seconds")))))
             .then(Commands.literal("hitcam")
                 .executes(ctx -> hitcamReplay(ctx.getSource()))
                 .then(Commands.literal("stop").executes(ctx -> hitcamStop(ctx.getSource()))))
@@ -470,6 +474,19 @@ public final class TBCommands {
         com.cbc_terminal_ballistics.util.ContraptionCompat.setTraceSeconds(seconds);
         source.sendSuccess(() -> Component.literal(String.format(
             "Contraption raycast trace on for %ds — fire at the contraption, then check the log for [ctb][trace] lines.", seconds)), false);
+        return 1;
+    }
+
+    private static int shellDebug(CommandSourceStack source, int seconds) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) {
+            source.sendFailure(Component.literal("Players only."));
+            return 0;
+        }
+        com.cbc_terminal_ballistics.debug.ShellHitDebug.toggle(player, seconds);
+        source.sendSuccess(() -> Component.literal(String.format(
+            "Shell-hit debug overlay on for %ds: every shell passing within 8 blocks of a contraption gets a marker "
+                + "(green = processed outcome, orange = skipped, red = missed, yellow = jammed) and a HUD line naming the reason.", seconds)), false);
         return 1;
     }
 

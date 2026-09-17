@@ -97,6 +97,22 @@ public final class TBImpactService {
     }
 
     public static Object calculate(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
+        boolean substituted = com.cbc_terminal_ballistics.debug.ShellHitDebug.consumeSubstituted();
+        Object result = calculateInner(projectile, projectileContext, state, hit, autocannonHint);
+        if (substituted) {
+            // This impact was a substituted contraption hit — report the outcome
+            // and whether the damage actually anchored to the contraption cell.
+            com.cbc_terminal_ballistics.debug.ShellHitDebug.record(projectile,
+                "OUTCOME " + com.cbc_terminal_ballistics.debug.ShellHitDebug.outcomeOf(result),
+                ContraptionCompat.matchedContraptionHit(hit.getLocation()) != null
+                    ? "anchored to contraption cell " + hit.getBlockPos().toShortString()
+                    : "UNANCHORED - damage did not attach to the contraption cell",
+                hit.getLocation());
+        }
+        return result;
+    }
+
+    private static Object calculateInner(Entity projectile, Object projectileContext, BlockState state, BlockHitResult hit, boolean autocannonHint) {
         if (!TBConfig.ENABLED.get()) return null;
         if (IgnoredBlockManager.INSTANCE.isIgnored(state)) {
             // Ignored blocks (data-driven list) are treated as if they do not exist. The clip
@@ -124,6 +140,11 @@ public final class TBImpactService {
                         CBCTerminalBallistics.LOGGER.warn(
                             "[CTB] projectile {} jammed re-impacting {} at {} for {} ticks; terminating",
                             projectile.getType(), state.getBlock(), pos, jam.count);
+                    }
+                    if (com.cbc_terminal_ballistics.debug.ShellHitDebug.active()) {
+                        com.cbc_terminal_ballistics.debug.ShellHitDebug.record(projectile, "JAM",
+                            "same impact x" + jam.count + " on " + state.getBlock() + " -> terminated as STOP",
+                            projectile.position());
                     }
                     return CBCReflect.newImpactResult("STOP", true);
                 }
