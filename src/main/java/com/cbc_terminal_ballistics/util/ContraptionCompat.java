@@ -386,6 +386,8 @@ public final class ContraptionCompat {
             if (best != null) {
                 lastHitLocation = best.hitLocation();
                 lastHitNormal = best.trueNormal();
+                lastHitEntity = best.entity();
+                lastHitLocalPos = best.localPos();
                 diagnoseOnce(best);
             }
             return best;
@@ -394,6 +396,24 @@ public final class ContraptionCompat {
             return null;
         }
     }
+
+    // Exact identity of the most recent contraption raycast hit (entity + local
+    // cell), matched by hit-location proximity in TBImpactService. Re-deriving the
+    // local cell from the world-snapped hit BlockPos loses precision on rotated or
+    // moving contraptions (the back-mapped center can cross into a neighboring
+    // cell), which anchored damage to the wrong place or nowhere.
+    private static Entity lastHitEntity;
+    private static BlockPos lastHitLocalPos;
+
+    /** The exact entity + local cell of a contraption hit at the given location, or null. */
+    @Nullable
+    public static MatchedContraptionHit matchedContraptionHit(Vec3 hitLocation) {
+        if (lastHitEntity == null || lastHitLocalPos == null || lastHitLocation == null) return null;
+        if (lastHitLocation.distanceToSqr(hitLocation) > 1.0e-6) return null;
+        return new MatchedContraptionHit(lastHitEntity, lastHitLocalPos);
+    }
+
+    public record MatchedContraptionHit(Entity entity, BlockPos localPos) {}
 
     // One-shot per-entity resolution report (INFO): makes the first shell contact
     // with any contraption diagnosable in the default log level — which path
