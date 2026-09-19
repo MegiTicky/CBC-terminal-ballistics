@@ -1343,6 +1343,12 @@ public final class ClientTerminalView {
             anchorCenter = view.spalls().get(0).origin();
         } else if (view.blast() != null) {
             anchorCenter = view.blast().pos();
+        } else if (!view.entities().isEmpty()) {
+            // Entity/critical-only sessions (fizzle x-ray): without this the
+            // camera would center on world origin.
+            anchorCenter = view.entities().get(0).pos();
+        } else if (!view.criticals().isEmpty()) {
+            anchorCenter = view.criticals().get(0).pos();
         } else {
             anchorCenter = Vec3.ZERO;
         }
