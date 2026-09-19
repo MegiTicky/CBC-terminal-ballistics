@@ -1248,7 +1248,10 @@ public final class TerminalBallisticsRecorder {
         int totalSpallFragments = 0;
         for (ClientboundTerminalBallisticsPacket.Spall cone : spalls) totalSpallFragments += cone.fragments();
         String summary = buildSummary(session);
-        Vec3 plate0 = plates.isEmpty() ? blast.pos() : plates.get(0).pos();
+        // Entity/critical-only sessions (fizzle x-ray) dispatch with no plates
+        // and no blast — plate0 is debug-log-only, so fall through to ZERO.
+        Vec3 plate0 = !plates.isEmpty() ? plates.get(0).pos()
+            : blast != null ? blast.pos() : Vec3.ZERO;
         CBCTerminalBallistics.LOGGER.debug(
             "[CTB-HITCAM] dispatch shell={} tick={} anchor={} pathPts={} plates={} spalls={} spallFragments={} entities={} criticals={} plate0=({},{},{}) blast={} summary=\"{}\"",
             projectile.getId(), projectile.tickCount,
