@@ -34,7 +34,7 @@ public final class SpallBounce {
     private static final double SKIM_GRAZE = 0.92D;
     private static final double SKIM_RETENTION_PENALTY = 0.5D;
     private static final double BODY_ENERGY_BLEED = 0.6D;
-    private static final double MAX_RICOCHET_PROBABILITY = 0.9D;
+    private static final double MAX_RICOCHET_PROBABILITY = 0.95D;
     private static final double RICOCHET_JITTER_DEGREES = 12.0D;
 
     /**
@@ -73,15 +73,19 @@ public final class SpallBounce {
     }
 
     /**
-     * @param fragments  fragment count (damage cones) or display-ray count
-     * @param jitter     0 for the deterministic display spiral
-     * @param sweepEntities false for display cones
+     * @param fragments       fragment count (damage cones) or display-ray count
+     * @param ricochetChance  scales the whole roll; a head-on strike rolls at
+     *                        {@code headOnFraction} of it, a perfect graze at 100%
+     * @param headOnFraction  base roll fraction for head-on strikes (shatter/splash)
+     * @param jitter          0 for the deterministic display spiral
+     * @param sweepEntities   false for display cones
      */
     public static Result simulate(ServerLevel level, Entity projectile,
                                   @Nullable ContraptionCompat.ContraptionSnapshot contraption,
                                   Vec3 origin, Vec3 coneDir, double coneCos, int fragments, double range,
                                   @Nullable List<LivingEntity> candidates, BlockStopHandler handler,
-                                  int maxBounces, double ricochetChance, double retentionMin, double retentionMax,
+                                  int maxBounces, double ricochetChance, double headOnFraction,
+                                  double retentionMin, double retentionMax,
                                   double energyFloor, double entityInflate, int maxSegments,
                                   double jitter, boolean sweepEntities, RandomSource random) {
         Result result = new Result();
@@ -171,12 +175,15 @@ public final class SpallBounce {
                 double dot = Math.abs(dir.dot(normal));
                 double graze = 1.0D - dot;
                 boolean skim = graze >= SKIM_GRAZE;
-                // Linear graze shaping: spall cones aim along the shell axis, so
-                // most compartment strikes land at small-to-moderate graze — a
-                // steeper exponent made ricochets nearly vanish there.
+                // Linear graze shaping with a head-on base rate: spall cones aim
+                // along the shell axis, so most compartment strikes land
+                // near-head-on and a pure graze-proportional roll makes
+                // ricochets invisible. The base fraction models fragment
+                // shatter/splash off hard surfaces as a deflected ray.
                 double probability = skim
                     ? 1.0D
-                    : Math.min(ricochetChance * graze * ricochetFactor, MAX_RICOCHET_PROBABILITY);
+                    : Math.min(ricochetChance * (headOnFraction + (1.0D - headOnFraction) * graze) * ricochetFactor,
+                        MAX_RICOCHET_PROBABILITY);
                 if (probability <= 0.0D) break;
                 if (random.nextDouble() >= probability) break;
                 result.ricochets++;

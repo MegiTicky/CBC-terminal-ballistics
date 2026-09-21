@@ -1145,6 +1145,7 @@ public final class TBImpactService {
         double spallDamageScale = TBConfig.SPALL_INTEGRITY_DAMAGE_SCALE.get();
         int maxBounces = TBConfig.SPALL_MAX_BOUNCES.get();
         double ricochetChance = TBConfig.spallRicochetChance();
+        double headOnFraction = TBConfig.SPALL_RICOCHET_HEAD_ON.get();
         double retentionMin = TBConfig.SPALL_BOUNCE_RETENTION_MIN.get();
         double retentionMax = TBConfig.SPALL_BOUNCE_RETENTION_MAX.get();
         double energyFloor = TBConfig.SPALL_ENERGY_FLOOR.get();
@@ -1156,7 +1157,7 @@ public final class TBImpactService {
             spallDeflectionFactor(lvl, wp, st);
         int displayRays = Math.min(12, Math.max(3, fragments / 2));
         SpallBounce.Result display = SpallBounce.simulate(level, projectile, contraption, origin, dir, coneCos,
-            displayRays, range, null, displayHandler, maxBounces, ricochetChance, retentionMin, retentionMax,
+            displayRays, range, null, displayHandler, maxBounces, ricochetChance, headOnFraction, retentionMin, retentionMax,
             energyFloor, entityInflate, maxSegments, 0.0D, false, level.random);
         TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
             display.polyline.points, display.polyline.rayPointCounts);
@@ -1204,7 +1205,7 @@ public final class TBImpactService {
             return spallDeflectionFactor(lvl, wp, st);
         };
         SpallBounce.Result sim = SpallBounce.simulate(level, projectile, contraption, origin, dir, coneCos,
-            fragments, range, candidates, damageHandler, maxBounces, ricochetChance, retentionMin, retentionMax,
+            fragments, range, candidates, damageHandler, maxBounces, ricochetChance, headOnFraction, retentionMin, retentionMax,
             energyFloor, entityInflate, maxSegments, 1.0D, true, level.random);
 
         double pool = Mth.clamp(massRatio * 15.0 + fragments * 1.15, 4.0, 48.0);
