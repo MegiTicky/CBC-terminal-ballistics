@@ -39,6 +39,11 @@ public final class ClientPacketHandlers {
         ClientSpallConeVisuals.accept(packet);
     }
 
+    public static void handleSpallPath(com.cbc_terminal_ballistics.network.ClientboundSpallPathPacket packet) {
+        if (Minecraft.getInstance().level == null) return;
+        ClientSpallConeVisuals.acceptPath(packet.points(), packet.rayPointCounts(), packet.renderTicks());
+    }
+
     public static void handleProjectileSlowdown(ClientboundProjectileSlowdownPacket packet) {
         TBProjectileSlowdown.setClientFactor(packet.factor());
     }
