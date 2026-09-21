@@ -320,6 +320,8 @@ public final class TBImpactService {
             int spallFragments = 0;
             double spallDamageModifier = 0.0;
             String spallReason = "not_checked";
+            int spallRicochets = 0;
+            int spallCrewHits = 0;
             boolean temporaryPassagePending = false;
             boolean blockBreakPending = false;
             if (level instanceof ServerLevel server) {
@@ -359,7 +361,10 @@ public final class TBImpactService {
                             isContraption, contraptionEntity, contraptionLocalPos);
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
                         double massAfter = Math.max(0.0, mass - massLoss);
-                        spallFragments = spawnSpall(server, projectile, spallOrigin, velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness, contraptionEntity);
+                        SpallResult spall = spawnSpall(server, projectile, spallOrigin, velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness, contraptionEntity);
+                        spallFragments = spall.fragments();
+                        spallRicochets = spall.ricochets();
+                        spallCrewHits = spall.crewHits();
                         spallReason = spallFragments > 0 ? "spawned" : "zero_fragments";
                     } else {
                         spallReason = "not_ap_style";
@@ -374,15 +379,18 @@ public final class TBImpactService {
                     if (projectileShatter && ProjectileClassifier.canSpall(projectile)) {
                         double massAfter = Math.max(0.0, mass * 0.20);
                         spallDamageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
-                        spallFragments = spawnSpall(server, projectile, hit.getLocation().add(velDir.scale(0.08)),
+                        SpallResult spall = spawnSpall(server, projectile, hit.getLocation().add(velDir.scale(0.08)),
                             velDir, velMag, caliber, mass, massAfter, material, baseArmorToughness, contraptionEntity);
+                        spallFragments = spall.fragments();
+                        spallRicochets = spall.ricochets();
+                        spallCrewHits = spall.crewHits();
                         spallReason = spallFragments > 0 ? "shattered" : "shattered_no_fragments";
                     } else {
                         spallReason = integrityBreak ? "stopped_integrity_break_no_spall" : "stopped_no_spall";
                     }
                 }
                 LAST_IMPACTS.put(server.dimension().location().hashCode() * 31L + pos.asLong(),
-                    new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason, shatterDecision.chance(), projectileShatter));
+                    new LastImpact(outcome, appliedDamage, threshold, caliber, material, mass, Math.max(0.0, mass - massLoss), velMag, incidence, armorToughness, armorHardness, effectiveToughness, attack, perforationResistance, penetrationRatio, massLoss, spallFragments, spallDamageModifier, spallReason, spallRicochets, spallCrewHits, shatterDecision.chance(), projectileShatter));
                 if (tbArmorHit) {
                     TerminalBallisticsRecorder.onPlateImpact(projectile, Vec3.atCenterOf(pos), outcome,
                         appliedDamage, baseArmorToughness, blockBreakPending, net.minecraft.world.level.block.Block.getId(state),
@@ -1078,9 +1086,13 @@ public final class TBImpactService {
         return tMax;
     }
 
-    private static int spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness, Entity contraptionEntity) {        double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
+    /** Outcome of one spall cone, for the LastImpact inspection record. */
+    private record SpallResult(int fragments, int ricochets, int crewHits) {}
+
+    private static SpallResult spawnSpall(ServerLevel level, Entity projectile, Vec3 origin, Vec3 dir, double velMag, TBCaliber caliber, double massBefore, double massAfter, MaterialStats material, double armorToughness, Entity contraptionEntity) {
+        double countMultiplier = TBConfig.GLOBAL_SPALL_MULTIPLIER.get() * material.spallMultiplier() * caliber.spallScale * ProjectileClassifier.shellSpallCountModifier(projectile);
         int fragments = Mth.clamp((int) Math.round(armorToughness * countMultiplier), 0, TBConfig.MAX_SPALL_FRAGMENTS.get());
-        if (fragments <= 0) return 0;
+        if (fragments <= 0) return new SpallResult(0, 0, 0);
         double massRatio = massBefore > 0.0 ? massAfter / massBefore : 0.0;
         double range = Mth.clamp(5.0 + massRatio * 12.0 + caliber.ordinal() * 1.5, 5.0, 24.0);
 
@@ -1106,22 +1118,154 @@ public final class TBImpactService {
         double combined = velocityFactor * 0.15 + massRatioFactor * 0.25 + toughnessFactor * 0.25 + caliberFactor * 0.15 + shellTypeFactor * 0.20;
         double coneAngleDeg = Mth.lerp(combined, minAngle, maxAngle);
         double coneCos = Math.cos(Math.toRadians(coneAngleDeg));
-        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
-            computeVisualRayStops(level, projectile, contraption, origin, dir, coneCos, range, fragments));
-
-        AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
-        Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
         double damageModifier = ProjectileClassifier.shellSpallDamageModifier(projectile);
 
-        java.util.List<LivingEntity> candidates = level.getEntitiesOfClass(LivingEntity.class, box, e -> e.isAlive() && e != owner);
-        Map<LivingEntity, Integer> rayHits = new HashMap<>();
+        if (TBConfig.SPALL_RICOCHET.get()) {
+            return spawnBouncingSpall(level, projectile, contraption, origin, dir, coneCos, fragments, range,
+                massRatio, caliber, damageModifier);
+        }
+        return spawnLegacySpall(level, projectile, contraption, origin, dir, coneCos, fragments, range,
+            massRatio, caliber, damageModifier);
+    }
+
+    /**
+     * Bouncing spall: display rays run through the same simulator as the damage
+     * rays (deterministic spiral, surface classification only) so the terminal
+     * x-ray shows the real bounce geometry as polylines. Fragment strikes
+     * accumulate per entity; occlusion is physical — a fragment dies on the
+     * wall it embeds in, so interior structure stops shielding crew only where
+     * it actually stops rays. The reduced cone pass below is a spray-assurance
+     * floor for exposed entities no ray happened to touch.
+     */
+    private static SpallResult spawnBouncingSpall(ServerLevel level, Entity projectile,
+                                                  ContraptionCompat.ContraptionSnapshot contraption,
+                                                  Vec3 origin, Vec3 dir, double coneCos, int fragments, double range,
+                                                  double massRatio, TBCaliber caliber, double damageModifier) {
+        double spallToughnessThreshold = TBConfig.SPALL_INTEGRITY_DAMAGE_TOUGHNESS_THRESHOLD.get();
+        double spallDamageScale = TBConfig.SPALL_INTEGRITY_DAMAGE_SCALE.get();
+        int maxBounces = TBConfig.SPALL_MAX_BOUNCES.get();
+        double ricochetChance = TBConfig.SPALL_RICOCHET_CHANCE.get();
+        double retentionMin = TBConfig.SPALL_BOUNCE_RETENTION_MIN.get();
+        double retentionMax = TBConfig.SPALL_BOUNCE_RETENTION_MAX.get();
+        double energyFloor = TBConfig.SPALL_ENERGY_FLOOR.get();
+        double entityInflate = TBConfig.SPALL_ENTITY_HIT_INFLATE.get();
+        int maxSegments = TBConfig.SPALL_MAX_SEGMENTS_PER_IMPACT.get();
+        boolean visualOriginInsideArmor = isCatchingArmorAt(level, origin);
+
+        SpallBounce.BlockStopHandler displayHandler = (lvl, proj, wp, st, hp, n, energy) ->
+            localEffectiveToughness(lvl, st, wp) > spallToughnessThreshold ? -1.0D : surfaceRicochetFactor(lvl, wp, st);
+        int displayRays = Math.min(12, Math.max(3, fragments / 2));
+        SpallBounce.Result display = SpallBounce.simulate(level, projectile, contraption, origin, dir, coneCos,
+            displayRays, range, null, displayHandler, maxBounces, ricochetChance, retentionMin, retentionMax,
+            energyFloor, entityInflate, maxSegments, 0.0D, false, level.random);
+        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
+            display.polyline.points, display.polyline.rayPointCounts);
+
+        if (!visualOriginInsideArmor) {
+            int visualClearRays = 0;
+            double visualRange = 0.0D;
+            int pointOffset = 0;
+            for (int i = 0; i < displayRays; i++) {
+                double len = range;
+                if (display.polyline.rayPointCounts[i] >= 2) {
+                    int o = (pointOffset + 1) * 3;
+                    Vec3 firstStop = new Vec3(display.polyline.points[o], display.polyline.points[o + 1], display.polyline.points[o + 2]);
+                    len = firstStop.distanceTo(origin);
+                }
+                if (len >= MIN_SPALL_VISUAL_CLEARANCE) {
+                    visualClearRays++;
+                    visualRange = Math.max(visualRange, Math.min(range, len));
+                }
+                pointOffset += display.polyline.rayPointCounts[i];
+            }
+            if (visualClearRays > 0 && visualRange >= MIN_SPALL_VISUAL_CLEARANCE) {
+                sendSpallCone(level, projectile, origin, dir, coneCos, visualRange, Math.min(fragments, visualClearRays), fragments, massRatio, caliber);
+            }
+        }
+
+        Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
+        // Sphere around the origin: ricochets can leave the launch cone entirely.
+        java.util.List<LivingEntity> candidates = level.getEntitiesOfClass(LivingEntity.class,
+            new AABB(origin, origin).inflate(range + 1.0), e -> e.isAlive() && e != owner);
+
+        SpallBounce.BlockStopHandler damageHandler = (lvl, proj, wp, st, hp, n, energy) -> {
+            if (localEffectiveToughness(lvl, st, wp) > spallToughnessThreshold) return -1.0D;
+            boolean broken = applyFragmentBlockDamage(lvl, proj, caliber, fragments, massRatio, damageModifier, energy,
+                wp, st, spallToughnessThreshold, spallDamageScale);
+            TerminalBallisticsRecorder.onSpallBlock(proj, Vec3.atCenterOf(wp), broken,
+                isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
+            if (broken) {
+                TerminalBallisticsRecorder.onCriticalBlock(proj, Vec3.atCenterOf(wp), st);
+            }
+            return surfaceRicochetFactor(lvl, wp, st);
+        };
+        SpallBounce.Result sim = SpallBounce.simulate(level, projectile, contraption, origin, dir, coneCos,
+            fragments, range, candidates, damageHandler, maxBounces, ricochetChance, retentionMin, retentionMax,
+            energyFloor, entityInflate, maxSegments, 1.0D, true, level.random);
+
+        double pool = Mth.clamp(massRatio * 15.0 + fragments * 1.15, 4.0, 48.0);
+        Map<LivingEntity, Double> totals = new HashMap<>();
+        for (SpallBounce.EntityStrike strike : sim.strikes) {
+            double dmg = pool * 0.30D * strike.energy() / Math.sqrt(1.0D + strike.distFromOrigin());
+            totals.merge(strike.entity(), dmg, Double::sum);
+        }
+        // Spray assurance: an in-cone entity with clear line of sight stands in
+        // the fragment spray even when no sampled ray crossed its AABB — grant
+        // reduced exposure damage instead of the legacy full cone pass.
+        for (LivingEntity entity : candidates) {
+            if (totals.containsKey(entity)) continue;
+            Vec3 to = entity.getEyePosition().subtract(origin);
+            double dist = Math.max(0.5, to.length());
+            double cone = to.normalize().dot(dir);
+            if (cone < coneCos) continue;
+            Vec3 eye = entity.getEyePosition();
+            double eyeDistSqr = eye.distanceToSqr(origin);
+            HitResult occlusion = level.clip(new ClipContext(origin, eye, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, projectile));
+            double occlusionDistSqr = occlusion.getType() == HitResult.Type.MISS ? Double.POSITIVE_INFINITY : occlusion.getLocation().distanceToSqr(origin);
+            // Contraption hull blocks occlude spall lethality even though vanilla clip misses them.
+            if (contraption != null) {
+                double hullDist = contraption.rayDistance(origin, eye);
+                occlusionDistSqr = Math.min(occlusionDistSqr, hullDist * hullDist);
+            }
+            if (occlusionDistSqr + 0.25 < eyeDistSqr) continue;
+            totals.put(entity, pool * 0.25D * cone * cone);
+        }
+        int crewHits = 0;
+        for (Map.Entry<LivingEntity, Double> entry : totals.entrySet()) {
+            float damage = (float) (Mth.clamp(entry.getValue(), 4.0, 48.0) * damageModifier);
+            // Attribute the kill to the shell so LivingDeathEvent carries the
+            // projectile as direct entity (generic() has none and crew-kill
+            // criticals would never fire).
+            entry.getKey().hurt(level.damageSources().mobProjectile(projectile, null), damage);
+            TerminalBallisticsRecorder.onSpallEntityHit(projectile, entry.getKey(), damage);
+            crewHits++;
+        }
+        return new SpallResult(fragments, sim.ricochets, crewHits);
+    }
+
+    /** Legacy single-ray spall, preserved verbatim behind spallRicochet=false. */
+    private static SpallResult spawnLegacySpall(ServerLevel level, Entity projectile,
+                                                ContraptionCompat.ContraptionSnapshot contraption,
+                                                Vec3 origin, Vec3 dir, double coneCos, int fragments, double range,
+                                                double massRatio, TBCaliber caliber, double damageModifier) {
         double spallToughnessThreshold = TBConfig.SPALL_INTEGRITY_DAMAGE_TOUGHNESS_THRESHOLD.get();
         double spallDamageScale = TBConfig.SPALL_INTEGRITY_DAMAGE_SCALE.get();
         boolean visualOriginInsideArmor = isCatchingArmorAt(level, origin);
         int visualClearRays = 0;
         double visualRange = 0.0D;
+        // Legacy rays terminate at their first blocking surface; serialize that
+        // as a two-point polyline so the x-ray renderer stays single-path.
+        float[] stops = computeVisualRayStops(level, projectile, contraption, origin, dir, coneCos, range, fragments);
+        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
+            polylinePointsFromStops(origin, dir, coneCos, stops), polylineCountsFromStops(stops));
+
+        AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
+        Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;
+
+        java.util.List<LivingEntity> candidates = level.getEntitiesOfClass(LivingEntity.class, box, e -> e.isAlive() && e != owner);
+        Map<LivingEntity, Integer> rayHits = new HashMap<>();
         for (int i = 0; i < fragments; i++) {
-            Vec3 fragDir = fragmentDirection(dir, i, fragments, coneCos, level.random.nextDouble());
+            Vec3 fragDir = SpallBounce.fragmentDirection(dir, i, fragments, coneCos, level.random.nextDouble());
             Vec3 end = origin.add(fragDir.scale(range));
             HitResult blockRay = level.clip(new ClipContext(origin, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, projectile));
             double blockDistSqr = blockRay.getType() == HitResult.Type.MISS ? Double.POSITIVE_INFINITY : blockRay.getLocation().distanceToSqr(origin);
@@ -1148,7 +1292,7 @@ public final class TBImpactService {
             if (contraptionHit != null && contraptionDistSqr <= blockDistSqr) {
                 // Fragment stopped by a contraption hull block: integrity damage accumulates,
                 // but the block itself is never removed (it lives inside the entity).
-                boolean broken = applyFragmentBlockDamage(level, projectile, caliber, fragments, massRatio, damageModifier,
+                boolean broken = applyFragmentBlockDamage(level, projectile, caliber, fragments, massRatio, damageModifier, 1.0,
                     contraptionHit.worldPos(), contraptionHit.state(), spallToughnessThreshold, spallDamageScale);
                 TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(contraptionHit.worldPos()), broken,
                     isArmorLike(contraptionHit.state()) || isMetalLike(contraptionHit.state()) || isVehiclePanelLike(contraptionHit.state()));
@@ -1164,7 +1308,7 @@ public final class TBImpactService {
                     if (contraState != null) st = contraState;
                     else continue;
                 }
-                boolean broken = applyFragmentBlockDamage(level, projectile, caliber, fragments, massRatio, damageModifier,
+                boolean broken = applyFragmentBlockDamage(level, projectile, caliber, fragments, massRatio, damageModifier, 1.0,
                     bp, st, spallToughnessThreshold, spallDamageScale);
                 TerminalBallisticsRecorder.onSpallBlock(projectile, Vec3.atCenterOf(bp), broken,
                     isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
@@ -1179,6 +1323,7 @@ public final class TBImpactService {
 
         // Then apply cone lethality.  This keeps spall dangerous even when the finite ray sample does not
         // geometrically intersect a player's small AABB, while the LOS check still prevents damage through armor.
+        int crewHits = 0;
         for (LivingEntity entity : candidates) {
             Vec3 to = entity.getEyePosition().subtract(origin);
             double dist = Math.max(0.5, to.length());
@@ -1202,8 +1347,38 @@ public final class TBImpactService {
             // criticals would never fire).
             entity.hurt(level.damageSources().mobProjectile(projectile, null), damage);
             TerminalBallisticsRecorder.onSpallEntityHit(projectile, entity, damage);
+            crewHits++;
         }
-        return fragments;
+        return new SpallResult(fragments, 0, crewHits);
+    }
+
+    private static int[] polylineCountsFromStops(float[] stops) {
+        int[] counts = new int[stops.length];
+        java.util.Arrays.fill(counts, 2);
+        return counts;
+    }
+
+    private static float[] polylinePointsFromStops(Vec3 origin, Vec3 dir, double coneCos, float[] stops) {
+        float[] points = new float[stops.length * 6];
+        for (int i = 0; i < stops.length; i++) {
+            Vec3 rayDir = SpallBounce.fragmentDirection(dir, i, stops.length, coneCos, 0.0D);
+            Vec3 end = origin.add(rayDir.scale(stops[i]));
+            int o = i * 6;
+            points[o] = (float) origin.x;
+            points[o + 1] = (float) origin.y;
+            points[o + 2] = (float) origin.z;
+            points[o + 3] = (float) end.x;
+            points[o + 4] = (float) end.y;
+            points[o + 5] = (float) end.z;
+        }
+        return points;
+    }
+
+    /** METALLIC surfaces shed grazing fragments; softer GENERAL surfaces absorb more of them. */
+    private static double surfaceRicochetFactor(ServerLevel level, BlockPos bp, BlockState st) {
+        BlockState materialState = CopycatMaterialResolver.resolve(level, bp, st, null).orElse(st);
+        MaterialStats blockMaterial = MaterialManager.INSTANCE.get(materialState);
+        return blockMaterial.surface() == ImpactSurfaceType.METALLIC ? 1.0D : 0.6D;
     }
 
     /**
@@ -1228,9 +1403,11 @@ public final class TBImpactService {
      * contraption hull). The block is never set to air when it belongs to a
      * contraption; damage still accumulates and break sounds play.
      *
+     * @param energyScale remaining fragment energy fraction — ricochets hit softer
+     *                    than the first strike; legacy path passes 1.0
      * @return true when this fragment pushed the block past its integrity threshold.
      */
-    private static boolean applyFragmentBlockDamage(ServerLevel level, Entity projectile, TBCaliber caliber, int fragments, double massRatio, double damageModifier,
+    private static boolean applyFragmentBlockDamage(ServerLevel level, Entity projectile, TBCaliber caliber, int fragments, double massRatio, double damageModifier, double energyScale,
                                                  BlockPos bp, BlockState st, double spallToughnessThreshold, double spallDamageScale) {
         float speed = st.getDestroySpeed(level, bp);
         if (speed < 0) return false;
@@ -1239,7 +1416,7 @@ public final class TBImpactService {
         if (spallDamageScale > 0.0 && localArmor > 0.0) {
             double baseDamage = localArmor * caliberIntegrityWear(caliber) * spallDamageScale * damageModifier;
             double fragmentShare = Math.max(1.0, fragments / 8.0);
-            double fragmentDamage = baseDamage * massRatio / fragmentShare;
+            double fragmentDamage = baseDamage * massRatio * energyScale / fragmentShare;
             ArmorIntegritySavedData data = ArmorIntegritySavedData.get(level);
             data.addDamage(level, bp, st, fragmentDamage);
             BlockState materialState = CopycatMaterialResolver.resolve(level, bp, st, null).orElse(st);
@@ -1279,17 +1456,7 @@ public final class TBImpactService {
     }
 
     private static Vec3 fragmentDirection(Vec3 forward, int index, int count, double coneCos, double jitter) {
-        Vec3 f = forward.normalize();
-        Vec3 up = Math.abs(f.y) < 0.92 ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
-        Vec3 right = f.cross(up).normalize();
-        Vec3 orthoUp = right.cross(f).normalize();
-        double golden = Math.PI * (3.0 - Math.sqrt(5.0));
-        double t = (index + 0.5) / Math.max(1, count);
-        // Bias toward the center of the cone so targets directly behind the plate receive several fragments.
-        double cos = 1.0 - (1.0 - coneCos) * t * t;
-        double sin = Math.sqrt(Math.max(0.0, 1.0 - cos * cos));
-        double phi = index * golden + jitter * 0.35;
-        return f.scale(cos).add(right.scale(Math.cos(phi) * sin)).add(orthoUp.scale(Math.sin(phi) * sin)).normalize();
+        return SpallBounce.fragmentDirection(forward, index, count, coneCos, jitter);
     }
 
     private static double localEffectiveToughness(ServerLevel level, BlockState state, BlockPos pos) {
@@ -1402,6 +1569,7 @@ public final class TBImpactService {
                               double armorToughness, double armorHardness, double effectiveToughness,
                               double attack, double resistance, double penetrationRatio, double massLoss,
                               int spallFragments, double spallDamageModifier, String spallReason,
+                              int spallRicochets, int spallCrewHits,
                               double shatterChance, boolean shattered) {}
 
     private record ShatterDecision(double chance, boolean shattered) {}

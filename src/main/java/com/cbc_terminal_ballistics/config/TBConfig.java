@@ -28,6 +28,14 @@ public final class TBConfig {
     public static final ForgeConfigSpec.DoubleValue SPALL_CONE_VELOCITY_BASELINE;
     public static final ForgeConfigSpec.DoubleValue SPALL_CONE_MIN_ANGLE;
     public static final ForgeConfigSpec.DoubleValue SPALL_CONE_MAX_ANGLE;
+    public static final ForgeConfigSpec.BooleanValue SPALL_RICOCHET;
+    public static final ForgeConfigSpec.IntValue SPALL_MAX_BOUNCES;
+    public static final ForgeConfigSpec.DoubleValue SPALL_RICOCHET_CHANCE;
+    public static final ForgeConfigSpec.DoubleValue SPALL_BOUNCE_RETENTION_MIN;
+    public static final ForgeConfigSpec.DoubleValue SPALL_BOUNCE_RETENTION_MAX;
+    public static final ForgeConfigSpec.DoubleValue SPALL_ENERGY_FLOOR;
+    public static final ForgeConfigSpec.DoubleValue SPALL_ENTITY_HIT_INFLATE;
+    public static final ForgeConfigSpec.IntValue SPALL_MAX_SEGMENTS_PER_IMPACT;
 
     public static final ForgeConfigSpec.DoubleValue RICOCHET_MIN_TOUGHNESS;
     public static final ForgeConfigSpec.DoubleValue RICOCHET_TOUGHNESS_SCALE;
@@ -116,6 +124,14 @@ public final class TBConfig {
         SPALL_CONE_VELOCITY_BASELINE = server.comment("Velocity (m/s) at which spall cone is widest. Higher velocities produce narrower cones.").defineInRange("spallConeVelocityBaseline", 200.0, 50.0, 500.0);
         SPALL_CONE_MIN_ANGLE = server.comment("Minimum spall cone half-angle in degrees. Used for high-velocity focused penetrations.").defineInRange("spallConeMinAngle", 15.0, 5.0, 45.0);
         SPALL_CONE_MAX_ANGLE = server.comment("Maximum spall cone half-angle in degrees. Used for low-velocity oblique penetrations.").defineInRange("spallConeMaxAngle", 60.0, 30.0, 90.0);
+        SPALL_RICOCHET = server.comment("Fragment rays ricochet off surfaces with energy loss instead of dying at the first block. false restores the legacy single-ray spall.").define("spallRicochet", true);
+        SPALL_MAX_BOUNCES = server.comment("Maximum ricochets per spall fragment.").defineInRange("spallMaxBounces", 2, 0, 6);
+        SPALL_RICOCHET_CHANCE = server.comment("Scales the grazing ricochet roll for fragments. Grazing hits on metallic surfaces bounce most; head-on hits always embed.").defineInRange("spallRicochetChance", 0.55, 0.0, 1.0);
+        SPALL_BOUNCE_RETENTION_MIN = server.comment("Minimum fragment energy fraction kept after a head-on-ish ricochet.").defineInRange("spallBounceRetentionMin", 0.25, 0.05, 1.0);
+        SPALL_BOUNCE_RETENTION_MAX = server.comment("Maximum fragment energy fraction kept after a perfectly grazing ricochet.").defineInRange("spallBounceRetentionMax", 0.60, 0.05, 1.0);
+        SPALL_ENERGY_FLOOR = server.comment("Fragment dies once its remaining energy fraction drops below this.").defineInRange("spallEnergyFloor", 0.15, 0.01, 1.0);
+        SPALL_ENTITY_HIT_INFLATE = server.comment("AABB inflation for fragment-vs-entity sweeps. Larger values make fragments graze crew more reliably.").defineInRange("spallEntityHitInflate", 0.35, 0.0, 1.5);
+        SPALL_MAX_SEGMENTS_PER_IMPACT = server.comment("Hard cap on total fragment ray segments simulated per spall cone (performance bound).").defineInRange("spallMaxSegmentsPerImpact", 96, 16, 512);
         server.pop();
 
         server.push("ricochet");

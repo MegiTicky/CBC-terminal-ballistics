@@ -473,26 +473,44 @@ public final class ClientTerminalOverlay {
         Vec3 dir = ClientTerminalView.toWorldDir(spall.dir(), partialTick);
         if (dir.lengthSqr() < 1.0e-8D) return;
         dir = dir.normalize();
-        float[] rayStops = spall.rayStops();
+        int[] rayPointCounts = spall.rayPointCounts();
+        float[] polylinePoints = spall.polylinePoints();
         List<ClientboundTerminalBallisticsPacket.EntityHit> entityHits = actor.packet.entities();
 
-        // Deterministic golden-spiral cone sample, matching the server's spall shape.
-        int rays = Math.min(12, Math.max(3, spall.fragments() / 2));
-        double coneCos = Mth.clamp(spall.coneCos(), 0.05D, 0.999D);
-        for (int i = 0; i < rays; i++) {
-            Vec3 rayDir = fragmentDirection(dir, i, rays, coneCos);
-            double cap = Math.min(spall.range(), 6.0D) * (0.6D + 0.4D * (i % 3) / 2.0D);
-            double len = cap;
-            // Terminate at the geometry the server raycast for this exact ray.
-            if (rayStops != null && i < rayStops.length && rayStops[i] > 0.0F) {
-                len = Math.min(len, rayStops[i]);
+        // Display rays as recorded polylines: the server ran the same golden
+        // spiral through its bounce simulator, so every kink is a real
+        // ricochet and every endpoint a real embed. Segments appear in order
+        // as the cone front grows; a segment stops short at a crew hit.
+        if (rayPointCounts == null || polylinePoints == null || rayPointCounts.length == 0) return;
+        for (int i = 0, offset = 0; i < rayPointCounts.length; offset += rayPointCounts[i], i++) {
+            int pointCount = rayPointCounts[i];
+            if (pointCount < 2 || offset + pointCount > polylinePoints.length / 3) continue;
+            double capFactor = 0.6D + 0.4D * (i % 3) / 2.0D;
+            double totalLen = 0.0D;
+            for (int p = 1; p < pointCount; p++) {
+                totalLen += polylinePoint(polylinePoints, offset + p).distanceTo(polylinePoint(polylinePoints, offset + p - 1));
             }
-            // And at recorded entity hits (crew) along the ray.
-            len = clipRayToEntities(entityHits, origin, rayDir, len, partialTick);
-            len *= growth;
-            if (len < 0.05D) continue;
-            drawThickLine(buffer, ctx, origin, origin.add(rayDir.scale(len)), spallPx(), 1.0F, 0.62F, 0.1F,
-                tl.fade * 0.75F * (0.35F + 0.65F * growth));
+            double allowed = growth * Math.min(Math.min(spall.range(), 6.0D) * capFactor, totalLen);
+            if (allowed < 0.05D) continue;
+            Vec3 prev = ClientTerminalView.toWorld(polylinePoint(polylinePoints, offset), partialTick);
+            for (int p = 1; p < pointCount && allowed > 0.05D; p++) {
+                Vec3 next = ClientTerminalView.toWorld(polylinePoint(polylinePoints, offset + p), partialTick);
+                Vec3 segVec = next.subtract(prev);
+                double segLen = segVec.length();
+                if (segLen < 1.0e-6D) { prev = next; continue; }
+                Vec3 segDir = segVec.scale(1.0D / segLen);
+                double drawLen = Math.min(segLen, allowed);
+                double hitLen = clipSegmentToEntities(entityHits, prev, segDir, drawLen, partialTick);
+                boolean stoppedByEntity = hitLen < drawLen - 0.05D;
+                drawLen = Math.min(drawLen, hitLen);
+                if (drawLen > 0.05D) {
+                    drawThickLine(buffer, ctx, prev, prev.add(segDir.scale(drawLen)), spallPx(), 1.0F, 0.62F, 0.1F,
+                        tl.fade * 0.75F * (0.35F + 0.65F * growth));
+                }
+                if (stoppedByEntity) break;
+                allowed -= segLen;
+                prev = next;
+            }
         }
 
         // Spall-struck blocks: single billboard dots on the block surface facing
@@ -515,18 +533,22 @@ public final class ClientTerminalOverlay {
         }
     }
 
-    /** Shortens a display ray to the first recorded entity hit lying on it. */
-    private static double clipRayToEntities(List<ClientboundTerminalBallisticsPacket.EntityHit> entities,
-                                            Vec3 origin, Vec3 rayDir, double maxLen, float partialTick) {
+    /** Shortens a display segment to the first recorded entity hit lying on it. */
+    private static double clipSegmentToEntities(List<ClientboundTerminalBallisticsPacket.EntityHit> entities,
+                                                Vec3 segStart, Vec3 segDir, double maxLen, float partialTick) {
         double best = maxLen;
         for (ClientboundTerminalBallisticsPacket.EntityHit hit : entities) {
-            Vec3 rel = ClientTerminalView.toWorld(hit.pos(), partialTick).subtract(origin);
-            double along = rel.dot(rayDir);
+            Vec3 rel = ClientTerminalView.toWorld(hit.pos(), partialTick).subtract(segStart);
+            double along = rel.dot(segDir);
             if (along <= 0.1D || along >= best) continue;
             double perpSq = rel.lengthSqr() - along * along;
             if (perpSq < 0.45D * 0.45D) best = along;
         }
         return best;
+    }
+
+    private static Vec3 polylinePoint(float[] points, int index) {
+        return new Vec3(points[index * 3], points[index * 3 + 1], points[index * 3 + 2]);
     }
 
     private static void drawEntityHits(BufferBuilder buffer, Ctx ctx, ClientTerminalView.Actor actor,
@@ -670,19 +692,6 @@ public final class ClientTerminalOverlay {
             case "BOUNCE" -> BOUNCE_COLOR;
             default -> STOP_COLOR;
         };
-    }
-
-    private static Vec3 fragmentDirection(Vec3 forward, int index, int count, double coneCos) {
-        Vec3 f = forward.normalize();
-        Vec3 up = Math.abs(f.y) < 0.92D ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
-        Vec3 right = f.cross(up).normalize();
-        Vec3 orthoUp = right.cross(f).normalize();
-        double golden = Math.PI * (3.0D - Math.sqrt(5.0D));
-        double t = (index + 0.5D) / count;
-        double cos = 1.0D - (1.0D - coneCos) * t * t;
-        double sin = Math.sqrt(Math.max(0.0D, 1.0D - cos * cos));
-        double phi = index * golden;
-        return f.scale(cos).add(right.scale(Math.cos(phi) * sin)).add(orthoUp.scale(Math.sin(phi) * sin)).normalize();
     }
 
     private ClientTerminalOverlay() {}
