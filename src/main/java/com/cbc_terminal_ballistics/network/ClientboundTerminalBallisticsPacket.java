@@ -52,13 +52,15 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
     public record SpallBlock(Vec3 pos, boolean broken, boolean armorLike) {}
 
     /**
-     * {@code rayStops} holds the display-ray stop distances the server raycast
-     * for the client's deterministic cone sampling (absolute block distances;
-     * {@code >= range} means unobstructed), so drawn spall rays terminate at
-     * the geometry that actually stopped them.
+     * {@code polylinePoints} holds the display rays as polylines: a flat xyz
+     * triple array (world-space when encoded; anchor-local after finalize),
+     * split into rays by {@code rayPointCounts} (prefix order). Each ray runs
+     * origin → first surface → ricochet kink → … exactly as the server's
+     * bounce simulator drew it, so drawn rays terminate where fragments
+     * actually die. Legacy single-segment rays encode two points per ray.
      */
     public record Spall(Vec3 origin, Vec3 dir, double coneCos, double range, int fragments,
-                        List<SpallBlock> blocks, float[] rayStops) {}
+                        List<SpallBlock> blocks, float[] polylinePoints, int[] rayPointCounts) {}
 
     /**
      * How the packet's coordinates map back to the world. {@code CONTRAPTION}
@@ -154,10 +156,11 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
                 buf.writeBoolean(b.broken());
                 buf.writeBoolean(b.armorLike());
             }
-            float[] rayStops = spall.rayStops() == null ? new float[0] : spall.rayStops();
-            buf.writeVarInt(rayStops.length);
-            for (float stop : rayStops) {
-                buf.writeFloat(stop);
+            buf.writeVarIntArray(spall.rayPointCounts() == null ? new int[0] : spall.rayPointCounts());
+            float[] polyline = spall.polylinePoints() == null ? new float[0] : spall.polylinePoints();
+            buf.writeVarInt(polyline.length);
+            for (float point : polyline) {
+                buf.writeFloat(point);
             }
         }
         buf.writeVarInt(entities.size());
@@ -234,12 +237,13 @@ public record ClientboundTerminalBallisticsPacket(int projectileId, String entit
             for (int i = 0; i < blockCount; i++) {
                 blocks.add(new SpallBlock(readVec3(buf), buf.readBoolean(), buf.readBoolean()));
             }
-            int stopCount = buf.readVarInt();
-            float[] rayStops = new float[Math.min(stopCount, 64)];
-            for (int i = 0; i < rayStops.length; i++) {
-                rayStops[i] = buf.readFloat();
+            int[] rayPointCounts = buf.readVarIntArray(16);
+            int pointCount = buf.readVarInt();
+            float[] polylinePoints = new float[Math.min(pointCount, 384)];
+            for (int i = 0; i < polylinePoints.length; i++) {
+                polylinePoints[i] = buf.readFloat();
             }
-            spalls.add(new Spall(origin, dir, coneCos, range, fragments, blocks, rayStops));
+            spalls.add(new Spall(origin, dir, coneCos, range, fragments, blocks, polylinePoints, rayPointCounts));
         }
         int entityCount = buf.readVarInt();
         List<EntityHit> entities = new ArrayList<>(Math.min(entityCount, 32));

@@ -242,7 +242,7 @@ public final class TBCommands {
                 source.sendSuccess(() -> Component.literal(String.format("Last impact: %s %s damage %.2f / threshold %.2f", last.outcome(), last.caliber(), last.damage(), last.threshold())), false);
                 source.sendSuccess(() -> Component.literal(String.format("Physics: mass %.2f -> %.2f, vel %.2f m/s, incidence %.2f, massLoss %.2f", last.massBefore(), last.massAfter(), last.velocity() * 20.0D, last.incidence(), last.massLoss())), false);
                 source.sendSuccess(() -> Component.literal(String.format("Armor: CBC tough %.2f hard %.2f, effective %.2f, attack %.2f / resist %.2f = %.2f", last.armorToughness(), last.armorHardness(), last.effectiveToughness(), last.attack(), last.resistance(), last.penetrationRatio())), false);
-                source.sendSuccess(() -> Component.literal(String.format("Spall: %d fragments (%s)", last.spallFragments(), last.spallReason())), false);
+                source.sendSuccess(() -> Component.literal(String.format("Spall: %d fragments (%s), %d ricochets, %d crew hits", last.spallFragments(), last.spallReason(), last.spallRicochets(), last.spallCrewHits())), false);
                 source.sendSuccess(() -> Component.literal(String.format("Shatter: %.1f%% chance, %s", last.shatterChance() * 100.0D, last.shattered() ? "SHATTERED" : "embedded/stopped")), false);
             }
             return 1;

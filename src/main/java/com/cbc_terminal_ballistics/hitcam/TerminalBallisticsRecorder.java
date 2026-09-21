@@ -333,15 +333,25 @@ public final class TerminalBallisticsRecorder {
     }
 
     public static void onSpall(Entity projectile, Vec3 origin, Vec3 dir, double coneCos, double range,
-                               int fragments, float[] rayStops) {
+                               int fragments, float[] polylinePoints, int[] rayPointCounts) {
         if (!TBConfig.HITCAM_TERMINAL_VIEW.get()) return;
         Session session = SESSIONS.get(projectile.getUUID());
         if (session == null || fragments <= 0) return;
         session.lastWorldPos = normalizePoint(projectile, origin);
         if (session.spalls.size() < MAX_SPALL_CONES) {
+            // Polyline points pass through the same world normalization as the
+            // origin so VS shipyard-coordinate hits re-anchor correctly.
+            float[] points = polylinePoints == null ? new float[0] : polylinePoints;
+            float[] normalized = new float[points.length];
+            for (int i = 0; i + 2 < points.length; i += 3) {
+                Vec3 world = normalizePoint(projectile, new Vec3(points[i], points[i + 1], points[i + 2]));
+                normalized[i] = (float) world.x;
+                normalized[i + 1] = (float) world.y;
+                normalized[i + 2] = (float) world.z;
+            }
             session.spalls.add(new ClientboundTerminalBallisticsPacket.Spall(normalizePoint(projectile, origin),
                 dir, coneCos, range, fragments, new ArrayList<>(),
-                rayStops != null ? rayStops : new float[0]));
+                normalized, rayPointCounts != null ? rayPointCounts : new int[0]));
             session.spallBlocksPerCone.add(new ArrayList<>());
         }
         session.dataVersion++;
@@ -1177,9 +1187,19 @@ public final class TerminalBallisticsRecorder {
                 blocks.add(new ClientboundTerminalBallisticsPacket.SpallBlock(
                     frame.toItemLocal(block.pos()), block.broken(), block.armorLike()));
             }
+            // Polyline points join the origin/blocks in the anchor frame so the
+            // x-ray re-anchors them to the moving vehicle each frame.
+            float[] points = converted.polylinePoints();
+            float[] anchoredPoints = new float[points.length];
+            for (int pIdx = 0; pIdx + 2 < points.length; pIdx += 3) {
+                Vec3 local = frame.toItemLocal(new Vec3(points[pIdx], points[pIdx + 1], points[pIdx + 2]));
+                anchoredPoints[pIdx] = (float) local.x;
+                anchoredPoints[pIdx + 1] = (float) local.y;
+                anchoredPoints[pIdx + 2] = (float) local.z;
+            }
             spalls.add(new ClientboundTerminalBallisticsPacket.Spall(frame.toItemLocal(converted.origin()),
                 frame.toLocalDir(converted.dir()), converted.coneCos(), converted.range(),
-                converted.fragments(), blocks, converted.rayStops()));
+                converted.fragments(), blocks, anchoredPoints, converted.rayPointCounts()));
         }
 
         List<ClientboundTerminalBallisticsPacket.EntityHit> entities = new ArrayList<>(session.entities.size());
