@@ -124,7 +124,7 @@ public final class TBConfig {
         SPALL_CONE_MAX_ANGLE = server.comment("Maximum spall cone half-angle in degrees. Used for low-velocity oblique penetrations.").defineInRange("spallConeMaxAngle", 60.0, 30.0, 90.0);
         SPALL_RICOCHET = server.comment("Fragment rays ricochet off surfaces with energy loss instead of dying at the first block. false restores the legacy single-ray spall.").define("spallRicochet", true);
         SPALL_MAX_BOUNCES = server.comment("Maximum ricochets per spall fragment.").defineInRange("spallMaxBounces", 2, 0, 6);
-        SPALL_RICOCHET_CHANCE = server.comment("Scales the grazing ricochet roll for fragments. Grazing hits on metallic surfaces bounce most; head-on hits always embed.").defineInRange("spallRicochetChance", 0.55, 0.0, 1.0);
+        SPALL_RICOCHET_CHANCE = server.comment("Scales the grazing ricochet roll for fragments. Surfaces with a high spall_multiplier (steel-like, normalized to 1.0) deflect fragments most; soft materials absorb them; head-on hits always embed.").defineInRange("spallRicochetChance", 0.55, 0.0, 1.0);
         SPALL_BOUNCE_RETENTION_MIN = server.comment("Minimum fragment energy fraction kept after a head-on-ish ricochet.").defineInRange("spallBounceRetentionMin", 0.25, 0.05, 1.0);
         SPALL_BOUNCE_RETENTION_MAX = server.comment("Maximum fragment energy fraction kept after a perfectly grazing ricochet.").defineInRange("spallBounceRetentionMax", 0.60, 0.05, 1.0);
         SPALL_ENERGY_FLOOR = server.comment("Fragment dies once its remaining energy fraction drops below this.").defineInRange("spallEnergyFloor", 0.15, 0.01, 1.0);
