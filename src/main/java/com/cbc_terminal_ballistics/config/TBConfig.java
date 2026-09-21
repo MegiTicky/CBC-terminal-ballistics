@@ -36,6 +36,8 @@ public final class TBConfig {
     public static final ForgeConfigSpec.DoubleValue SPALL_ENERGY_FLOOR;
     public static final ForgeConfigSpec.DoubleValue SPALL_ENTITY_HIT_INFLATE;
     public static final ForgeConfigSpec.IntValue SPALL_MAX_SEGMENTS_PER_IMPACT;
+    public static final ForgeConfigSpec.IntValue SPALL_PATH_RENDER_TICKS;
+    public static final ForgeConfigSpec.DoubleValue SPALL_PATH_GOGGLE_RADIUS;
 
     public static final ForgeConfigSpec.DoubleValue RICOCHET_MIN_TOUGHNESS;
     public static final ForgeConfigSpec.DoubleValue RICOCHET_TOUGHNESS_SCALE;
@@ -132,6 +134,8 @@ public final class TBConfig {
         SPALL_ENERGY_FLOOR = server.comment("Fragment dies once its remaining energy fraction drops below this.").defineInRange("spallEnergyFloor", 0.15, 0.01, 1.0);
         SPALL_ENTITY_HIT_INFLATE = server.comment("AABB inflation for fragment-vs-entity sweeps. Larger values make fragments graze crew more reliably.").defineInRange("spallEntityHitInflate", 0.35, 0.0, 1.5);
         SPALL_MAX_SEGMENTS_PER_IMPACT = server.comment("Hard cap on total fragment ray segments simulated per spall cone (performance bound).").defineInRange("spallMaxSegmentsPerImpact", 96, 16, 512);
+        SPALL_PATH_RENDER_TICKS = server.comment("Right-clicking with ballistic goggles replays the stored spall path of a recent impact in-world for this many ticks. 0 disables the render and the recording.").defineInRange("spallPathRenderTicks", 200, 0, 1200);
+        SPALL_PATH_GOGGLE_RADIUS = server.comment("Max distance from the goggles user to the spall cone a right-click replays. 0 always replays the most recent spall in the dimension instead.").defineInRange("spallPathGoggleRadius", 64.0, 0.0, 256.0);
         server.pop();
 
         server.push("ricochet");

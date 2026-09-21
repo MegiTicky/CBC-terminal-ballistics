@@ -1160,6 +1160,7 @@ public final class TBImpactService {
             energyFloor, entityInflate, maxSegments, 0.0D, false, level.random);
         TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
             display.polyline.points, display.polyline.rayPointCounts);
+        SpallPathStore.record(level, origin, display.polyline.points, display.polyline.rayPointCounts);
 
         if (!visualOriginInsideArmor) {
             int visualClearRays = 0;
@@ -1259,8 +1260,10 @@ public final class TBImpactService {
         // Legacy rays terminate at their first blocking surface; serialize that
         // as a two-point polyline so the x-ray renderer stays single-path.
         float[] stops = computeVisualRayStops(level, projectile, contraption, origin, dir, coneCos, range, fragments);
-        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments,
-            polylinePointsFromStops(origin, dir, coneCos, stops), polylineCountsFromStops(stops));
+        float[] legacyPoints = polylinePointsFromStops(origin, dir, coneCos, stops);
+        int[] legacyCounts = polylineCountsFromStops(stops);
+        TerminalBallisticsRecorder.onSpall(projectile, origin, dir, coneCos, range, fragments, legacyPoints, legacyCounts);
+        SpallPathStore.record(level, origin, legacyPoints, legacyCounts);
 
         AABB box = new AABB(origin, origin.add(dir.scale(range))).inflate(range * 0.55 + 1.0);
         Entity owner = projectile instanceof Projectile proj ? proj.getOwner() : null;

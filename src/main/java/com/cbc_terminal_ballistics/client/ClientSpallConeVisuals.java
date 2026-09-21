@@ -25,6 +25,20 @@ import java.util.List;
 public final class ClientSpallConeVisuals {
     private static final int MAX_ACTIVE_STREAKS = 96;
     private static final List<Streak> STREAKS = new ArrayList<>();
+    private static final int MAX_ACTIVE_PATHS = 8;
+    private static final List<PathRender> PATHS = new ArrayList<>();
+    private static final int PATH_GROW_TICKS = 10;
+    private static final int PATH_FADE_TICKS = 40;
+
+    /** Goggle-triggered replay of a stored spall cone's display polylines. */
+    public static void acceptPath(float[] points, int[] rayPointCounts, int renderTicks) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null || points == null || rayPointCounts == null
+            || renderTicks <= 0 || points.length < 6 || rayPointCounts.length == 0) return;
+        PATHS.add(new PathRender(points, rayPointCounts, minecraft.level.getGameTime(), renderTicks));
+        int overflow = PATHS.size() - MAX_ACTIVE_PATHS;
+        if (overflow > 0) PATHS.subList(0, overflow).clear();
+    }
 
     public static void accept(ClientboundSpallConePacket packet) {
         Minecraft minecraft = Minecraft.getInstance();
@@ -72,6 +86,7 @@ public final class ClientSpallConeVisuals {
 
         long now = mc.level.getGameTime();
         STREAKS.removeIf(streak -> now - streak.startTick() >= streak.lifetimeTicks());
+        PATHS.removeIf(path -> now - path.startTick() >= path.renderTicks());
     }
 
     @SubscribeEvent
@@ -79,7 +94,7 @@ public final class ClientSpallConeVisuals {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
         if (com.cbc_terminal_ballistics.client.hitcam.ClientHitcamPiP.isRenderingPip()) return;
         Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null || mc.player == null || STREAKS.isEmpty()) return;
+        if (mc.level == null || mc.player == null || (STREAKS.isEmpty() && PATHS.isEmpty())) return;
 
         long now = mc.level.getGameTime();
         Vec3 camera = event.getCamera().getPosition();
@@ -99,7 +114,72 @@ public final class ClientSpallConeVisuals {
             renderStreak(buffer, matrix, streak, camera, age + event.getPartialTick());
         }
 
+        Iterator<PathRender> pathIterator = PATHS.iterator();
+        while (pathIterator.hasNext()) {
+            PathRender path = pathIterator.next();
+            long age = now - path.startTick();
+            if (age < 0 || age >= path.renderTicks()) {
+                pathIterator.remove();
+                continue;
+            }
+            renderPath(buffer, matrix, path, camera, age + event.getPartialTick());
+        }
+
         buffers.endBatch(RenderType.lightning());
+    }
+
+    /** Grows each ray along its polyline from the origin, then holds and fades. */
+    private static void renderPath(VertexConsumer buffer, Matrix4f matrix, PathRender path, Vec3 camera, float age) {
+        float grow = Mth.clamp(age / PATH_GROW_TICKS, 0.0F, 1.0F);
+        float fade = Mth.clamp((path.renderTicks() - age) / PATH_FADE_TICKS, 0.0F, 1.0F);
+        if (fade <= 0.01F) return;
+
+        int[] counts = path.rayPointCounts();
+        float[] points = path.points();
+        int maxPoints = points.length / 3;
+        for (int i = 0, offset = 0; i < counts.length; offset += counts[i], i++) {
+            if (counts[i] < 2 || offset + counts[i] > maxPoints) continue;
+            double totalLen = 0.0D;
+            for (int p = 1; p < counts[i]; p++) {
+                totalLen += polylinePoint(points, offset + p).distanceTo(polylinePoint(points, offset + p - 1));
+            }
+            double allowed = totalLen * grow;
+            Vec3 prev = polylinePoint(points, offset);
+            for (int p = 1; p < counts[i] && allowed > 0.02D; p++) {
+                Vec3 next = polylinePoint(points, offset + p);
+                Vec3 seg = next.subtract(prev);
+                double segLen = seg.length();
+                if (segLen < 1.0e-6D) { prev = next; continue; }
+                double drawLen = Math.min(segLen, allowed);
+                Vec3 end = prev.add(seg.scale(drawLen / segLen));
+                renderPathSegment(buffer, matrix, prev, end, camera, fade);
+                allowed -= segLen;
+                prev = next;
+            }
+        }
+    }
+
+    private static void renderPathSegment(VertexConsumer buffer, Matrix4f matrix, Vec3 start, Vec3 end, Vec3 camera, float alpha) {
+        Vec3 dir = end.subtract(start);
+        if (dir.lengthSqr() < 1.0e-8D) return;
+        dir = dir.normalize();
+        Vec3 mid = start.add(end).scale(0.5D);
+        Vec3 toCamera = camera.subtract(mid);
+        Vec3 side = dir.cross(toCamera);
+        if (side.lengthSqr() < 1.0e-6D) {
+            Vec3 fallback = Math.abs(dir.y) < 0.92D ? new Vec3(0, 1, 0) : new Vec3(1, 0, 0);
+            side = dir.cross(fallback);
+        }
+        if (side.lengthSqr() < 1.0e-6D) return;
+        side = side.normalize();
+
+        // Same outer-orange / yellow-core pair as the live spall streaks.
+        quad(buffer, matrix, start, end, side, camera, 0.070D, 1.0F, 0.48F, 0.05F, alpha * 0.36F);
+        quad(buffer, matrix, start, end, side, camera, 0.038D, 1.0F, 0.94F, 0.18F, alpha * 0.9F);
+    }
+
+    private static Vec3 polylinePoint(float[] points, int index) {
+        return new Vec3(points[index * 3], points[index * 3 + 1], points[index * 3 + 2]);
     }
 
     private static void renderStreak(VertexConsumer buffer, Matrix4f matrix, Streak streak, Vec3 camera, float age) {
@@ -173,6 +253,8 @@ public final class ClientSpallConeVisuals {
 
     private record Streak(Vec3 origin, Vec3 direction, double startDistance, double maxDistance, double speed,
                           double segmentLength, float width, long startTick, int lifetimeTicks, float intensity) {}
+
+    private record PathRender(float[] points, int[] rayPointCounts, long startTick, int renderTicks) {}
 
     private ClientSpallConeVisuals() {}
 }

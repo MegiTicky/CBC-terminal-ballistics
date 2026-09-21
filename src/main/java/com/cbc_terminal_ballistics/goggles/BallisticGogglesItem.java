@@ -1,9 +1,16 @@
 package com.cbc_terminal_ballistics.goggles;
 
+import com.cbc_terminal_ballistics.ballistics.SpallPathStore;
+import com.cbc_terminal_ballistics.config.TBConfig;
+import com.cbc_terminal_ballistics.network.ClientboundSpallPathPacket;
+import com.cbc_terminal_ballistics.network.TBNetwork;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.InteractionResultHolder;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
@@ -11,6 +18,7 @@ import net.minecraft.world.item.TooltipFlag;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.item.context.UseOnContext;
+import net.minecraftforge.network.NetworkDirection;
 
 import javax.annotation.Nullable;
 import java.util.List;
@@ -63,11 +71,39 @@ public class BallisticGogglesItem extends Item {
         return InteractionResult.SUCCESS;
     }
 
+    /**
+     * Right-click in air (or on any non-mount block — useOn passes through)
+     * replays the stored spall path of the nearest recent impact.
+     */
+    @Override
+    public InteractionResultHolder<ItemStack> use(Level level, Player player, InteractionHand hand) {
+        ItemStack stack = player.getItemInHand(hand);
+        if (level.isClientSide) return InteractionResultHolder.success(stack);
+        if (!(level instanceof ServerLevel server) || !(player instanceof ServerPlayer serverPlayer)) {
+            return InteractionResultHolder.pass(stack);
+        }
+        SpallPathStore.Record record = SpallPathStore.nearest(server, player.getEyePosition(),
+            TBConfig.SPALL_PATH_GOGGLE_RADIUS.get());
+        if (record == null) {
+            player.displayClientMessage(Component.literal(
+                "No stored spall path nearby. Fire an AP shell that spalls first."), true);
+            return InteractionResultHolder.success(stack);
+        }
+        if (TBNetwork.CHANNEL != null) {
+            TBNetwork.CHANNEL.sendTo(
+                new ClientboundSpallPathPacket(record.points(), record.rayPointCounts(),
+                    TBConfig.SPALL_PATH_RENDER_TICKS.get()),
+                serverPlayer.connection.connection, NetworkDirection.PLAY_TO_CLIENT);
+        }
+        return InteractionResultHolder.success(stack);
+    }
+
     @Override
     public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
         int count = GoggleLinkManager.linkCount(stack);
         tooltip.add(Component.literal("\u00A77Right-click a cannon mount to link its shells to these goggles."));
         tooltip.add(Component.literal("\u00A77Sneak right-click a linked mount to unlink it."));
+        tooltip.add(Component.literal("\u00A77Right-click the air to replay the last spall path nearby."));
         tooltip.add(Component.literal(count == 0 ? "\u00A78No cannon mounts linked" :
             "\u00A7b" + count + " cannon mount" + (count == 1 ? "" : "s") + " linked"));
     }
