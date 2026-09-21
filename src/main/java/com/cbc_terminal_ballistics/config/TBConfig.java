@@ -129,8 +129,8 @@ public final class TBConfig {
         SPALL_CONE_MAX_ANGLE = server.comment("Maximum spall cone half-angle in degrees. Used for low-velocity oblique penetrations.").defineInRange("spallConeMaxAngle", 60.0, 30.0, 90.0);
         SPALL_RICOCHET = server.comment("Fragment rays ricochet off surfaces with energy loss instead of dying at the first block. false restores the legacy single-ray spall.").define("spallRicochet", true);
         SPALL_MAX_BOUNCES = server.comment("Maximum ricochets per spall fragment.").defineInRange("spallMaxBounces", 2, 0, 6);
-        SPALL_RICOCHET_CHANCE = server.comment("Scales the ricochet roll for fragments. Surfaces with a high spall_multiplier (steel-like, normalized to 1.0) deflect fragments most; soft materials absorb them. The roll scales linearly from spallRicochetHeadOn (head-on strikes) up to this chance (perfect graze).").defineInRange("spallRicochetChance", 0.8, 0.0, 1.0);
-        SPALL_RICOCHET_HEAD_ON = server.comment("Fraction of spallRicochetChance that applies even to head-on fragment strikes (fragment shatter/splash off hard walls, modeled as a short-lived deflected ray). 0 restores pure graze-proportional rolls where head-on hits never bounce; 1 rolls every strike at the full chance.").defineInRange("spallRicochetHeadOn", 0.35, 0.0, 1.0);
+        SPALL_RICOCHET_CHANCE = server.comment("Scales the ricochet roll for fragments. Surfaces with a high spall_multiplier (steel-like, normalized to 1.0) deflect fragments most; soft materials absorb them. The roll scales linearly from spallRicochetHeadOn (head-on strikes) up to this chance (perfect graze).").defineInRange("spallRicochetChance", 1.0, 0.0, 1.0);
+        SPALL_RICOCHET_HEAD_ON = server.comment("Fraction of spallRicochetChance that applies even to head-on fragment strikes (fragment shatter/splash off hard walls, modeled as a short-lived deflected ray). 0 restores pure graze-proportional rolls where head-on hits never bounce; 1 rolls every strike at the full chance.").defineInRange("spallRicochetHeadOn", 1.0, 0.0, 1.0);
         SPALL_BOUNCE_RETENTION_MIN = server.comment("Minimum fragment energy fraction kept after a head-on-ish ricochet.").defineInRange("spallBounceRetentionMin", 0.25, 0.05, 1.0);
         SPALL_BOUNCE_RETENTION_MAX = server.comment("Maximum fragment energy fraction kept after a perfectly grazing ricochet.").defineInRange("spallBounceRetentionMax", 0.60, 0.05, 1.0);
         SPALL_ENERGY_FLOOR = server.comment("Fragment dies once its remaining energy fraction drops below this.").defineInRange("spallEnergyFloor", 0.15, 0.01, 1.0);
@@ -252,25 +252,46 @@ public final class TBConfig {
 
     /**
      * {@link #SPALL_RICOCHET_CHANCE} with a one-time migration: configs saved
-     * while the default was 0.55 keep that value forever, which combined with
-     * the old graze^1.5 shaping made ricochets nearly invisible. A stored 0.55
-     * reads as the new 0.8 default; anything else was set deliberately and
-     * stays.
+     * while the default was 0.55 (the graze^1.5 era) or 0.8 keep those values
+     * forever; both were defaults that made ricochets rare. A stored 0.55 or
+     * 0.8 reads as the new 1.0 default; anything else was set deliberately
+     * and stays.
      */
     public static double spallRicochetChance() {
         double chance = SPALL_RICOCHET_CHANCE.get();
-        if (chance == 0.55D) {
-            chance = 0.8D;
+        if (chance == 0.55D || chance == 0.8D) {
+            chance = 1.0D;
             if (!SPALL_CHANCE_MIGRATION_LOGGED) {
                 SPALL_CHANCE_MIGRATION_LOGGED = true;
                 CBCTerminalBallistics.LOGGER.info(
-                    "[CTB-SPALL] migrated stale spallRicochetChance 0.55 -> 0.8 (old saved default); edit the config to choose your own value");
+                    "[CTB-SPALL] migrated stale spallRicochetChance {} -> 1.0 (old saved default); edit the config to choose your own value",
+                    SPALL_RICOCHET_CHANCE.get());
             }
         }
         return chance;
     }
 
     private static boolean SPALL_CHANCE_MIGRATION_LOGGED;
+
+    /**
+     * {@link #SPALL_RICOCHET_HEAD_ON} with a one-time migration: 0.35 was the
+     * default before full-chance ricochets proved to feel best. A stored 0.35
+     * reads as the new 1.0 default; anything else stays.
+     */
+    public static double spallRicochetHeadOn() {
+        double headOn = SPALL_RICOCHET_HEAD_ON.get();
+        if (headOn == 0.35D) {
+            headOn = 1.0D;
+            if (!SPALL_HEAD_ON_MIGRATION_LOGGED) {
+                SPALL_HEAD_ON_MIGRATION_LOGGED = true;
+                CBCTerminalBallistics.LOGGER.info(
+                    "[CTB-SPALL] migrated stale spallRicochetHeadOn 0.35 -> 1.0 (old saved default); edit the config to choose your own value");
+            }
+        }
+        return headOn;
+    }
+
+    private static boolean SPALL_HEAD_ON_MIGRATION_LOGGED;
 
     private TBConfig() {}
 }
