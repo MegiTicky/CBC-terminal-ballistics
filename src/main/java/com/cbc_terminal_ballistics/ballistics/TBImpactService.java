@@ -1144,7 +1144,7 @@ public final class TBImpactService {
         double spallToughnessThreshold = TBConfig.SPALL_INTEGRITY_DAMAGE_TOUGHNESS_THRESHOLD.get();
         double spallDamageScale = TBConfig.SPALL_INTEGRITY_DAMAGE_SCALE.get();
         int maxBounces = TBConfig.SPALL_MAX_BOUNCES.get();
-        double ricochetChance = TBConfig.SPALL_RICOCHET_CHANCE.get();
+        double ricochetChance = TBConfig.spallRicochetChance();
         double retentionMin = TBConfig.SPALL_BOUNCE_RETENTION_MIN.get();
         double retentionMax = TBConfig.SPALL_BOUNCE_RETENTION_MAX.get();
         double energyFloor = TBConfig.SPALL_ENERGY_FLOOR.get();

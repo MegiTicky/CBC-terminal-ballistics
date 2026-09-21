@@ -171,9 +171,12 @@ public final class SpallBounce {
                 double dot = Math.abs(dir.dot(normal));
                 double graze = 1.0D - dot;
                 boolean skim = graze >= SKIM_GRAZE;
+                // Linear graze shaping: spall cones aim along the shell axis, so
+                // most compartment strikes land at small-to-moderate graze — a
+                // steeper exponent made ricochets nearly vanish there.
                 double probability = skim
                     ? 1.0D
-                    : Math.min(ricochetChance * Math.pow(graze, 1.5D) * ricochetFactor, MAX_RICOCHET_PROBABILITY);
+                    : Math.min(ricochetChance * graze * ricochetFactor, MAX_RICOCHET_PROBABILITY);
                 if (probability <= 0.0D) break;
                 if (random.nextDouble() >= probability) break;
                 result.ricochets++;
