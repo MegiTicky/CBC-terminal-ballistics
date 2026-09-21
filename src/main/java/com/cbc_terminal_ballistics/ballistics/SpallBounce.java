@@ -39,11 +39,13 @@ public final class SpallBounce {
 
     /**
      * Applied when a fragment segment stops on a block. Damage-mode handlers
-     * run the legacy fragment integrity-damage path here; display handlers
-     * only classify the surface. Returns the surface's ricochet factor
-     * (METALLIC 1.0, GENERAL 0.6), or a value &lt;= 0 when the block absorbed
-     * the fragment outright (tough liner/wall above the spall damage
-     * threshold — no damage applied, no ricochet except a wall skim).
+     * run the legacy fragment integrity-damage path here (gated by the spall
+     * toughness threshold — toughness limits damage, it never absorbs);
+     * display handlers only classify the surface. Returns the surface's
+     * ricochet factor, derived from the struck material's
+     * {@code spall_multiplier}: ~1.0 for steel-like surfaces, near 0 for soft
+     * absorptive ones (factor &lt;= 0 means the fragment always embeds; the
+     * extreme wall-skim still applies to any surface).
      */
     public interface BlockStopHandler {
         double onBlockStop(ServerLevel level, Entity projectile, BlockPos worldPos, BlockState state,

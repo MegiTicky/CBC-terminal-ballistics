@@ -1153,7 +1153,7 @@ public final class TBImpactService {
         boolean visualOriginInsideArmor = isCatchingArmorAt(level, origin);
 
         SpallBounce.BlockStopHandler displayHandler = (lvl, proj, wp, st, hp, n, energy) ->
-            localEffectiveToughness(lvl, st, wp) > spallToughnessThreshold ? -1.0D : surfaceRicochetFactor(lvl, wp, st);
+            spallDeflectionFactor(lvl, wp, st);
         int displayRays = Math.min(12, Math.max(3, fragments / 2));
         SpallBounce.Result display = SpallBounce.simulate(level, projectile, contraption, origin, dir, coneCos,
             displayRays, range, null, displayHandler, maxBounces, ricochetChance, retentionMin, retentionMax,
@@ -1189,15 +1189,18 @@ public final class TBImpactService {
             new AABB(origin, origin).inflate(range + 1.0), e -> e.isAlive() && e != owner);
 
         SpallBounce.BlockStopHandler damageHandler = (lvl, proj, wp, st, hp, n, energy) -> {
-            if (localEffectiveToughness(lvl, st, wp) > spallToughnessThreshold) return -1.0D;
-            boolean broken = applyFragmentBlockDamage(lvl, proj, caliber, fragments, massRatio, damageModifier, energy,
-                wp, st, spallToughnessThreshold, spallDamageScale);
-            TerminalBallisticsRecorder.onSpallBlock(proj, Vec3.atCenterOf(wp), broken,
-                isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
-            if (broken) {
-                TerminalBallisticsRecorder.onCriticalBlock(proj, Vec3.atCenterOf(wp), st);
+            // Toughness only gates integrity damage, never absorption — a hard
+            // wall reflects fragments by spallDeflectionFactor like any surface.
+            if (localEffectiveToughness(lvl, st, wp) <= spallToughnessThreshold) {
+                boolean broken = applyFragmentBlockDamage(lvl, proj, caliber, fragments, massRatio, damageModifier, energy,
+                    wp, st, spallToughnessThreshold, spallDamageScale);
+                TerminalBallisticsRecorder.onSpallBlock(proj, Vec3.atCenterOf(wp), broken,
+                    isArmorLike(st) || isMetalLike(st) || isVehiclePanelLike(st));
+                if (broken) {
+                    TerminalBallisticsRecorder.onCriticalBlock(proj, Vec3.atCenterOf(wp), st);
+                }
             }
-            return surfaceRicochetFactor(lvl, wp, st);
+            return spallDeflectionFactor(lvl, wp, st);
         };
         SpallBounce.Result sim = SpallBounce.simulate(level, projectile, contraption, origin, dir, coneCos,
             fragments, range, candidates, damageHandler, maxBounces, ricochetChance, retentionMin, retentionMax,
@@ -1374,11 +1377,18 @@ public final class TBImpactService {
         return points;
     }
 
-    /** METALLIC surfaces shed grazing fragments; softer GENERAL surfaces absorb more of them. */
-    private static double surfaceRicochetFactor(ServerLevel level, BlockPos bp, BlockState st) {
+    /**
+     * Fragments deflect off spall-friendly materials: the struck block's
+     * {@code spall_multiplier} (normalized to the metallic fallback = 1.0)
+     * drives the ricochet roll, so hard spalling surfaces reflect fragments
+     * and soft absorptive ones embed them. Toughness does NOT absorb — it
+     * only limits spall integrity damage.
+     */
+    private static double spallDeflectionFactor(ServerLevel level, BlockPos bp, BlockState st) {
         BlockState materialState = CopycatMaterialResolver.resolve(level, bp, st, null).orElse(st);
         MaterialStats blockMaterial = MaterialManager.INSTANCE.get(materialState);
-        return blockMaterial.surface() == ImpactSurfaceType.METALLIC ? 1.0D : 0.6D;
+        double metallicSpall = Math.max(0.05, MaterialStats.METALLIC_FALLBACK.spallMultiplier());
+        return Mth.clamp(blockMaterial.spallMultiplier() / metallicSpall, 0.0D, 2.5D);
     }
 
     /**
