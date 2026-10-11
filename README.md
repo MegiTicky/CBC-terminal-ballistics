@@ -45,7 +45,7 @@ All `/cbctb` subcommands require operator permission level 2.
 
 | Command | What it does |
 |---------|--------------|
-| `/cbctb` | Status summary: armor level config, material mappings, loaded compatibility mods. |
+| `/cbctb` / `/cbctb status` | Status summary: armor level config, material mappings, loaded compatibility mods. |
 | `/cbctb inspect` | Full terminal-ballistics readout of the targeted block (material, integrity, last impact, spall, shatter). |
 | `/cbctb clear` | Clear CBCTB integrity data and embedded shells at the targeted block. |
 | `/cbctb projectile_slow [factor]` | Slow projectiles down for testing; `reset` restores normal speed. |

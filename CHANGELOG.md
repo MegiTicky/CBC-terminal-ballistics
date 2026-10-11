@@ -76,7 +76,7 @@ All notable changes to CBC Terminal Ballistics will be documented in this file.
   - Deflection is keyed to the struck material's `spall_multiplier` (steel-like materials deflect fragments best, soft materials absorb them) instead of block toughness, so tough blocks no longer act as accidental fragment liners.
   - The ricochet roll scales linearly from the head-on fraction up to the full chance at a perfect graze.
   - Configured under the `spalling` section: `spallRicochet` (default true; false restores the legacy single-ray path), `spallMaxBounces`, `spallRicochetChance`, `spallRicochetHeadOn`, `spallBounceRetentionMin`/`spallBounceRetentionMax`, `spallEnergyFloor`.
-- Goggle-triggered spall path replay: right-clicking with ballistic goggles replays the stored bounce paths of a recent spall cone in-world (`spallPathRenderTicks`, `spallPathGoggleRadius`; 0 disables recording and rendering).
+- Goggle-triggered spall path replay: right-clicking with ballistic goggles replays the stored bounce paths of a recent spall cone in-world (`spallPathRenderTicks` — 0 disables recording and rendering; `spallPathGoggleRadius` — search radius for the spall cone to replay, 0 always replays the most recent spall in the dimension).
 
 ### Changed
 - Terminal-view criteria narrowed: a shell opens the terminal x-ray only with real terminal content (armor plates, the shell's own blast, or entity/critical hits). Entity/critical-only engagements now dispatch a view where previously they never did; shells that die with no terminal content get no view and the artillery chase simply ends.
